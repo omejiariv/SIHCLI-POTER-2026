@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sihcli-poter"
+version = "0.1.0"
+description = "Sistema de Información Hidroclimática (SIHCLI-POTER)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+  "streamlit",
+  "pandas",
+  "numpy",
+]
+
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"
