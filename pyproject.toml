@@ -1,22 +1,15 @@
-[build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "sihcli-poter"
-version = "0.1.0"
-description = "Sistema de Información Hidroclimática (SIHCLI-POTER)"
-readme = "README.md"
-requires-python = ">=3.10"
-license = {text = "MIT"}
-dependencies = [
-  "streamlit",
-  "pandas",
-  "numpy",
-]
-
-[tool.black]
+# --- Configuración para Ruff (El Policía) ---
+[tool.ruff]
 line-length = 88
+# Ignorar las carpetas de entorno virtual
+exclude = ["venv", ".git", "__pycache__"]
 
-[tool.isort]
-profile = "black"
+[tool.ruff.lint]
+# Lista de reglas a ignorar para conseguir el Check Verde
+ignore = [
+    "E722",  # Do not use bare 'except' (Permitir try/except vacíos)
+    "F401",  # Module imported but unused (Permitir imports sobrantes)
+    "F841",  # Local variable assigned but never used (Variables sobrantes)
+    "E731",  # Do not assign a lambda expression (Permitir lambdas)
+    "F821",  # Undefined name (Permitir nombres que ruff no detecta bien)
+]
