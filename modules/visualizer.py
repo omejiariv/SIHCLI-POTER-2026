@@ -64,78 +64,45 @@ except ImportError:
     def calculate_hypsometric_curve(g):
         return None
 
-
-# 0. CAJA DE RESUMEN GLOBAL (VISIBLE SIEMPRE)
-# ==============================================================================
-def display_current_filters(
-    stations_sel,
-    regions_sel,
-    munis_sel,
-    year_range,
-    interpolacion="No detectado",
-    df_data=None,
-):
-    """
-    Muestra el resumen de filtros activo. Se debe llamar al inicio de la app.
-    """
-    # Lógica de texto para Municipios
-    if not munis_sel:
-        munis_str = "Todos / Ninguno específico"
-    else:
-        total_munis = len(munis_sel)
-        if total_munis > 3:
-            munis_list = list(munis_sel)
-            munis_str = ", ".join(munis_list[:3]) + f", ... (y {total_munis - 3} más)"
-        else:
-            munis_str = ", ".join(munis_sel)
-
-    # Lógica de texto para Regiones
-    if not regions_sel:
-        region_str = "Todas las regiones"
-    else:
-        region_str = ", ".join(regions_sel)
-
-    # Lógica de Interpolación
-    if interpolacion == "No detectado":
-        interpolacion = (
-            "Si" if st.session_state.get("apply_interpolation", False) else "No"
+# --- FILTROS (CAJA DESPLEGABLE SUPERIOR) ---
+with st.expander("🎛️ Filtros y Configuración (Haz clic para desplegar)", expanded=True):
+    col_f1, col_f2 = st.columns(2) # Dividimos en 2 columnas para que se vea ordenado
+    
+    with col_f1:
+        st.markdown("##### Estaciones")
+        # Asumiendo que 'nom_est' es el nombre de tu columna de estaciones
+        # Usa Config.STATION_COL si lo tienes definido en tu config
+        estaciones_disponibles = df['nom_est'].unique()
+        estaciones_selec = st.multiselect(
+            "Seleccione las estaciones:",
+            options=estaciones_disponibles,
+            default=estaciones_disponibles # Por defecto todas
         )
 
-    # Estadísticas Rápidas
-    stats_str = ""
-    total_records_metric = 0
-    if df_data is not None and not df_data.empty:
-        total_records_metric = len(df_data)
-        if total_records_metric > 0:
-            valid_rows = len(df_data[df_data[Config.PRECIPITATION_COL] > 0])
-            pct_registros = valid_rows / total_records_metric * 100
-            stats_str = f"* **💾 Calidad de Datos:** {pct_registros:.1f}% registros válidos (>0 mm)"
-        else:
-            stats_str = "* **💾 Calidad de Datos:** 0 registros"
-    else:
-        stats_str = "* **💾 Calidad de Datos:** No disponible"
-
-    # Renderizado
-    with st.expander(
-        "📝 Resumen de Filtros, Configuración y Estadísticas", expanded=False
-    ):
-        st.info(
-            f"""
-        **Configuración Actual del Tablero:**
-        * **🌍 Región:** {region_str}
-        * **🏙️ Municipios:** {munis_str}
-        * **📅 Rango de Años:** {year_range[0]} - {year_range[1]}
-        * **📈 Interpolación de Vacíos:** {interpolacion}
-        {stats_str}
-        """
+    with col_f2:
+        st.markdown("##### Rango de Fechas")
+        min_date = pd.to_datetime(df['Fecha']).min()
+        max_date = pd.to_datetime(df['Fecha']).max()
+        
+        rango_fechas = st.date_input(
+            "Seleccione periodo:",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date
         )
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Estaciones Seleccionadas", len(stations_sel) if stations_sel else 0)
-        c2.metric("Años de Análisis", f"{year_range[1] - year_range[0] + 1}")
-        if total_records_metric > 0:
-            c3.metric("Total Registros Procesados", f"{total_records_metric:,}")
-
+# --- APLICAR FILTROS ---
+# Lógica de filtrado
+if len(rango_fechas) == 2:
+    inicio, fin = rango_fechas
+    mask_filtro = (
+        (df['nom_est'].isin(estaciones_selec)) & 
+        (pd.to_datetime(df['Fecha']).dt.date >= inicio) & 
+        (pd.to_datetime(df['Fecha']).dt.date <= fin)
+    )
+    df_filtrado = df[mask_filtro]
+else:
+    df_filtrado = df[df['nom_est'].isin(estaciones_selec)]
 
 # PESTAÑA DE BIENVENIDA (PÁGINA DE INICIO RENOVADA)
 # ==============================================================================
@@ -281,11 +248,9 @@ def display_welcome_tab():
                 "El Aleph del tiempo, del clima, del agua, de la biodiversidad, ... del terri-torio."
             )
 
-
 # -----------------------------------------------------------------------------
 # 1. FUNCIONES AUXILIARES
 # -----------------------------------------------------------------------------
-
 
 # --- HELPER: GEOLOCALIZACIÓN MANUAL PARA PLOTLY ---
 def _get_user_location_sidebar(key_suffix=""):
@@ -610,7 +575,6 @@ def analyze_point_data(lat, lon, df_long, gdf_stations, gdf_municipios, gdf_subc
 
     return results
 
-
 def get_weather_forecast_detailed(lat, lon):
     """
     Obtiene pronóstico detallado de Open-Meteo con 9 variables agrometeorológicas.
@@ -656,7 +620,6 @@ def get_weather_forecast_detailed(lat, lon):
         return df
     except Exception:
         return pd.DataFrame()
-
 
 def create_enso_chart(enso_data):
     """
@@ -770,7 +733,6 @@ def create_enso_chart(enso_data):
 
 # 1. FUNCIONES AUXILIARES DE PARSEO Y DATOS
 # -----------------------------------------------------------------------------
-
 
 def parse_spanish_date(x):
     if isinstance(x, str):
@@ -1327,7 +1289,6 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                     ),
                     use_container_width=True,
                 )
-
 
 # FUNCIÓN DISTRIBUCIÓN ESPACIAL (CON CAJA DE RESUMEN UNIFICADA)
 # ==============================================================================
@@ -3528,9 +3489,7 @@ def display_climate_forecast_tab(**kwargs):
         else:
             st.warning("No hay datos suficientes para generar proyecciones.")
 
-
 # -----------------------------------------------------------------------------
-
 
 def display_trends_and_forecast_tab(**kwargs):
     st.subheader("📉 Tendencias y Pronósticos (Series de Tiempo)")
@@ -4157,7 +4116,6 @@ def display_anomalies_tab(
                 ),
                 use_container_width=True,
             )
-
 
 # FUNCIÓN ESTADÍSTICAS (REVISADA Y MEJORADA)
 # ==============================================================================
