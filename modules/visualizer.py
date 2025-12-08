@@ -4212,8 +4212,9 @@ def display_stats_tab(df_long, df_anual_melted, gdf_stations, **kwargs):
                     "Dic",
                 ],
                 title="Matriz de Densidad de Datos (Registros por Mes)",
-                color_continuous_scale="Greens",
-                aspect="auto",  # Ajustar altura automáticamente
+                color_continuous_scale="RdYlGn", 
+                
+                aspect="auto", 
             )
             fig_matrix.update_layout(height=600)
             st.plotly_chart(fig_matrix, use_container_width=True)
