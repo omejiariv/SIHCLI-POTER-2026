@@ -4172,20 +4172,13 @@ def display_stats_tab(df_long, df_anual_melted, gdf_stations, **kwargs):
         )
 
         try:
-            # Crear matriz pivot: Años vs Meses
+            # --- CORRECCIÓN MATRIZ ---
+            # Copiamos para no afectar el original
             df_matrix = df_long.copy()
             
-            # --- CORRECCIÓN AQUÍ ---
-            # Si no existe 'date', la creamos asegurando los nombres 'year', 'month', 'day'
-            if "date" not in df_matrix.columns:
-                # 1. Seleccionamos solo las columnas de año y mes
-                fechas_df = df_matrix[[Config.YEAR_COL, Config.MONTH_COL]].copy()
-                # 2. Las renombramos a lo que pd.to_datetime exige (inglés estricto)
-                fechas_df.columns = ["year", "month"]
-                # 3. Agregamos el día
-                fechas_df["day"] = 1
-                # 4. Convertimos
-                df_matrix["date"] = pd.to_datetime(fechas_df)
+            # Forzamos la creación de una columna 'date' compatible con Pandas
+            # Asumiendo que Config.YEAR_COL y Config.MONTH_COL son tus columnas de año y mes
+            df_matrix["date"] = pd.to_datetime(dict(year=df_matrix[Config.YEAR_COL], month=df_matrix[Config.MONTH_COL], day=1))
 
             matrix = df_matrix.pivot_table(
                 index=df_matrix["date"].dt.year,
@@ -4194,34 +4187,20 @@ def display_stats_tab(df_long, df_anual_melted, gdf_stations, **kwargs):
                 aggfunc="count",
             ).fillna(0)
 
-            # Mapa de calor con Plotly
+            # Mapa de calor semáforo
             fig_matrix = px.imshow(
                 matrix,
                 labels=dict(x="Mes", y="Año", color="N° Registros"),
-                x=[
-                    "Ene",
-                    "Feb",
-                    "Mar",
-                    "Abr",
-                    "May",
-                    "Jun",
-                    "Jul",
-                    "Ago",
-                    "Sep",
-                    "Oct",
-                    "Nov",
-                    "Dic",
-                ],
-                title="Matriz de Densidad de Datos (Registros por Mes)",
-                color_continuous_scale="RdYlGn", 
-                
+                x=["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"],
+                title="Matriz de Densidad de Datos (Semáforo)",
+                color_continuous_scale="RdYlGn", # Rojo a Verde
                 aspect="auto", 
             )
             fig_matrix.update_layout(height=600)
             st.plotly_chart(fig_matrix, use_container_width=True)
 
         except Exception as e:
-            st.warning(f"No se pudo generar la matriz de disponibilidad: {e}")
+            st.warning(f"No se pudo generar la matriz: {e}")
 
     # --- PESTAÑA 3: SÍNTESIS (NUEVA) ---
     with tab_sintesis:
