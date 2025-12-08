@@ -64,46 +64,6 @@ except ImportError:
     def calculate_hypsometric_curve(g):
         return None
 
-# --- FILTROS (CAJA DESPLEGABLE SUPERIOR) ---
-with st.expander("🎛️ Filtros y Configuración (Haz clic para desplegar)", expanded=True):
-    col_f1, col_f2 = st.columns(2) # Dividimos en 2 columnas para que se vea ordenado
-    
-    with col_f1:
-        st.markdown("##### Estaciones")
-        # Asumiendo que 'nom_est' es el nombre de tu columna de estaciones
-        # Usa Config.STATION_COL si lo tienes definido en tu config
-        estaciones_disponibles = df['nom_est'].unique()
-        estaciones_selec = st.multiselect(
-            "Seleccione las estaciones:",
-            options=estaciones_disponibles,
-            default=estaciones_disponibles # Por defecto todas
-        )
-
-    with col_f2:
-        st.markdown("##### Rango de Fechas")
-        min_date = pd.to_datetime(df['Fecha']).min()
-        max_date = pd.to_datetime(df['Fecha']).max()
-        
-        rango_fechas = st.date_input(
-            "Seleccione periodo:",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date
-        )
-
-# --- APLICAR FILTROS ---
-# Lógica de filtrado
-if len(rango_fechas) == 2:
-    inicio, fin = rango_fechas
-    mask_filtro = (
-        (df['nom_est'].isin(estaciones_selec)) & 
-        (pd.to_datetime(df['Fecha']).dt.date >= inicio) & 
-        (pd.to_datetime(df['Fecha']).dt.date <= fin)
-    )
-    df_filtrado = df[mask_filtro]
-else:
-    df_filtrado = df[df['nom_est'].isin(estaciones_selec)]
-
 # PESTAÑA DE BIENVENIDA (PÁGINA DE INICIO RENOVADA)
 # ==============================================================================
 def display_welcome_tab():
@@ -424,6 +384,47 @@ def _plot_panel_regional(rng, meth, col, tag, u_loc, df_long, gdf_stations):
                 st_folium(
                     m, height=350, use_container_width=True, key=f"fol_comp_{tag}"
                 )
+
+
+# --- FILTROS (CAJA DESPLEGABLE SUPERIOR) ---
+with st.expander("🎛️ Filtros y Configuración (Haz clic para desplegar)", expanded=True):
+    col_f1, col_f2 = st.columns(2) # Dividimos en 2 columnas para que se vea ordenado
+    
+    with col_f1:
+        st.markdown("##### Estaciones")
+        # Asumiendo que 'nom_est' es el nombre de tu columna de estaciones
+        # Usa Config.STATION_COL si lo tienes definido en tu config
+        estaciones_disponibles = df['nom_est'].unique()
+        estaciones_selec = st.multiselect(
+            "Seleccione las estaciones:",
+            options=estaciones_disponibles,
+            default=estaciones_disponibles # Por defecto todas
+        )
+
+    with col_f2:
+        st.markdown("##### Rango de Fechas")
+        min_date = pd.to_datetime(df['Fecha']).min()
+        max_date = pd.to_datetime(df['Fecha']).max()
+        
+        rango_fechas = st.date_input(
+            "Seleccione periodo:",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date
+        )
+
+# --- APLICAR FILTROS ---
+# Lógica de filtrado
+if len(rango_fechas) == 2:
+    inicio, fin = rango_fechas
+    mask_filtro = (
+        (df['nom_est'].isin(estaciones_selec)) & 
+        (pd.to_datetime(df['Fecha']).dt.date >= inicio) & 
+        (pd.to_datetime(df['Fecha']).dt.date <= fin)
+    )
+    df_filtrado = df[mask_filtro]
+else:
+    df_filtrado = df[df['nom_est'].isin(estaciones_selec)]
 
 
 @st.cache_data(ttl=3600)
