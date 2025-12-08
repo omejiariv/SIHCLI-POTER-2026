@@ -4214,13 +4214,19 @@ def display_stats_tab(df_long, df_anual_melted, gdf_stations, **kwargs):
 
         try:
             # Crear matriz pivot: Años vs Meses
-            # Usamos dt.year y dt.month asumiendo que 'date' es datetime
-            # Si df_long no tiene columna 'date' datetime directa, la creamos al vuelo
             df_matrix = df_long.copy()
+            
+            # --- CORRECCIÓN AQUÍ ---
+            # Si no existe 'date', la creamos asegurando los nombres 'year', 'month', 'day'
             if "date" not in df_matrix.columns:
-                df_matrix["date"] = pd.to_datetime(
-                    df_matrix[[Config.YEAR_COL, Config.MONTH_COL]].assign(DAY=1)
-                )
+                # 1. Seleccionamos solo las columnas de año y mes
+                fechas_df = df_matrix[[Config.YEAR_COL, Config.MONTH_COL]].copy()
+                # 2. Las renombramos a lo que pd.to_datetime exige (inglés estricto)
+                fechas_df.columns = ["year", "month"]
+                # 3. Agregamos el día
+                fechas_df["day"] = 1
+                # 4. Convertimos
+                df_matrix["date"] = pd.to_datetime(fechas_df)
 
             matrix = df_matrix.pivot_table(
                 index=df_matrix["date"].dt.year,
