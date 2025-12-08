@@ -1,9 +1,10 @@
-import warnings
+# modules/app.py
 
+import warnings
 import pandas as pd
 import streamlit as st
 
-# --- 1. CONFIGURACIÓN DE PÁGINA (PRIMERA LÍNEA ABSOLUTA) ---
+# --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="SIHCLI-POTER", page_icon="🌧️", layout="wide")
 warnings.filterwarnings("ignore")
 
@@ -12,12 +13,11 @@ try:
     from modules.config import Config
     from modules.data_processor import complete_series, load_and_process_all_data
     from modules.reporter import generate_pdf_report
-    from modules.sidebar import create_sidebar
-
+    # from modules.sidebar import create_sidebar # YA NO LO NECESITAMOS SI USAMOS EL EXPANDER AQUÍ
+    
     # Intentamos importar db_manager pero no dejamos que rompa la app
     try:
         import modules.db_manager as db_manager
-
         DB_AVAILABLE = True
     except ImportError:
         DB_AVAILABLE = False
@@ -57,14 +57,14 @@ def main():
         if k not in st.session_state:
             st.session_state[k] = None
 
-    # --- B. CARGA DE DATOS (CON SPINNER VISIBLE) ---
+    # --- B. CARGA DE DATOS ---
     data_loaded = False
     with st.spinner("Cargando datos..."):
         try:
             (
                 gdf_stations,
                 gdf_municipios,
-                df_long,
+                df_long, # <--- ESTA ES LA VARIABLE CLAVE (TU 'df')
                 df_enso,
                 gdf_subcuencas,
                 gdf_predios,
@@ -78,50 +78,81 @@ def main():
         st.error("No se pudieron cargar los datos. Revise la conexión.")
         st.stop()
 
-    # --- C. SIDEBAR ---
-    try:
-        (
-            stations_for_analysis,
-            df_anual_melted,
-            df_monthly_filtered,
-            gdf_filtered,
-            analysis_mode,
-            sel_regions,
-            sel_munis,
-            selected_months,
-            year_range,
-        ) = create_sidebar(gdf_stations, df_long)
-    except Exception as e:
-        st.error(f"Error en Sidebar: {e}")
-        st.stop()
+    # --- C. FILTROS (REEMPLAZANDO SIDEBAR POR EXPANDER) ---
+    # Creamos un contenedor desplegable visible en la parte superior
+    with st.expander("🎛️ Filtros y Configuración (Clic para desplegar)", expanded=True):
+        col_f1, col_f2, col_f3 = st.columns(3)
+        
+        with col_f1:
+            st.markdown("##### Estaciones")
+            # Usamos Config.STATION_NAME_COL o 'nom_est'
+            if Config.STATION_NAME_COL in df_long.columns:
+                lista_estaciones = df_long[Config.STATION_NAME_COL].unique()
+                stations_for_analysis = st.multiselect(
+                    "Seleccione Estación(es):",
+                    options=lista_estaciones,
+                    default=lista_estaciones # Seleccionar todas por defecto
+                )
+            else:
+                st.error(f"Columna {Config.STATION_NAME_COL} no encontrada.")
+                stations_for_analysis = []
 
-    # Procesamiento adicional (Interpolación)
-    if st.session_state.get("apply_interpolation", False):
-        with st.spinner("Interpolando..."):
-            df_monthly_filtered = complete_series(df_monthly_filtered)
-            df_anual_melted = (
-                df_monthly_filtered.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[
-                    Config.PRECIPITATION_COL
-                ]
-                .sum()
-                .reset_index()
+        with col_f2:
+            st.markdown("##### Rango de Años")
+            min_year = int(df_long[Config.YEAR_COL].min())
+            max_year = int(df_long[Config.YEAR_COL].max())
+            
+            year_range = st.slider(
+                "Seleccione periodo:",
+                min_value=min_year,
+                max_value=max_year,
+                value=(min_year, max_year)
             )
 
-    # Fechas
-    try:
-        start_date = pd.to_datetime(f"{year_range[0]}-01-01")
-        end_date = pd.to_datetime(f"{year_range[1]}-12-31")
-    except:
-        start_date, end_date = None, None
+        with col_f3:
+            st.markdown("##### Opciones")
+            apply_interp = st.checkbox("Aplicar Interpolación (Rellenar huecos)", value=False, key="apply_interpolation")
+            analysis_mode = "Anual" # Valor por defecto simple
 
+    # --- APLICAR FILTROS ---
+    # 1. Filtro base
     mask_base = (
         (df_long[Config.YEAR_COL] >= year_range[0])
         & (df_long[Config.YEAR_COL] <= year_range[1])
         & (df_long[Config.STATION_NAME_COL].isin(stations_for_analysis))
     )
-    df_complete_filtered = df_long.loc[mask_base].copy()
+    df_monthly_filtered = df_long.loc[mask_base].copy()
+    
+    # Filtramos también el GeoDataFrame de estaciones
+    gdf_filtered = gdf_stations[gdf_stations[Config.STATION_NAME_COL].isin(stations_for_analysis)]
 
-    # Argumentos
+    # Variables auxiliares que create_sidebar devolvía (las ponemos en None o valores por defecto)
+    sel_regions = []
+    sel_munis = []
+    selected_months = list(range(1, 13))
+
+    # Procesamiento adicional (Interpolación)
+    if apply_interp:
+        with st.spinner("Interpolando..."):
+            df_monthly_filtered = complete_series(df_monthly_filtered)
+    
+    # Crear agregado anual
+    df_anual_melted = (
+        df_monthly_filtered.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[
+            Config.PRECIPITATION_COL
+        ]
+        .sum()
+        .reset_index()
+    )
+
+    # Fechas para visualización
+    start_date = pd.to_datetime(f"{year_range[0]}-01-01")
+    end_date = pd.to_datetime(f"{year_range[1]}-12-31")
+
+    # Copia completa filtrada (para dashboard en tiempo real)
+    df_complete_filtered = df_monthly_filtered.copy()
+
+    # --- PREPARAR ARGUMENTOS ---
     display_args = {
         "df_long": df_monthly_filtered,
         "df_complete": df_complete_filtered,
@@ -143,16 +174,16 @@ def main():
         "end_date": end_date,
     }
 
-    # --- D. RENDERIZADO (AQUÍ ESTÁ LA CLAVE) ---
+    # --- D. RENDERIZADO ---
 
-    # 1. CAJA DE RESUMEN (LLAMADA DIRECTA Y SEGURA)
+    # 1. CAJA DE RESUMEN
     try:
         display_current_filters(
             stations_sel=stations_for_analysis,
             regions_sel=sel_regions,
             munis_sel=sel_munis,
             year_range=year_range,
-            interpolacion="Si" if st.session_state.get("apply_interpolation") else "No",
+            interpolacion="Si" if apply_interp else "No",
             df_data=df_monthly_filtered,
         )
     except Exception as e:
@@ -180,7 +211,7 @@ def main():
 
     tabs = st.tabs(tab_titles)
 
-    # 3. CONTENIDO DE PESTAÑAS (PROTEGIDO)
+    # 3. CONTENIDO DE PESTAÑAS
     with tabs[0]:
         display_welcome_tab()
     with tabs[1]:
@@ -189,7 +220,7 @@ def main():
     with tabs[2]:
         display_spatial_distribution_tab(
             user_loc=None,
-            interpolacion="Si" if st.session_state.get("apply_interpolation") else "No",
+            interpolacion="Si" if apply_interp else "No",
             **display_args,
         )
 
@@ -216,7 +247,6 @@ def main():
     with tabs[11]:
         try:
             from modules.visualizer import display_bias_correction_tab
-
             display_bias_correction_tab(**display_args)
         except:
             st.info("Módulo Sesgo cargando...")
@@ -230,13 +260,13 @@ def main():
 
     with tabs[15]:
         st.header("Reporte PDF")
-        if st.button("Generar"):
+        if st.button("Generar Reporte"):
             res = {"n_estaciones": len(stations_for_analysis), "rango": f"{year_range}"}
             pdf = generate_pdf_report(df_monthly_filtered, gdf_filtered, res)
             if pdf:
                 st.download_button("Descargar", pdf, "reporte.pdf", "application/pdf")
 
-    # CSS
+    # CSS para ajustar pestañas
     st.markdown(
         """<style>.stTabs [data-baseweb="tab-panel"] { padding-top: 1rem; }</style>""",
         unsafe_allow_html=True,
