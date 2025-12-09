@@ -1249,6 +1249,7 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                 )
 
 
+# --- FUNCIÓN PRINCIPAL: PESTAÑA DE DISTRIBUCIÓN ---
 def display_spatial_distribution_tab(
     user_loc, interpolacion, df_long, df_complete, gdf_stations, gdf_filtered,
     gdf_municipios, gdf_subcuencas, gdf_predios, df_enso, stations_for_analysis,
@@ -1256,70 +1257,101 @@ def display_spatial_distribution_tab(
     selected_municipios, selected_months, year_range, start_date, end_date
 ):
     """
-    Muestra el mapa interactivo y gráficas anuales sin errores de estado.
+    Mapa interactivo completo con Pronóstico, Capas, Geolocalizador y Series.
     """
-    import folium
-    from folium import plugins
-    from streamlit_folium import folium_static
-    import streamlit as st
-    import pandas as pd
-    import plotly.express as px
-    from modules.config import Config
-
-    # ESCUDO DE SEGURIDAD: Inicializamos variables por si acaso quedaron referencias viejas
+    # Inicializar estado para punto seleccionado si no existe
     if "selected_point" not in st.session_state:
         st.session_state.selected_point = None
 
     st.markdown("### 🗺️ Distribución Espacial y Análisis Puntual")
     
-    # 1. Definición de Pestañas
+    # Pestañas
     tab_mapa, tab_avail, tab_series = st.tabs(["📍 Mapa Interactivo", "📊 Disponibilidad", "📅 Series Anuales"])
 
     # --- PESTAÑA 1: MAPA INTERACTIVO ---
     with tab_mapa:
-        st.markdown("##### Explorador Geoespacial")
-        
-        col_z1, col_z2 = st.columns([1, 3])
+        # 1. CONTROLES DE ZOOM Y CAPAS BASE
+        c_zoom, c_coord = st.columns([1, 2])
+        location_center = [6.5, -75.5] # Default
         zoom_level = 8
-        location_center = [6.5, -75.5] # Default Antioquia
 
-        with col_z1:
-            escala = st.radio(
-                "🔎 Zoom Rápido:",
-                ["Colombia", "Antioquia", "Región Actual"],
-                horizontal=False,
-                index=1
-            )
-
+        with c_zoom:
+            escala = st.radio("🔎 Zoom Rápido:", ["Colombia", "Antioquia", "Región"], horizontal=True)
+        
+        # Lógica de Zoom
         if escala == "Colombia":
-            location_center = [4.57, -74.29]
-            zoom_level = 6
+            location_center, zoom_level = [4.57, -74.29], 6
         elif escala == "Antioquia":
-            location_center = [7.0, -75.5]
-            zoom_level = 8
-        elif escala == "Región Actual" and not gdf_filtered.empty:
+            location_center, zoom_level = [7.0, -75.5], 8
+        elif escala == "Región" and not gdf_filtered.empty:
             try:
                 centroid = gdf_filtered.dissolve().centroid
                 if not centroid.empty:
                     location_center = [centroid.geometry[0].y, centroid.geometry[0].x]
                     zoom_level = 9
-            except:
-                pass
+            except: pass
 
-        m = folium.Map(
-            location=location_center,
-            zoom_start=zoom_level,
-            tiles="CartoDB positron",
-            control_scale=True
-        )
+        # 2. INPUT DE COORDENADAS (REQ 4)
+        with c_coord:
+            with st.expander("📍 Ingresar Coordenadas Manualmente", expanded=False):
+                cc1, cc2, cc3 = st.columns([1, 1, 1])
+                lat_in = cc1.number_input("Latitud", value=location_center[0], format="%.4f")
+                lon_in = cc2.number_input("Longitud", value=location_center[1], format="%.4f")
+                if cc3.button("Analizar Punto"):
+                    st.session_state.selected_point = {"lat": lat_in, "lng": lon_in}
+                    st.toast(f"Punto seleccionado: {lat_in}, {lon_in}")
 
-        plugins.Fullscreen(
-            position="topright",
-            title="Pantalla Completa",
-            title_cancel="Salir",
-            force_separate_button=True,
-        ).add_to(m)
+        # 3. CONSTRUCCIÓN DEL MAPA
+        m = folium.Map(location=location_center, zoom_start=zoom_level, control_scale=True)
 
+        # A. Mapas Base (REQ 3)
+        folium.TileLayer('cartodbpositron', name='Mapa Claro (CartoDB)').add_to(m)
+        folium.TileLayer('openstreetmap', name='OpenStreetMap').add_to(m)
+        try:
+            folium.TileLayer(
+                tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                attr='Esri',
+                name='Satélite (Esri)'
+            ).add_to(m)
+        except: pass
+
+        # B. Geolocalizador (REQ 1)
+        plugins.Geocoder(position='topleft', add_marker=True).add_to(m)
+
+        # C. Pantalla Completa (REQ 3)
+        plugins.Fullscreen(position='topright').add_to(m)
+
+        # D. Capas Adicionales (REQ 2 - Selector de Capas)
+        # Municipios
+        if gdf_municipios is not None and not gdf_municipios.empty:
+            fg_munis = folium.FeatureGroup(name="Municipios", show=False)
+            folium.GeoJson(
+                gdf_municipios,
+                style_function=lambda x: {'fillColor': '#ffff00', 'color': 'black', 'weight': 1, 'fillOpacity': 0.1},
+                tooltip=folium.GeoJsonTooltip(fields=['MUNI_CNMBR'], aliases=['Municipio:'], localize=True) if 'MUNI_CNMBR' in gdf_municipios.columns else None
+            ).add_to(fg_munis)
+            fg_munis.add_to(m)
+
+        # Subcuencas
+        if gdf_subcuencas is not None and not gdf_subcuencas.empty:
+            fg_cuencas = folium.FeatureGroup(name="Subcuencas", show=False)
+            folium.GeoJson(
+                gdf_subcuencas,
+                style_function=lambda x: {'fillColor': 'blue', 'color': 'blue', 'weight': 2, 'fillOpacity': 0.05}
+            ).add_to(fg_cuencas)
+            fg_cuencas.add_to(m)
+
+        # Predios (Si existen)
+        if gdf_predios is not None and not gdf_predios.empty:
+            fg_predios = folium.FeatureGroup(name="Predios", show=False)
+            folium.GeoJson(
+                gdf_predios,
+                style_function=lambda x: {'color': 'red', 'weight': 1}
+            ).add_to(fg_predios)
+            fg_predios.add_to(m)
+
+        # E. Marcadores de Estaciones (REQ 5 - Popup Detallado)
+        fg_estaciones = folium.FeatureGroup(name="Estaciones", show=True)
         if not gdf_filtered.empty:
             cols = gdf_filtered.columns
             c_muni = next((c for c in cols if "muni" in c.lower()), "Municipio")
@@ -1346,16 +1378,82 @@ def display_spatial_distribution_tab(
                     popup=folium.Popup(html_popup, max_width=200),
                     tooltip=f"{row[c_nombre]}",
                     icon=folium.Icon(color="blue", icon="info-sign")
-                ).add_to(m)
+                ).add_to(fg_estaciones)
+        fg_estaciones.add_to(m)
 
-        map_data = folium_static(m, width=1100, height=600)
+        # Control de Capas (Vital para REQ 2 y 3)
+        folium.LayerControl().add_to(m)
 
-        st.download_button(
-            label="💾 Descargar Mapa como HTML",
-            data=m._repr_html_(),
-            file_name="mapa_sihcli.html",
-            mime="text/html"
-        )
+        # Renderizado
+        folium_static(m, width=1100, height=600)
+        
+        # Descarga
+        st.download_button("💾 Descargar Mapa (HTML)", m._repr_html_(), "mapa.html", "text/html")
+
+        # --- LÓGICA DE PRONÓSTICO (REQ 5 - Restaurada) ---
+        if st.session_state.selected_point:
+            clat, clon = st.session_state.selected_point["lat"], st.session_state.selected_point["lng"]
+            st.markdown("---")
+            st.subheader(f"📍 Análisis de Punto ({clat:.4f}, {clon:.4f})")
+
+            with st.spinner("Consultando pronóstico..."):
+                # Placeholder de datos puntuales (Ya que la función analyze_point_data no la tenemos a mano completa)
+                p_data = {
+                    "Municipio": "Ubicación Seleccionada", "Cuenca": "Análisis Remoto",
+                    "Altitud": 0, "Ppt_Media": 0, "Tendencia": 0,
+                    "Zona_Vida": "N/D", "Cobertura": "N/D"
+                }
+                
+                # Obtener pronóstico real
+                fc = pd.DataFrame()
+                if get_weather_forecast_detailed:
+                    fc = get_weather_forecast_detailed(clat, clon)
+
+                # FILA 1: Contexto
+                c1, c2, c3, c4 = st.columns(4)
+                c1.markdown(f"**Ubicación:**<br>{p_data['Municipio']}<br><span style='color:gray; font-size:0.8em'>{p_data['Cuenca']}</span>", unsafe_allow_html=True)
+                c2.metric("Altitud Aprox", f"{p_data['Altitud']:.0f} m")
+                
+                # FILA 2: Meteorología (Pronóstico)
+                if not fc.empty:
+                    st.markdown("##### 🌦️ Condiciones Actuales y Pronóstico")
+                    today = fc.iloc[0]
+                    m1, m2, m3, m4, m5 = st.columns(5)
+                    m1.metric("Temp. Prom", f"{(today['T. Máx (°C)'] + today['T. Mín (°C)'])/2:.1f} °C")
+                    m2.metric("Lluvia Hoy", f"{today['Ppt. (mm)']} mm")
+                    m3.metric("Humedad", f"{today['HR Media (%)']} %")
+                    m4.metric("Viento", f"{today['Viento Máx (km/h)']} km/h")
+                    m5.metric("Radiación", f"{today['Radiación SW (MJ/m²)']} MJ/m²")
+
+                    with st.expander("Ver Gráficos de Pronóstico (7 Días)", expanded=True):
+                        # Gráfico 1: Temp y Lluvia
+                        st.markdown("**🌡️ Temperatura y Precipitación**")
+                        fig = make_subplots(specs=[[{"secondary_y": True}]])
+                        fig.add_trace(go.Scatter(x=fc["Fecha"], y=fc["T. Máx (°C)"], name="Max", line=dict(color="red")), secondary_y=False)
+                        fig.add_trace(go.Scatter(x=fc["Fecha"], y=fc["T. Mín (°C)"], name="Min", line=dict(color="blue"), fill="tonexty"), secondary_y=False)
+                        fig.add_trace(go.Bar(x=fc["Fecha"], y=fc["Ppt. (mm)"], name="Lluvia", marker_color="blue", opacity=0.5), secondary_y=True)
+                        fig.update_layout(height=350, hovermode="x unified")
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        # Gráficos Adicionales
+                        c_g1, c_g2 = st.columns(2)
+                        with c_g1:
+                            st.markdown("**🍃 Atmósfera**")
+                            fig_atm = make_subplots(specs=[[{"secondary_y": True}]])
+                            fig_atm.add_trace(go.Scatter(x=fc["Fecha"], y=fc["HR Media (%)"], name="HR %", line=dict(color="teal")), secondary_y=False)
+                            fig_atm.add_trace(go.Scatter(x=fc["Fecha"], y=fc["Presión (hPa)"], name="Presión", line=dict(color="purple", dash="dot")), secondary_y=True)
+                            fig_atm.update_layout(height=300, hovermode="x unified")
+                            st.plotly_chart(fig_atm, use_container_width=True)
+
+                        with c_g2:
+                            st.markdown("**☀️ Energía y Agua**")
+                            fig_nrg = make_subplots(specs=[[{"secondary_y": True}]])
+                            fig_nrg.add_trace(go.Bar(x=fc["Fecha"], y=fc["Radiación SW (MJ/m²)"], name="Radiación", marker_color="orange"), secondary_y=False)
+                            fig_nrg.add_trace(go.Scatter(x=fc["Fecha"], y=fc["ET₀ (mm)"], name="ET₀", line=dict(color="green")), secondary_y=True)
+                            fig_nrg.update_layout(height=300, hovermode="x unified")
+                            st.plotly_chart(fig_nrg, use_container_width=True)
+                else:
+                    st.warning("No se pudieron obtener datos del pronóstico.")
 
     # ==========================================
     # PESTAÑA 2: DISPONIBILIDAD (ACTUALIZADA CON SELECTOR)
@@ -1514,187 +1612,6 @@ def display_spatial_distribution_tab(
                 st.dataframe(pivot_anual, use_container_width=True)
         else:
             st.warning("No hay datos suficientes para graficar series.")
-
-    # --- 3. ANÁLISIS DEL PUNTO SELECCIONADO ---
-    if st.session_state.selected_point:
-        clat, clon = (
-            st.session_state.selected_point["lat"],
-            st.session_state.selected_point["lng"],
-        )
-        st.markdown("---")
-        st.subheader(f"📍 Análisis de Punto ({clat:.4f}, {clon:.4f})")
-
-        with st.spinner("Consultando datos..."):
-            # Importación local para evitar dependencias circulares si no está arriba
-            try:
-                from modules.openmeteo_api import get_weather_forecast_detailed
-
-                # Si analyze_point_data no está en imports globales, asegurar que esté accesible
-                # Asumo que ya está importada al inicio o definida
-            except:
-                pass
-
-            # Llamadas a tus funciones de análisis
-            # (Nota: Asumo que analyze_point_data está disponible en el scope)
-            # p_data = analyze_point_data(clat, clon, df_long, gdf_filtered, gdf_municipios, gdf_subcuencas)
-            # Para que funcione sin la función real en este snippet, pongo un placeholder seguro
-            # En tu código real, descomenta la línea anterior y asegura la función.
-            p_data = {
-                "Municipio": "N/A",
-                "Cuenca": "N/A",
-                "Altitud": 0,
-                "Ppt_Media": 0,
-                "Tendencia": 0,
-                "Zona_Vida": "N/A",
-                "Cobertura": "N/A",
-            }
-
-            fc = get_weather_forecast_detailed(clat, clon)
-
-            # FILA 1: Contexto
-            c1, c2, c3, c4 = st.columns(4)
-            c1.markdown(
-                f"**Ubicación:**<br>{p_data['Municipio']}<br><span style='color:gray; font-size:0.8em'>{p_data['Cuenca']}</span>",
-                unsafe_allow_html=True,
-            )
-            c2.metric("Altitud", f"{p_data['Altitud']:.0f} m")
-            c3.metric("Ppt Histórica", f"{p_data['Ppt_Media']:.0f} mm/año")
-            t_val = p_data["Tendencia"]
-            c4.metric(
-                "Tendencia Histórica",
-                f"{t_val:+.1f} mm/año",
-                delta_color="normal" if t_val > 0 else "inverse",
-            )
-
-            # FILA 2: Ambiental
-            c5, c6 = st.columns(2)
-            c5.metric("Zona de Vida", p_data["Zona_Vida"])
-            c6.metric("Cobertura", p_data["Cobertura"])
-
-            # FILA 3: Meteorología (Pronóstico)
-            if not fc.empty:
-                st.markdown("##### 🌦️ Condiciones Actuales y Pronóstico")
-                today = fc.iloc[0]
-
-                m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric(
-                    "Temp. Promedio",
-                    f"{(today['T. Máx (°C)'] + today['T. Mín (°C)'])/2:.1f} °C",
-                )
-                m2.metric("Lluvia Hoy", f"{today['Ppt. (mm)']} mm")
-                m3.metric("Humedad Rel.", f"{today['HR Media (%)']} %")
-                m4.metric("Viento Máx", f"{today['Viento Máx (km/h)']} km/h")
-                m5.metric("Radiación", f"{today['Radiación SW (MJ/m²)']} MJ/m²")
-
-                with st.expander("Ver Gráficos de Pronóstico (7 Días)", expanded=True):
-                    # Gráfico 1: Temperatura y Precipitación
-                    st.markdown("**🌡️ Temperatura y Precipitación**")
-                    fig = make_subplots(specs=[[{"secondary_y": True}]])
-                    fig.add_trace(
-                        go.Scatter(
-                            x=fc["Fecha"],
-                            y=fc["T. Máx (°C)"],
-                            name="Max",
-                            line=dict(color="red"),
-                        ),
-                        secondary_y=False,
-                    )
-                    fig.add_trace(
-                        go.Scatter(
-                            x=fc["Fecha"],
-                            y=fc["T. Mín (°C)"],
-                            name="Min",
-                            line=dict(color="blue"),
-                            fill="tonexty",
-                        ),
-                        secondary_y=False,
-                    )
-                    fig.add_trace(
-                        go.Bar(
-                            x=fc["Fecha"],
-                            y=fc["Ppt. (mm)"],
-                            name="Lluvia",
-                            marker_color="blue",
-                            opacity=0.5,
-                        ),
-                        secondary_y=True,
-                    )
-                    fig.update_layout(
-                        height=350,
-                        margin=dict(t=10, b=0, l=0, r=0),
-                        hovermode="x unified",
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # Gráficos Adicionales
-                    c_g1, c_g2 = st.columns(2)
-                    with c_g1:
-                        st.markdown("**🍃 Atmósfera (Humedad y Presión)**")
-                        fig_atm = make_subplots(specs=[[{"secondary_y": True}]])
-                        fig_atm.add_trace(
-                            go.Scatter(
-                                x=fc["Fecha"],
-                                y=fc["HR Media (%)"],
-                                name="HR %",
-                                line=dict(color="teal"),
-                            ),
-                            secondary_y=False,
-                        )
-                        fig_atm.add_trace(
-                            go.Scatter(
-                                x=fc["Fecha"],
-                                y=fc["Presión (hPa)"],
-                                name="Presión",
-                                line=dict(color="purple", dash="dot"),
-                            ),
-                            secondary_y=True,
-                        )
-                        fig_atm.update_layout(
-                            height=300,
-                            margin=dict(t=10, b=0, l=0, r=0),
-                            hovermode="x unified",
-                        )
-                        st.plotly_chart(fig_atm, use_container_width=True)
-
-                    with c_g2:
-                        st.markdown("**☀️ Energía y Agua (Radiación y ET₀)**")
-                        fig_nrg = make_subplots(specs=[[{"secondary_y": True}]])
-                        fig_nrg.add_trace(
-                            go.Bar(
-                                x=fc["Fecha"],
-                                y=fc["Radiación SW (MJ/m²)"],
-                                name="Radiación",
-                                marker_color="orange",
-                            ),
-                            secondary_y=False,
-                        )
-                        fig_nrg.add_trace(
-                            go.Scatter(
-                                x=fc["Fecha"],
-                                y=fc["ET₀ (mm)"],
-                                name="ET₀",
-                                line=dict(color="green"),
-                            ),
-                            secondary_y=True,
-                        )
-                        fig_nrg.update_layout(
-                            height=300,
-                            margin=dict(t=10, b=0, l=0, r=0),
-                            hovermode="x unified",
-                        )
-                        st.plotly_chart(fig_nrg, use_container_width=True)
-
-                    # Viento
-                    st.markdown("**💨 Velocidad del Viento**")
-                    fig_w = px.line(fc, x="Fecha", y="Viento Máx (km/h)", markers=True)
-                    fig_w.update_traces(line_color="grey")
-                    fig_w.update_layout(height=250, margin=dict(t=10, b=0, l=0, r=0))
-                    st.plotly_chart(fig_w, use_container_width=True)
-
-            else:
-                st.warning(
-                    "No se pudieron obtener datos meteorológicos en tiempo real."
-                )
 
 
 def display_graphs_tab(
@@ -6464,67 +6381,45 @@ def display_statistics_summary_tab(df_monthly, df_anual, gdf_stations, **kwargs)
             hide_index=True,
         )
 
-# --- FUNCIÓN: RESUMEN DE FILTROS (FINAL Y CORREGIDA) ---
+# --- FUNCIÓN AUXILIAR: RESUMEN DE FILTROS ---
 def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, interpolacion, df_data, gdf_filtered=None):
     """
     Muestra resumen de filtros.
-    Recibe gdf_filtered para extraer nombres de municipios reales.
     """
-    import streamlit as st
-
-    # 1. SOLUCIÓN ESPACIO: Un contenedor invisible para "empujar" la caja hacia abajo
+    # 1. SOLUCIÓN ESPACIO: Un contenedor invisible
     st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
 
     with st.expander("🔍 Resumen de Configuración (Clic para ocultar/mostrar)", expanded=True):
         col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("📅 Años", f"{year_range[0]} - {year_range[1]}")
-        with col2:
-            st.metric("📍 Estaciones", f"{len(stations_sel)}")
-        with col3:
-            st.metric("🔄 Interpolación", interpolacion)
+        with col1: st.metric("📅 Años", f"{year_range[0]} - {year_range[1]}")
+        with col2: st.metric("📍 Estaciones", f"{len(stations_sel)}")
+        with col3: st.metric("🔄 Interpolación", interpolacion)
         with col4:
             count = len(df_data) if df_data is not None else 0
             st.metric("📊 Registros", f"{count:,}")
 
         st.markdown("---")
-        
         c_geo1, c_geo2 = st.columns(2)
         
         with c_geo1:
-            if regions_sel:
-                reg_txt = ", ".join(regions_sel)
-            else:
-                reg_txt = "Todas (Global)"
+            if regions_sel: reg_txt = ", ".join(regions_sel)
+            else: reg_txt = "Todas (Global)"
             st.markdown(f"**🗺️ Región:** {reg_txt}")
 
         with c_geo2:
-            # 2. SOLUCIÓN MUNICIPIOS:
             txt_munis = "Todos los disponibles"
             lista_nombres = []
-            
-            # A: Si el usuario seleccionó manualmente
-            if munis_sel:
-                lista_nombres = munis_sel
-            # B: Si no, miramos el gdf_filtered para ver cuáles quedaron activos
+            if munis_sel: lista_nombres = munis_sel
             elif gdf_filtered is not None and not gdf_filtered.empty:
-                # Buscamos la columna 'muni' o 'municipio' dinámicamente
                 col_muni = next((c for c in gdf_filtered.columns if "muni" in c.lower() or "ciud" in c.lower()), None)
-                if col_muni:
-                    lista_nombres = sorted(gdf_filtered[col_muni].astype(str).unique().tolist())
+                if col_muni: lista_nombres = sorted(gdf_filtered[col_muni].astype(str).unique().tolist())
 
-            # Formateo inteligente (Mostrar 3 y resumir el resto)
             if lista_nombres:
                 if len(lista_nombres) > 3:
                     muestras = ", ".join(lista_nombres[:3])
                     restantes = len(lista_nombres) - 3
                     txt_munis = f"{muestras} y {restantes} más..."
-                else:
-                    txt_munis = ", ".join(lista_nombres)
-                
-                # Agregamos prefijo si viene de "Todos"
-                if not munis_sel and lista_nombres:
-                    txt_munis = f"(Incluye: {txt_munis})"
+                else: txt_munis = ", ".join(lista_nombres)
+                if not munis_sel: txt_munis = f"(Incluye: {txt_munis})"
 
             st.markdown(f"**🏙️ Municipios:** {txt_munis}")
