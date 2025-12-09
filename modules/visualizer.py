@@ -6573,76 +6573,70 @@ def display_statistics_summary_tab(df_monthly, df_anual, gdf_stations, **kwargs)
             hide_index=True,
         )
 
-# --- FUNCIÓN: RESUMEN DE FILTROS MEJORADO ---
-def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, interpolacion, df_data):
+# --- FUNCIÓN: RESUMEN DE FILTROS (FINAL) ---
+def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, interpolacion, df_data, gdf_filtered=None):
     """
-    Muestra un resumen visual de filtros (Métricas + Geografía) en expander.
-    Incluye espaciado superior y detección inteligente de nombres de municipios.
+    Muestra resumen de filtros. 
+    Recibe gdf_filtered para extraer nombres de municipios reales cuando no se ha seleccionado ninguno.
     """
     import streamlit as st
-    import pandas as pd
 
-    # 1. SOLUCIÓN AL CORTE SUPERIOR: Espacio invisible
-    st.write("") 
+    # 1. SOLUCIÓN ESPACIO: Forzamos salto de línea HTML para bajar la caja
+    st.markdown("<br>", unsafe_allow_html=True)
 
     with st.expander("🔍 Resumen de Configuración (Clic para ocultar/mostrar)", expanded=True):
-        # Fila 1: Métricas Numéricas
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("📅 Rango de Años", f"{year_range[0]} - {year_range[1]}")
-            
+            st.metric("📅 Años", f"{year_range[0]} - {year_range[1]}")
         with col2:
             st.metric("📍 Estaciones", f"{len(stations_sel)}")
-            
         with col3:
             st.metric("🔄 Interpolación", interpolacion)
-            
         with col4:
             count = len(df_data) if df_data is not None else 0
             st.metric("📊 Registros", f"{count:,}")
 
         st.markdown("---")
         
-        # Fila 2: Detalles Geográficos
         c_geo1, c_geo2 = st.columns(2)
         
         with c_geo1:
             if regions_sel:
                 reg_txt = ", ".join(regions_sel)
             else:
-                reg_txt = "Todas las disponibles (Global)"
-            st.markdown(f"**🗺️ Región/Cuenca:** {reg_txt}")
+                reg_txt = "Todas (Global)"
+            st.markdown(f"**🗺️ Región:** {reg_txt}")
 
         with c_geo2:
-            # 2. SOLUCIÓN MUNICIPIOS: Buscar nombres reales en los datos
-            nombres_mostrar = []
+            # 2. SOLUCIÓN MUNICIPIOS: Usamos gdf_filtered para ver los nombres reales
+            nombres = []
+            prefix = ""
             
-            # Caso A: El usuario seleccionó municipios manualmente
+            # A: Usuario seleccionó manualmente
             if munis_sel:
-                nombres_mostrar = munis_sel
-                prefix = ""
-            # Caso B: Dice "Todos", pero queremos ver cuáles son
-            elif df_data is not None and not df_data.empty:
-                # Buscamos la columna de municipio en los datos filtrados
-                cols_muni = [c for c in df_data.columns if "muni" in c.lower() or "ciud" in c.lower()]
+                nombres = munis_sel
+            # B: Usuario dejó "Todos" -> Sacamos los nombres de las estaciones activas
+            elif gdf_filtered is not None and not gdf_filtered.empty:
+                # Buscamos columna de municipio
+                cols_muni = [c for c in gdf_filtered.columns if "muni" in c.lower() or "ciud" in c.lower()]
                 if cols_muni:
-                    col_target = cols_muni[0] # Tomamos la primera coincidencia
-                    nombres_mostrar = df_data[col_target].astype(str).unique().tolist()
+                    # Obtenemos lista única de municipios presentes en los datos
+                    nombres = sorted(gdf_filtered[cols_muni[0]].astype(str).unique().tolist())
                     prefix = "Todos "
-                else:
-                    nombres_mostrar = []
             
-            # Formateo del texto (Top 3 + Resto)
-            if nombres_mostrar:
-                top_3 = nombres_mostrar[:3]
-                resto = len(nombres_mostrar) - 3
-                muni_txt = ", ".join(top_3)
-                if resto > 0:
-                    muni_txt += f" y {resto} más..."
+            # Formateo visual (Top 3)
+            if nombres:
+                if len(nombres) > 3:
+                    top_3 = ", ".join(nombres[:3])
+                    resto = len(nombres) - 3
+                    txt_final = f"{top_3} y {resto} más..."
+                else:
+                    txt_final = ", ".join(nombres)
+                
                 if prefix:
-                    muni_txt = f"{prefix}({muni_txt})"
+                    txt_final = f"{prefix}({txt_final})"
             else:
-                muni_txt = "Todos los disponibles"
+                txt_final = "No detectados"
 
-            st.markdown(f"**🏙️ Municipios:** {muni_txt}")
+            st.markdown(f"**🏙️ Municipios:** {txt_final}")

@@ -224,11 +224,17 @@ def main():
     # --- E. RENDERIZADO ---
     try:
         display_current_filters(
-            stations_sel=stations_for_analysis, regions_sel=sel_regions,
-            munis_sel=sel_munis, year_range=year_range,
-            interpolacion="Si" if apply_interp else "No", df_data=df_monthly_filtered,
+            stations_sel=stations_for_analysis,
+            regions_sel=sel_regions,
+            munis_sel=sel_munis,
+            year_range=year_range,
+            interpolacion="Si" if apply_interp else "No",
+            df_data=df_monthly_filtered,
+            gdf_filtered=gdf_filtered  # <--- ¡ESTA ES LA LÍNEA NUEVA IMPORTANTE!
         )
-    except:
+    except Exception as e:
+        # Puedes descomentar esto si quieres ver errores en pantalla:
+        # st.error(f"Error en resumen: {e}")
         pass
 
     tab_titles = [
