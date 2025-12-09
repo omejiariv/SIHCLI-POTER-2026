@@ -1249,8 +1249,7 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                 )
 
 
-# FUNCIÓN DISTRIBUCIÓN ESPACIAL (CON CAJA DE RESUMEN UNIFICADA)
-# --- FUNCIÓN: PESTAÑA DE DISTRIBUCIÓN ESPACIAL (MAPA POTENCIADO) ---
+# --- FUNCIÓN: PESTAÑA DE DISTRIBUCIÓN ESPACIAL (CORREGIDA) ---
 def display_spatial_distribution_tab(
     user_loc, interpolacion, df_long, df_complete, gdf_stations, gdf_filtered,
     gdf_municipios, gdf_subcuencas, gdf_predios, df_enso, stations_for_analysis,
@@ -1260,43 +1259,51 @@ def display_spatial_distribution_tab(
     """
     Muestra el mapa interactivo con controles avanzados de zoom, descarga y popups.
     """
+    import folium
+    from folium import plugins
+    from streamlit_folium import folium_static
+    import streamlit as st
+    import pandas as pd
+    from modules.config import Config # Aseguramos importar Config
+
     st.markdown("### 🗺️ Distribución Espacial y Análisis Puntual")
     
-    # Pestañas internas
-    tab_mapa, tab_disp, tab_series = st.tabs(["📍 Mapa Interactivo", "📊 Disponibilidad", "📅 Series Anuales"])
+    # 1. DEFINICIÓN DE PESTAÑAS (Variables unificadas)
+    # Usamos 'tab_avail' explícitamente para evitar el NameError
+    tab_mapa, tab_avail, tab_series = st.tabs(["📍 Mapa Interactivo", "📊 Disponibilidad", "📅 Series Anuales"])
 
     # --- PESTAÑA 1: MAPA INTERACTIVO ---
     with tab_mapa:
         st.markdown("##### Explorador Geoespacial")
         
-        # 1. CONTROLES DE ZOOM (REQ 2)
-        # Usamos columnas para los botones de escala
-        col_z1, col_z2, col_z3 = st.columns([1, 1, 3])
+        # CONTROLES DE ZOOM
+        col_z1, col_z2 = st.columns([1, 3])
         zoom_level = 8
         location_center = [6.5, -75.5] # Default Antioquia
 
-        # Lógica de escala
-        escala = st.radio(
-            "🔎 Escala de Visualización:",
-            ["Colombia", "Antioquia", "Región Seleccionada"],
-            horizontal=True,
-            index=1 # Por defecto Antioquia
-        )
+        with col_z1:
+            escala = st.radio(
+                "🔎 Zoom Rápido:",
+                ["Colombia", "Antioquia", "Región Actual"],
+                horizontal=False,
+                index=1
+            )
 
+        # Lógica de escala
         if escala == "Colombia":
             location_center = [4.57, -74.29]
             zoom_level = 6
         elif escala == "Antioquia":
             location_center = [7.0, -75.5]
             zoom_level = 8
-        elif escala == "Región Seleccionada" and not gdf_filtered.empty:
-            # Calculamos centroide de los puntos filtrados
-            centroid = gdf_filtered.dissolve().centroid
-            if not centroid.empty:
-                location_center = [centroid.y[0], centroid.x[0]]
-                zoom_level = 10
-            else:
-                st.toast("No hay región seleccionada para centrar.")
+        elif escala == "Región Actual" and not gdf_filtered.empty:
+            try:
+                centroid = gdf_filtered.dissolve().centroid
+                if not centroid.empty:
+                    location_center = [centroid.geometry[0].y, centroid.geometry[0].x]
+                    zoom_level = 9
+            except:
+                pass # Fallback si falla el cálculo geométrico
 
         # Creación del Mapa Base
         m = folium.Map(
@@ -1306,62 +1313,55 @@ def display_spatial_distribution_tab(
             control_scale=True
         )
 
-        # 2. FULLSCREEN (REQ 3)
+        # FULLSCREEN
         plugins.Fullscreen(
             position="topright",
-            title="Ver en Pantalla Completa",
-            title_cancel="Salir de Pantalla Completa",
+            title="Pantalla Completa",
+            title_cancel="Salir",
             force_separate_button=True,
         ).add_to(m)
 
-        # 3. POPUPS DETALLADOS (REQ 5)
-        # Detectamos columnas dinámicamente
+        # POPUPS DETALLADOS
         if not gdf_filtered.empty:
+            # Detección inteligente de columnas para el popup
             cols = gdf_filtered.columns
-            # Buscamos nombres de columnas (insensible a mayúsculas)
             c_muni = next((c for c in cols if "muni" in c.lower()), "Municipio")
             c_alt = next((c for c in cols if "alt" in c.lower() or "elev" in c.lower()), "Altitud")
-            c_cuenca = next((c for c in cols if "cuenca" in c.lower() or "region" in c.lower() or "zona" in c.lower()), "Cuenca")
-            c_nombre = next((c for c in cols if "nom" in c.lower() or "estacion" in c.lower()), "Nombre")
+            c_cuenca = next((c for c in cols if "cuenca" in c.lower() or "region" in c.lower()), "Cuenca")
+            c_nombre = next((c for c in cols if "nom" in c.lower() or "estacion" in c.lower()), Config.STATION_NAME_COL)
 
             for _, row in gdf_filtered.iterrows():
-                # HTML para el popup
+                # Validar que los datos existan
+                val_muni = row[c_muni] if c_muni in row else "N/A"
+                val_alt = row[c_alt] if c_alt in row else "N/A"
+                val_cuenca = row[c_cuenca] if c_cuenca in row else "N/A"
+                
                 html_popup = f"""
-                <div style="font-family: sans-serif; width: 200px;">
-                    <h5 style="margin-bottom: 5px; color: #2c3e50;">🌧️ {row[c_nombre]}</h5>
+                <div style="font-family: sans-serif; width: 180px;">
+                    <h5 style="margin: 0; color: #1f77b4;">{row[c_nombre]}</h5>
                     <hr style="margin: 5px 0;">
-                    <b>🏙️ Municipio:</b> {row[c_muni]}<br>
-                    <b>⛰️ Altitud:</b> {row[c_alt]} msnm<br>
-                    <b>🌊 Cuenca/Zona:</b> {row[c_cuenca]}<br>
-                    <b>📍 Coords:</b> {row.geometry.y:.4f}, {row.geometry.x:.4f}
+                    <b>🏙️:</b> {val_muni}<br>
+                    <b>⛰️:</b> {val_alt} msnm<br>
+                    <b>🌊:</b> {val_cuenca}<br>
                 </div>
                 """
                 folium.Marker(
                     location=[row.geometry.y, row.geometry.x],
-                    tooltip=f"{row[c_nombre]} (Clic para detalles)",
-                    popup=folium.Popup(html_popup, max_width=250),
-                    icon=folium.Icon(color="blue", icon="cloud", prefix="fa")
+                    popup=folium.Popup(html_popup, max_width=200),
+                    tooltip=f"{row[c_nombre]}",
+                    icon=folium.Icon(color="blue", icon="info-sign")
                 ).add_to(m)
 
-        # Capas adicionales (Municipios, Subcuencas) si existen
-        # (Aquí puedes agregar tu lógica de capas GeoJSON si la tienes disponible en gdf_municipios, etc.)
-        
-        # REQ 1: VISIBILIDAD INMEDIATA
-        # Usamos folium_static con dimensiones fijas para evitar el colapso del div
-        st_data = folium_static(m, width=1100, height=600)
+        # RENDERIZADO ESTÁTICO (Evita que el mapa salga en blanco al cambiar pestañas)
+        map_data = folium_static(m, width=1100, height=600)
 
-        # 4. BOTÓN DE DESCARGA (REQ 4)
-        col_d1, col_d2 = st.columns([3, 1])
-        with col_d2:
-            # Guardamos el mapa como HTML en memoria
-            map_html = m._repr_html_()
-            st.download_button(
-                label="🌍 Descargar Mapa (HTML)",
-                data=map_html,
-                file_name="mapa_sihcli_poter.html",
-                mime="text/html",
-                help="Descarga este mapa para abrirlo en cualquier navegador web aparte."
-            )
+        # BOTÓN DE DESCARGA
+        st.download_button(
+            label="💾 Descargar Mapa como HTML",
+            data=m._repr_html_(),
+            file_name="mapa_sihcli.html",
+            mime="text/html"
+        )
 
     # ==========================================
     # PESTAÑA 2: DISPONIBILIDAD (ACTUALIZADA CON SELECTOR)
