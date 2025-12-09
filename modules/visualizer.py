@@ -1249,7 +1249,7 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                 )
 
 
-# --- FUNCIÓN: PESTAÑA DE DISTRIBUCIÓN ESPACIAL (FINAL Y VERIFICADA) ---
+# --- FUNCIÓN: PESTAÑA DE DISTRIBUCIÓN ESPACIAL (ARREGLADA) ---
 def display_spatial_distribution_tab(
     user_loc, interpolacion, df_long, df_complete, gdf_stations, gdf_filtered,
     gdf_municipios, gdf_subcuencas, gdf_predios, df_enso, stations_for_analysis,
@@ -1257,7 +1257,7 @@ def display_spatial_distribution_tab(
     selected_municipios, selected_months, year_range, start_date, end_date
 ):
     """
-    Muestra el mapa interactivo con controles avanzados de zoom, descarga y popups.
+    Muestra el mapa interactivo con controles avanzados y gráficas corregidas.
     """
     import folium
     from folium import plugins
@@ -1269,8 +1269,7 @@ def display_spatial_distribution_tab(
 
     st.markdown("### 🗺️ Distribución Espacial y Análisis Puntual")
     
-    # 1. DEFINICIÓN DE PESTAÑAS (Variables Maestras)
-    # Aquí definimos: tab_mapa, tab_avail, tab_series
+    # 1. Definición de Pestañas
     tab_mapa, tab_avail, tab_series = st.tabs(["📍 Mapa Interactivo", "📊 Disponibilidad", "📅 Series Anuales"])
 
     # --- PESTAÑA 1: MAPA INTERACTIVO ---
@@ -1289,7 +1288,6 @@ def display_spatial_distribution_tab(
                 index=1
             )
 
-        # Lógica de escala
         if escala == "Colombia":
             location_center = [4.57, -74.29]
             zoom_level = 6
@@ -1305,7 +1303,6 @@ def display_spatial_distribution_tab(
             except:
                 pass
 
-        # Mapa Base
         m = folium.Map(
             location=location_center,
             zoom_start=zoom_level,
@@ -1313,7 +1310,6 @@ def display_spatial_distribution_tab(
             control_scale=True
         )
 
-        # Pantalla Completa
         plugins.Fullscreen(
             position="topright",
             title="Pantalla Completa",
@@ -1321,10 +1317,8 @@ def display_spatial_distribution_tab(
             force_separate_button=True,
         ).add_to(m)
 
-        # Marcadores
         if not gdf_filtered.empty:
             cols = gdf_filtered.columns
-            # Búsqueda robusta de columnas
             c_muni = next((c for c in cols if "muni" in c.lower()), "Municipio")
             c_alt = next((c for c in cols if "alt" in c.lower() or "elev" in c.lower()), "Altitud")
             c_cuenca = next((c for c in cols if "cuenca" in c.lower() or "region" in c.lower()), "Cuenca")
@@ -1498,9 +1492,9 @@ def display_spatial_distribution_tab(
     # --- PESTAÑA 3: SERIES ANUALES ---
     with tab_series:
         st.markdown("#### 📅 Series de Precipitación Anual Acumulada")
-        if df_anual is not None and not df_anual.empty:
+        if df_anual_melted is not None and not df_anual_melted.empty:
             fig_lines = px.line(
-                df_anual,
+                df_anual_melted,
                 x=Config.YEAR_COL,
                 y=Config.PRECIPITATION_COL,
                 color=Config.STATION_NAME_COL,
