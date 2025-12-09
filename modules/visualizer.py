@@ -19,7 +19,7 @@ from scipy import stats
 from scipy.interpolate import Rbf, griddata
 from shapely.geometry import Point
 from statsmodels.tsa.seasonal import seasonal_decompose
-from streamlit_folium import st_folium
+from streamlit_folium import st_folium, folium_static
 
 import modules.life_zones as lz
 # Módulos Internos
