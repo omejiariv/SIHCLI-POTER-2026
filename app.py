@@ -230,11 +230,11 @@ def main():
             year_range=year_range,
             interpolacion="Si" if apply_interp else "No",
             df_data=df_monthly_filtered,
-            gdf_filtered=gdf_filtered  # <--- ¡ESTA ES LA LÍNEA NUEVA IMPORTANTE!
+            gdf_filtered=gdf_filtered  # <--- ¡ESTA LÍNEA ES OBLIGATORIA!
         )
     except Exception as e:
-        # Puedes descomentar esto si quieres ver errores en pantalla:
-        # st.error(f"Error en resumen: {e}")
+        # Si algo falla, que no rompa la app, pero intenta mostrarlo
+        # st.error(f"Error filtro: {e}") 
         pass
 
     tab_titles = [

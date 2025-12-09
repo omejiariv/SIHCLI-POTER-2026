@@ -6573,27 +6573,26 @@ def display_statistics_summary_tab(df_monthly, df_anual, gdf_stations, **kwargs)
             hide_index=True,
         )
 
-# --- FUNCIÓN: RESUMEN DE FILTROS (VERSIÓN ESTABLE ANTERIOR) ---
+# --- FUNCIÓN: RESUMEN DE FILTROS (FINAL Y CORREGIDA) ---
 def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, interpolacion, df_data, gdf_filtered=None):
     """
-    Muestra un resumen visual de los filtros activos.
-    Versión estable recuperada.
+    Muestra resumen de filtros.
+    Recibe gdf_filtered para extraer nombres de municipios reales.
     """
     import streamlit as st
 
-    # Sin hacks de HTML, solo el expander estándar que funcionaba
+    # 1. SOLUCIÓN ESPACIO: Un contenedor invisible para "empujar" la caja hacia abajo
+    st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+
     with st.expander("🔍 Resumen de Configuración (Clic para ocultar/mostrar)", expanded=True):
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("📅 Rango de Años", f"{year_range[0]} - {year_range[1]}")
-            
+            st.metric("📅 Años", f"{year_range[0]} - {year_range[1]}")
         with col2:
             st.metric("📍 Estaciones", f"{len(stations_sel)}")
-            
         with col3:
             st.metric("🔄 Interpolación", interpolacion)
-            
         with col4:
             count = len(df_data) if df_data is not None else 0
             st.metric("📊 Registros", f"{count:,}")
@@ -6606,16 +6605,35 @@ def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, in
             if regions_sel:
                 reg_txt = ", ".join(regions_sel)
             else:
-                reg_txt = "Todas las disponibles"
-            st.markdown(f"**🗺️ Regiones:** {reg_txt}")
+                reg_txt = "Todas (Global)"
+            st.markdown(f"**🗺️ Región:** {reg_txt}")
 
         with c_geo2:
+            # 2. SOLUCIÓN MUNICIPIOS:
+            txt_munis = "Todos los disponibles"
+            lista_nombres = []
+            
+            # A: Si el usuario seleccionó manualmente
             if munis_sel:
-                top_3 = munis_sel[:3]
-                resto = len(munis_sel) - 3
-                muni_txt = ", ".join(top_3)
-                if resto > 0:
-                    muni_txt += f" y {resto} más..."
-            else:
-                muni_txt = "Todos los disponibles"
-            st.markdown(f"**🏙️ Municipios:** {muni_txt}")
+                lista_nombres = munis_sel
+            # B: Si no, miramos el gdf_filtered para ver cuáles quedaron activos
+            elif gdf_filtered is not None and not gdf_filtered.empty:
+                # Buscamos la columna 'muni' o 'municipio' dinámicamente
+                col_muni = next((c for c in gdf_filtered.columns if "muni" in c.lower() or "ciud" in c.lower()), None)
+                if col_muni:
+                    lista_nombres = sorted(gdf_filtered[col_muni].astype(str).unique().tolist())
+
+            # Formateo inteligente (Mostrar 3 y resumir el resto)
+            if lista_nombres:
+                if len(lista_nombres) > 3:
+                    muestras = ", ".join(lista_nombres[:3])
+                    restantes = len(lista_nombres) - 3
+                    txt_munis = f"{muestras} y {restantes} más..."
+                else:
+                    txt_munis = ", ".join(lista_nombres)
+                
+                # Agregamos prefijo si viene de "Todos"
+                if not munis_sel and lista_nombres:
+                    txt_munis = f"(Incluye: {txt_munis})"
+
+            st.markdown(f"**🏙️ Municipios:** {txt_munis}")
