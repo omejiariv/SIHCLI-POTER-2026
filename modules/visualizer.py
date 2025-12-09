@@ -6573,28 +6573,52 @@ def display_statistics_summary_tab(df_monthly, df_anual, gdf_stations, **kwargs)
             hide_index=True,
         )
 
-# --- FUNCIÓN RECUPERADA: RESUMEN DE FILTROS ---
+# --- FUNCIÓN: RESUMEN DE FILTROS (CON DETALLE GEOGRÁFICO) ---
 def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, interpolacion, df_data):
     """
-    Muestra un resumen visual (métricas) de los filtros activos en la parte superior.
+    Muestra un resumen visual de filtros (Métricas + Geografía) en expander.
     """
-    import streamlit as st  # Importación local por seguridad
+    import streamlit as st
 
-    st.markdown("### 🔍 Resumen de Configuración")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("📅 Rango de Años", f"{year_range[0]} - {year_range[1]}")
+    with st.expander("🔍 Resumen de Configuración (Clic para ocultar/mostrar)", expanded=True):
+        # Fila 1: Métricas Numéricas
+        col1, col2, col3, col4 = st.columns(4)
         
-    with col2:
-        st.metric("📍 Estaciones Seleccionadas", f"{len(stations_sel)}")
-        
-    with col3:
-        st.metric("🔄 Interpolación", interpolacion)
-        
-    with col4:
-        count = len(df_data) if df_data is not None else 0
-        st.metric("📊 Registros Cargados", f"{count:,}")
+        with col1:
+            st.metric("📅 Rango de Años", f"{year_range[0]} - {year_range[1]}")
+            
+        with col2:
+            st.metric("📍 Estaciones", f"{len(stations_sel)}")
+            
+        with col3:
+            st.metric("🔄 Interpolación", interpolacion)
+            
+        with col4:
+            count = len(df_data) if df_data is not None else 0
+            st.metric("📊 Registros", f"{count:,}")
 
-    st.markdown("---")
+        # Separador visual
+        st.markdown("---")
+        
+        # Fila 2: Detalles Geográficos (Lo que pediste)
+        c_geo1, c_geo2 = st.columns(2)
+        
+        with c_geo1:
+            # Lógica para Regiones
+            if regions_sel:
+                reg_txt = ", ".join(regions_sel)
+            else:
+                reg_txt = "Todas las disponibles"
+            st.markdown(f"**🗺️ Regiones:** {reg_txt}")
+
+        with c_geo2:
+            # Lógica para Municipios (Mostrar 3 y resumir el resto)
+            if munis_sel:
+                top_3 = munis_sel[:3]
+                resto = len(munis_sel) - 3
+                muni_txt = ", ".join(top_3)
+                if resto > 0:
+                    muni_txt += f" y {resto} más..."
+            else:
+                muni_txt = "Todos los disponibles"
+            st.markdown(f"**🏙️ Municipios:** {muni_txt}")
