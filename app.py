@@ -77,41 +77,45 @@ def main():
         st.error("No se pudieron cargar los datos. Revise la conexión.")
         st.stop()
 
-    # --- C. FILTROS (EXPANDER SUPERIOR) ---
-    with st.expander("🎛️ Filtros y Configuración (Clic para desplegar)", expanded=True):
-        col_f1, col_f2, col_f3 = st.columns(3)
+    # --- C. FILTROS (BARRA LATERAL / SIDEBAR) ---
+    with st.sidebar:
+        st.header("🎛️ Filtros")
         
-        with col_f1:
-            st.markdown("##### Estaciones")
-            if Config.STATION_NAME_COL in df_long.columns:
-                lista_estaciones = df_long[Config.STATION_NAME_COL].unique()
-                stations_for_analysis = st.multiselect(
-                    "Seleccione Estación(es):",
-                    options=lista_estaciones,
-                    default=lista_estaciones
-                )
-            else:
-                st.error(f"Columna {Config.STATION_NAME_COL} no encontrada.")
-                stations_for_analysis = []
-
-        with col_f2:
-            st.markdown("##### Rango de Años")
-            min_year = int(df_long[Config.YEAR_COL].min())
-            max_year = int(df_long[Config.YEAR_COL].max())
-            
-            year_range = st.slider(
-                "Seleccione periodo:",
-                min_value=min_year,
-                max_value=max_year,
-                value=(min_year, max_year)
+        # 1. ESTACIONES
+        st.markdown("##### Estaciones")
+        if Config.STATION_NAME_COL in df_long.columns:
+            lista_estaciones = df_long[Config.STATION_NAME_COL].unique()
+            stations_for_analysis = st.multiselect(
+                "Seleccione Estación(es):",
+                options=lista_estaciones,
+                default=lista_estaciones
             )
+        else:
+            st.error(f"Columna {Config.STATION_NAME_COL} no encontrada.")
+            stations_for_analysis = []
 
-        with col_f3:
-            st.markdown("##### Opciones")
-            apply_interp = st.checkbox(
-                "Aplicar Interpolación", value=False, key="apply_interpolation"
-            )
-            analysis_mode = "Anual" 
+        st.markdown("---") # Separador visual
+
+        # 2. RANGO DE AÑOS
+        st.markdown("##### Rango de Años")
+        min_year = int(df_long[Config.YEAR_COL].min())
+        max_year = int(df_long[Config.YEAR_COL].max())
+        
+        year_range = st.slider(
+            "Seleccione periodo:",
+            min_value=min_year,
+            max_value=max_year,
+            value=(min_year, max_year)
+        )
+
+        st.markdown("---") # Separador visual
+
+        # 3. OPCIONES
+        st.markdown("##### Opciones")
+        apply_interp = st.checkbox(
+            "Aplicar Interpolación", value=False, key="apply_interpolation"
+        )
+        analysis_mode = "Anual"
 
     # --- D. APLICAR FILTROS ---
     mask_base = (
