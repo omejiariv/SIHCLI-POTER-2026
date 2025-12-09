@@ -1249,7 +1249,7 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                 )
 
 
-# --- FUNCIÓN: PESTAÑA DE DISTRIBUCIÓN ESPACIAL (CORREGIDA) ---
+# --- FUNCIÓN: PESTAÑA DE DISTRIBUCIÓN ESPACIAL (NOMBRES CORREGIDOS) ---
 def display_spatial_distribution_tab(
     user_loc, interpolacion, df_long, df_complete, gdf_stations, gdf_filtered,
     gdf_municipios, gdf_subcuencas, gdf_predios, df_enso, stations_for_analysis,
@@ -1264,19 +1264,19 @@ def display_spatial_distribution_tab(
     from streamlit_folium import folium_static
     import streamlit as st
     import pandas as pd
-    from modules.config import Config # Aseguramos importar Config
+    import plotly.express as px  # Necesario para la gráfica de series
+    from modules.config import Config
 
     st.markdown("### 🗺️ Distribución Espacial y Análisis Puntual")
     
-    # 1. DEFINICIÓN DE PESTAÑAS (Variables unificadas)
-    # Usamos 'tab_avail' explícitamente para evitar el NameError
+    # 1. DEFINICIÓN DE PESTAÑAS (Aquí nacen las variables)
+    # Definimos explícitamente: tab_mapa, tab_avail, tab_series
     tab_mapa, tab_avail, tab_series = st.tabs(["📍 Mapa Interactivo", "📊 Disponibilidad", "📅 Series Anuales"])
 
     # --- PESTAÑA 1: MAPA INTERACTIVO ---
     with tab_mapa:
         st.markdown("##### Explorador Geoespacial")
         
-        # CONTROLES DE ZOOM
         col_z1, col_z2 = st.columns([1, 3])
         zoom_level = 8
         location_center = [6.5, -75.5] # Default Antioquia
@@ -1289,7 +1289,6 @@ def display_spatial_distribution_tab(
                 index=1
             )
 
-        # Lógica de escala
         if escala == "Colombia":
             location_center = [4.57, -74.29]
             zoom_level = 6
@@ -1303,9 +1302,8 @@ def display_spatial_distribution_tab(
                     location_center = [centroid.geometry[0].y, centroid.geometry[0].x]
                     zoom_level = 9
             except:
-                pass # Fallback si falla el cálculo geométrico
+                pass
 
-        # Creación del Mapa Base
         m = folium.Map(
             location=location_center,
             zoom_start=zoom_level,
@@ -1313,7 +1311,6 @@ def display_spatial_distribution_tab(
             control_scale=True
         )
 
-        # FULLSCREEN
         plugins.Fullscreen(
             position="topright",
             title="Pantalla Completa",
@@ -1321,17 +1318,15 @@ def display_spatial_distribution_tab(
             force_separate_button=True,
         ).add_to(m)
 
-        # POPUPS DETALLADOS
         if not gdf_filtered.empty:
-            # Detección inteligente de columnas para el popup
             cols = gdf_filtered.columns
+            # Búsqueda robusta de columnas
             c_muni = next((c for c in cols if "muni" in c.lower()), "Municipio")
             c_alt = next((c for c in cols if "alt" in c.lower() or "elev" in c.lower()), "Altitud")
             c_cuenca = next((c for c in cols if "cuenca" in c.lower() or "region" in c.lower()), "Cuenca")
             c_nombre = next((c for c in cols if "nom" in c.lower() or "estacion" in c.lower()), Config.STATION_NAME_COL)
 
             for _, row in gdf_filtered.iterrows():
-                # Validar que los datos existan
                 val_muni = row[c_muni] if c_muni in row else "N/A"
                 val_alt = row[c_alt] if c_alt in row else "N/A"
                 val_cuenca = row[c_cuenca] if c_cuenca in row else "N/A"
@@ -1352,10 +1347,8 @@ def display_spatial_distribution_tab(
                     icon=folium.Icon(color="blue", icon="info-sign")
                 ).add_to(m)
 
-        # RENDERIZADO ESTÁTICO (Evita que el mapa salga en blanco al cambiar pestañas)
         map_data = folium_static(m, width=1100, height=600)
 
-        # BOTÓN DE DESCARGA
         st.download_button(
             label="💾 Descargar Mapa como HTML",
             data=m._repr_html_(),
