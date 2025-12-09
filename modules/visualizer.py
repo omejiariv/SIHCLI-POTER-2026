@@ -1489,38 +1489,31 @@ def display_spatial_distribution_tab(
         else:
             st.warning("No hay datos cargados.")
 
-    # --- PESTAÑA 3: SERIES ANUALES ---
+# --- PESTAÑA 3: SERIES ANUALES ---
     with tab_series:
-        st.markdown("#### 📅 Series de Precipitación Anual Acumulada")
+        st.markdown("##### 📈 Series Históricas")
         if df_anual_melted is not None and not df_anual_melted.empty:
-            fig_lines = px.line(
-                df_anual_melted,
-                x=Config.YEAR_COL,
-                y=Config.PRECIPITATION_COL,
+            # Gráfico
+            fig = px.line(
+                df_anual_melted, 
+                x=Config.YEAR_COL, 
+                y=Config.PRECIPITATION_COL, 
                 color=Config.STATION_NAME_COL,
-                markers=True,
-                title="Evolución Anual",
-                labels={
-                    Config.PRECIPITATION_COL: "Ppt Total (mm)",
-                    Config.YEAR_COL: "Año",
-                },
+                title="Precipitación Anual por Estación"
             )
-            fig_lines.update_layout(
-                hovermode="x unified", legend=dict(orientation="h", y=-0.2)
-            )
-            st.plotly_chart(fig_lines, use_container_width=True)
-
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Tabla de Datos (AQUÍ ESTABA EL ERROR)
             with st.expander("Ver Datos en Tabla"):
-                pivot_anual = df_anual.pivot(
+                # CORRECCIÓN: Usamos df_anual_melted en lugar de df_anual
+                pivot_anual = df_anual_melted.pivot(
                     index=Config.YEAR_COL,
                     columns=Config.STATION_NAME_COL,
-                    values=Config.PRECIPITATION_COL,
+                    values=Config.PRECIPITATION_COL
                 )
-                st.dataframe(
-                    pivot_anual.style.format("{:.0f}"), use_container_width=True
-                )
+                st.dataframe(pivot_anual, use_container_width=True)
         else:
-            st.info("No hay datos anuales disponibles.")
+            st.warning("No hay datos suficientes para graficar series.")
 
     # --- 3. ANÁLISIS DEL PUNTO SELECCIONADO ---
     if st.session_state.selected_point:
