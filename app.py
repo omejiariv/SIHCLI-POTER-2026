@@ -13,7 +13,6 @@ try:
     from modules.config import Config
     from modules.data_processor import complete_series, load_and_process_all_data
     from modules.reporter import generate_pdf_report
-    # from modules.sidebar import create_sidebar  <-- YA NO USAMOS ESTO
     
     # Intentamos importar db_manager
     try:
@@ -50,7 +49,7 @@ def main():
     if DB_AVAILABLE:
         try:
             db_manager.init_db()
-        except:
+        except Exception:
             pass
 
     for k in ["lz_raster_result", "lz_profile", "lz_names", "lz_colors"]:
@@ -64,7 +63,7 @@ def main():
             (
                 gdf_stations,
                 gdf_municipios,
-                df_long,  # <--- ESTA ES TU VARIABLE DE DATOS REAL
+                df_long,
                 df_enso,
                 gdf_subcuencas,
                 gdf_predios,
@@ -78,13 +77,12 @@ def main():
         st.error("No se pudieron cargar los datos. Revise la conexión.")
         st.stop()
 
-    # --- C. FILTROS (NUEVO EXPANDER SUPERIOR) ---
+    # --- C. FILTROS (EXPANDER SUPERIOR) ---
     with st.expander("🎛️ Filtros y Configuración (Clic para desplegar)", expanded=True):
         col_f1, col_f2, col_f3 = st.columns(3)
         
         with col_f1:
             st.markdown("##### Estaciones")
-            # Usamos df_long, NO df
             if Config.STATION_NAME_COL in df_long.columns:
                 lista_estaciones = df_long[Config.STATION_NAME_COL].unique()
                 stations_for_analysis = st.multiselect(
@@ -110,30 +108,25 @@ def main():
 
         with col_f3:
             st.markdown("##### Opciones")
-            apply_interp = st.checkbox("Aplicar Interpolación", value=False, key="apply_interpolation")
+            apply_interp = st.checkbox(
+                "Aplicar Interpolación", value=False, key="apply_interpolation"
+            )
             analysis_mode = "Anual" 
 
-    # --- D. APLICAR FILTROS (Lógica Manual) ---
-    
-    # 1. Crear máscara de filtros
+    # --- D. APLICAR FILTROS ---
     mask_base = (
         (df_long[Config.YEAR_COL] >= year_range[0])
         & (df_long[Config.YEAR_COL] <= year_range[1])
         & (df_long[Config.STATION_NAME_COL].isin(stations_for_analysis))
     )
     
-    # 2. Filtrar DataFrame Principal
     df_monthly_filtered = df_long.loc[mask_base].copy()
-    
-    # 3. Filtrar GeoDataFrame de Estaciones
     gdf_filtered = gdf_stations[gdf_stations[Config.STATION_NAME_COL].isin(stations_for_analysis)]
 
-    # 4. Interpolación (Si aplica)
     if apply_interp:
         with st.spinner("Interpolando..."):
             df_monthly_filtered = complete_series(df_monthly_filtered)
     
-    # 5. Crear agregado Anual
     df_anual_melted = (
         df_monthly_filtered.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[
             Config.PRECIPITATION_COL
@@ -142,19 +135,17 @@ def main():
         .reset_index()
     )
 
-    # 6. Definir fechas inicio/fin para visualización
     start_date = pd.to_datetime(f"{year_range[0]}-01-01")
     end_date = pd.to_datetime(f"{year_range[1]}-12-31")
 
-    # --- E. PREPARAR ARGUMENTOS ---
-    # Variables vacías que antes venían de sidebar
+    # Variables vacías (legacy support)
     sel_regions = []
     sel_munis = []
     selected_months = list(range(1, 13))
 
     display_args = {
         "df_long": df_monthly_filtered,
-        "df_complete": df_monthly_filtered, # Usamos el filtrado como base
+        "df_complete": df_monthly_filtered,
         "gdf_stations": gdf_stations,
         "gdf_filtered": gdf_filtered,
         "gdf_municipios": gdf_municipios,
@@ -173,9 +164,7 @@ def main():
         "end_date": end_date,
     }
 
-    # --- F. RENDERIZADO DE PESTAÑAS ---
-
-    # Resumen de filtros
+    # --- E. RENDERIZADO ---
     try:
         display_current_filters(
             stations_sel=stations_for_analysis,
@@ -185,7 +174,7 @@ def main():
             interpolacion="Si" if apply_interp else "No",
             df_data=df_monthly_filtered,
         )
-    except:
+    except Exception:
         pass
 
     tab_titles = [
@@ -198,44 +187,80 @@ def main():
 
     tabs = st.tabs(tab_titles)
 
-    with tabs[0]: display_welcome_tab()
-    with tabs[1]: display_realtime_dashboard(df_monthly_filtered, gdf_stations, gdf_filtered)
-    with tabs[2]: display_spatial_distribution_tab(user_loc=None, interpolacion="Si" if apply_interp else "No", **display_args)
-    with tabs[3]: display_graphs_tab(**display_args)
+    # --- CORRECCIÓN E701: Todo indentado ---
+    with tabs[0]:
+        display_welcome_tab()
     
-    with tabs[4]: 
-        # Aquí está la matriz que vamos a arreglar en el paso 2
+    with tabs[1]:
+        display_realtime_dashboard(df_monthly_filtered, gdf_stations, gdf_filtered)
+    
+    with tabs[2]:
+        display_spatial_distribution_tab(
+            user_loc=None, 
+            interpolacion="Si" if apply_interp else "No", 
+            **display_args
+        )
+    
+    with tabs[3]:
+        display_graphs_tab(**display_args)
+    
+    with tabs[4]:
         display_stats_tab(**display_args)
         st.markdown("---")
         display_station_table_tab(**display_args)
 
-    with tabs[5]: display_climate_forecast_tab(**display_args)
-    with tabs[6]: display_trends_and_forecast_tab(**display_args)
-    with tabs[7]: display_anomalies_tab(**display_args)
-    with tabs[8]: display_correlation_tab(**display_args)
-    with tabs[9]: display_drought_analysis_tab(**display_args)
-    with tabs[10]: display_advanced_maps_tab(**display_args)
+    with tabs[5]:
+        display_climate_forecast_tab(**display_args)
+    
+    with tabs[6]:
+        display_trends_and_forecast_tab(**display_args)
+    
+    with tabs[7]:
+        display_anomalies_tab(**display_args)
+    
+    with tabs[8]:
+        display_correlation_tab(**display_args)
+    
+    with tabs[9]:
+        display_drought_analysis_tab(**display_args)
+    
+    with tabs[10]:
+        display_advanced_maps_tab(**display_args)
 
     with tabs[11]:
         try:
             from modules.visualizer import display_bias_correction_tab
             display_bias_correction_tab(**display_args)
-        except:
+        except Exception:
             st.info("Módulo Sesgo cargando...")
 
-    with tabs[12]: display_land_cover_analysis_tab(**display_args)
-    with tabs[13]: display_life_zones_tab(**display_args)
-    with tabs[14]: display_climate_scenarios_tab(**display_args)
+    with tabs[12]:
+        display_land_cover_analysis_tab(**display_args)
+    
+    with tabs[13]:
+        display_life_zones_tab(**display_args)
+    
+    with tabs[14]:
+        display_climate_scenarios_tab(**display_args)
 
     with tabs[15]:
         st.header("Reporte PDF")
         if st.button("Generar Reporte"):
-            res = {"n_estaciones": len(stations_for_analysis), "rango": f"{year_range}"}
+            res = {
+                "n_estaciones": len(stations_for_analysis), 
+                "rango": f"{year_range}"
+            }
             pdf = generate_pdf_report(df_monthly_filtered, gdf_filtered, res)
             if pdf:
-                st.download_button("Descargar", pdf, "reporte.pdf", "application/pdf")
+                st.download_button(
+                    "Descargar", pdf, "reporte.pdf", "application/pdf"
+                )
 
-    st.markdown("""<style>.stTabs [data-baseweb="tab-panel"] { padding-top: 1rem; }</style>""", unsafe_allow_html=True)
+    st.markdown(
+        """<style>.stTabs [data-baseweb="tab-panel"] { padding-top: 1rem; }</style>""",
+        unsafe_allow_html=True,
+    )
+
 
 if __name__ == "__main__":
     main()
