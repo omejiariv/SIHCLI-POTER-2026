@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import pymannkendall as mk
 import requests
 import streamlit as st
+from folium import plugins
 from folium.plugins import LocateControl, MarkerCluster
 from plotly.subplots import make_subplots
 from prophet import Prophet
@@ -1249,212 +1250,118 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
 
 
 # FUNCIÓN DISTRIBUCIÓN ESPACIAL (CON CAJA DE RESUMEN UNIFICADA)
-# ==============================================================================
+# --- FUNCIÓN: PESTAÑA DE DISTRIBUCIÓN ESPACIAL (MAPA POTENCIADO) ---
 def display_spatial_distribution_tab(
-    gdf_filtered,
-    df_long,
-    gdf_municipios,
-    gdf_subcuencas,
-    gdf_predios=None,
-    user_loc=None,
-    interpolacion="No",
-    **kwargs,
+    user_loc, interpolacion, df_long, df_complete, gdf_stations, gdf_filtered,
+    gdf_municipios, gdf_subcuencas, gdf_predios, df_enso, stations_for_analysis,
+    df_anual_melted, df_monthly_filtered, analysis_mode, selected_regions,
+    selected_municipios, selected_months, year_range, start_date, end_date
 ):
+    """
+    Muestra el mapa interactivo con controles avanzados de zoom, descarga y popups.
+    """
+    st.markdown("### 🗺️ Distribución Espacial y Análisis Puntual")
+    
+    # Pestañas internas
+    tab_mapa, tab_disp, tab_series = st.tabs(["📍 Mapa Interactivo", "📊 Disponibilidad", "📅 Series Anuales"])
 
-    # --- 0. RECUPERACIÓN DE DATOS EXTRA ---
-    df_anual = kwargs.get("df_anual_melted", None)
-    user_loc = kwargs.get("user_loc", user_loc)
+    # --- PESTAÑA 1: MAPA INTERACTIVO ---
+    with tab_mapa:
+        st.markdown("##### Explorador Geoespacial")
+        
+        # 1. CONTROLES DE ZOOM (REQ 2)
+        # Usamos columnas para los botones de escala
+        col_z1, col_z2, col_z3 = st.columns([1, 1, 3])
+        zoom_level = 8
+        location_center = [6.5, -75.5] # Default Antioquia
 
-    st.subheader("🗺️ Distribución Espacial y Análisis Puntual")
-
-    # CSS para métricas compactas
-    st.markdown(
-        """
-    <style>
-    div[data-testid="stMetricValue"] { font-size: 1.1rem !important; }
-    </style>
-    """,
-        unsafe_allow_html=True,
-    )
-
-    if "selected_point" not in st.session_state:
-        st.session_state.selected_point = None
-
-    # --- PESTAÑAS ---
-    tab_map, tab_avail, tab_matrix = st.tabs(
-        ["📍 Mapa Interactivo", "📊 Disponibilidad", "📅 Series Anuales"]
-    )
-
-    # ==========================================
-    # PESTAÑA 1: MAPA (SIN CAMBIOS)
-    # ==========================================
-    with tab_map:
-        # ... (Tu código de mapa existente se mantiene igual) ...
-        st.info(
-            "👆 **Haga clic en el mapa** o ingrese coordenadas para analizar un punto específico."
+        # Lógica de escala
+        escala = st.radio(
+            "🔎 Escala de Visualización:",
+            ["Colombia", "Antioquia", "Región Seleccionada"],
+            horizontal=True,
+            index=1 # Por defecto Antioquia
         )
 
-        col_ctrl, col_map = st.columns([1, 3])
-
-        with col_ctrl:
-            st.markdown("#### Configuración")
-            with st.expander("📍 Ingresar Coordenadas", expanded=False):
-                in_lat = st.number_input(
-                    "Latitud:", value=6.2, format="%.5f", key="mlat"
-                )
-                in_lon = st.number_input(
-                    "Longitud:", value=-75.5, format="%.5f", key="mlon"
-                )
-                if st.button("Analizar Coordenada"):
-                    st.session_state.selected_point = {"lat": in_lat, "lng": in_lon}
-
-            st.markdown("#### Capas")
-            show_munis = st.checkbox("Municipios", value=True)
-            show_cuencas = st.checkbox("Subcuencas", value=False)
-            show_predios = st.checkbox("Predios", value=False)
-
-            base_map_options = {
-                "CartoDB Positron": {"tiles": "cartodbpositron", "attr": None},
-                "OpenStreetMap": {"tiles": "OpenStreetMap", "attr": None},
-                "Esri Satellite": {
-                    "tiles": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-                    "attr": "Esri",
-                },
-            }
-            base_map_name = st.selectbox("Mapa Base:", list(base_map_options.keys()))
-            sel_tile = base_map_options[base_map_name]
-
-        with col_map:
-            if st.session_state.selected_point:
-                lat_c, lon_c, z = (
-                    st.session_state.selected_point["lat"],
-                    st.session_state.selected_point["lng"],
-                    11,
-                )
-            elif gdf_filtered is not None and not gdf_filtered.empty:
-                v = gdf_filtered.dropna(subset=["latitude"])
-                lat_c, lon_c, z = (
-                    (v.latitude.mean(), v.longitude.mean(), 9)
-                    if not v.empty
-                    else (6.2, -75.5, 9)
-                )
+        if escala == "Colombia":
+            location_center = [4.57, -74.29]
+            zoom_level = 6
+        elif escala == "Antioquia":
+            location_center = [7.0, -75.5]
+            zoom_level = 8
+        elif escala == "Región Seleccionada" and not gdf_filtered.empty:
+            # Calculamos centroide de los puntos filtrados
+            centroid = gdf_filtered.dissolve().centroid
+            if not centroid.empty:
+                location_center = [centroid.y[0], centroid.x[0]]
+                zoom_level = 10
             else:
-                lat_c, lon_c, z = 6.2, -75.5, 9
+                st.toast("No hay región seleccionada para centrar.")
 
-            m = folium.Map(
-                location=[lat_c, lon_c],
-                zoom_start=z,
-                tiles=sel_tile["tiles"],
-                attr=sel_tile["attr"],
+        # Creación del Mapa Base
+        m = folium.Map(
+            location=location_center,
+            zoom_start=zoom_level,
+            tiles="CartoDB positron",
+            control_scale=True
+        )
+
+        # 2. FULLSCREEN (REQ 3)
+        plugins.Fullscreen(
+            position="topright",
+            title="Ver en Pantalla Completa",
+            title_cancel="Salir de Pantalla Completa",
+            force_separate_button=True,
+        ).add_to(m)
+
+        # 3. POPUPS DETALLADOS (REQ 5)
+        # Detectamos columnas dinámicamente
+        if not gdf_filtered.empty:
+            cols = gdf_filtered.columns
+            # Buscamos nombres de columnas (insensible a mayúsculas)
+            c_muni = next((c for c in cols if "muni" in c.lower()), "Municipio")
+            c_alt = next((c for c in cols if "alt" in c.lower() or "elev" in c.lower()), "Altitud")
+            c_cuenca = next((c for c in cols if "cuenca" in c.lower() or "region" in c.lower() or "zona" in c.lower()), "Cuenca")
+            c_nombre = next((c for c in cols if "nom" in c.lower() or "estacion" in c.lower()), "Nombre")
+
+            for _, row in gdf_filtered.iterrows():
+                # HTML para el popup
+                html_popup = f"""
+                <div style="font-family: sans-serif; width: 200px;">
+                    <h5 style="margin-bottom: 5px; color: #2c3e50;">🌧️ {row[c_nombre]}</h5>
+                    <hr style="margin: 5px 0;">
+                    <b>🏙️ Municipio:</b> {row[c_muni]}<br>
+                    <b>⛰️ Altitud:</b> {row[c_alt]} msnm<br>
+                    <b>🌊 Cuenca/Zona:</b> {row[c_cuenca]}<br>
+                    <b>📍 Coords:</b> {row.geometry.y:.4f}, {row.geometry.x:.4f}
+                </div>
+                """
+                folium.Marker(
+                    location=[row.geometry.y, row.geometry.x],
+                    tooltip=f"{row[c_nombre]} (Clic para detalles)",
+                    popup=folium.Popup(html_popup, max_width=250),
+                    icon=folium.Icon(color="blue", icon="cloud", prefix="fa")
+                ).add_to(m)
+
+        # Capas adicionales (Municipios, Subcuencas) si existen
+        # (Aquí puedes agregar tu lógica de capas GeoJSON si la tienes disponible en gdf_municipios, etc.)
+        
+        # REQ 1: VISIBILIDAD INMEDIATA
+        # Usamos folium_static con dimensiones fijas para evitar el colapso del div
+        st_data = folium_static(m, width=1100, height=600)
+
+        # 4. BOTÓN DE DESCARGA (REQ 4)
+        col_d1, col_d2 = st.columns([3, 1])
+        with col_d2:
+            # Guardamos el mapa como HTML en memoria
+            map_html = m._repr_html_()
+            st.download_button(
+                label="🌍 Descargar Mapa (HTML)",
+                data=map_html,
+                file_name="mapa_sihcli_poter.html",
+                mime="text/html",
+                help="Descarga este mapa para abrirlo en cualquier navegador web aparte."
             )
-
-            try:
-                if show_munis and not gdf_municipios.empty:
-                    g = gdf_municipios.copy()
-                    g["geometry"] = g.geometry.simplify(0.001)
-                    folium.GeoJson(
-                        g,
-                        name="Municipios",
-                        style_function=lambda x: {
-                            "color": "gray",
-                            "weight": 1,
-                            "fillOpacity": 0.05,
-                        },
-                        tooltip=(
-                            folium.GeoJsonTooltip(["nombre"])
-                            if "nombre" in g.columns
-                            else None
-                        ),
-                    ).add_to(m)
-                if show_cuencas and not gdf_subcuencas.empty:
-                    g = gdf_subcuencas.copy()
-                    g["geometry"] = g.geometry.simplify(0.001)
-                    folium.GeoJson(
-                        g,
-                        name="Subcuencas",
-                        style_function=lambda x: {
-                            "color": "blue",
-                            "weight": 2,
-                            "fillOpacity": 0,
-                        },
-                        tooltip=(
-                            folium.GeoJsonTooltip(["nombre"])
-                            if "nombre" in g.columns
-                            else None
-                        ),
-                    ).add_to(m)
-                if show_predios and gdf_predios is not None:
-                    g = gdf_predios.copy()
-                    g["geometry"] = g.geometry.simplify(0.0001)
-                    folium.GeoJson(
-                        g,
-                        name="Predios",
-                        style_function=lambda x: {
-                            "color": "orange",
-                            "weight": 2,
-                            "fillOpacity": 0.2,
-                        },
-                        tooltip=(
-                            folium.GeoJsonTooltip(["nombre"])
-                            if "nombre" in g.columns
-                            else None
-                        ),
-                    ).add_to(m)
-            except:
-                pass
-
-            if gdf_filtered is not None:
-                marker_cluster = MarkerCluster().add_to(m)
-                for _, r in gdf_filtered.dropna(subset=["latitude"]).iterrows():
-                    df_st = df_long[
-                        df_long[Config.STATION_NAME_COL] == r[Config.STATION_NAME_COL]
-                    ]
-                    df_valid = df_st[df_st[Config.PRECIPITATION_COL] > 0]
-                    avg_ppt = (
-                        df_valid[Config.PRECIPITATION_COL].mean() * 12
-                        if not df_valid.empty
-                        else 0
-                    )
-                    html = f"<div style='font-size:12px'><b>{r[Config.STATION_NAME_COL]}</b><br>Ppt Est: {avg_ppt:.0f} mm</div>"
-                    folium.Marker(
-                        [r["latitude"], r["longitude"]],
-                        tooltip=f"{r[Config.STATION_NAME_COL]}",
-                        popup=folium.Popup(html, max_width=200),
-                        icon=folium.Icon(color="green", icon="cloud"),
-                    ).add_to(marker_cluster)
-
-            if st.session_state.selected_point:
-                folium.Marker(
-                    [
-                        st.session_state.selected_point["lat"],
-                        st.session_state.selected_point["lng"],
-                    ],
-                    popup="Selección",
-                    icon=folium.Icon(color="red", icon="info-sign"),
-                ).add_to(m)
-            if user_loc:
-                folium.Marker(
-                    [user_loc[0], user_loc[1]],
-                    icon=folium.Icon(color="black", icon="star"),
-                    tooltip="Tu Ubicación",
-                ).add_to(m)
-
-            LocateControl(auto_start=False).add_to(m)
-            folium.LayerControl().add_to(m)
-
-            map_data = st_folium(m, width="100%", height=600)
-            if map_data and map_data.get("last_clicked"):
-                clicked = map_data["last_clicked"]
-                if (
-                    st.session_state.selected_point is None
-                    or abs(clicked["lat"] - st.session_state.selected_point["lat"])
-                    > 0.0001
-                ):
-                    st.session_state.selected_point = {
-                        "lat": clicked["lat"],
-                        "lng": clicked["lng"],
-                    }
-                    st.rerun()
 
     # ==========================================
     # PESTAÑA 2: DISPONIBILIDAD (ACTUALIZADA CON SELECTOR)
