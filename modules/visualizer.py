@@ -1249,7 +1249,6 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                 )
 
 
-# --- FUNCIÓN: PESTAÑA DE DISTRIBUCIÓN ESPACIAL (ARREGLADA) ---
 def display_spatial_distribution_tab(
     user_loc, interpolacion, df_long, df_complete, gdf_stations, gdf_filtered,
     gdf_municipios, gdf_subcuencas, gdf_predios, df_enso, stations_for_analysis,
@@ -1257,7 +1256,7 @@ def display_spatial_distribution_tab(
     selected_municipios, selected_months, year_range, start_date, end_date
 ):
     """
-    Muestra el mapa interactivo con controles avanzados y gráficas corregidas.
+    Muestra el mapa interactivo y gráficas anuales sin errores de estado.
     """
     import folium
     from folium import plugins
@@ -1266,6 +1265,10 @@ def display_spatial_distribution_tab(
     import pandas as pd
     import plotly.express as px
     from modules.config import Config
+
+    # ESCUDO DE SEGURIDAD: Inicializamos variables por si acaso quedaron referencias viejas
+    if "selected_point" not in st.session_state:
+        st.session_state.selected_point = None
 
     st.markdown("### 🗺️ Distribución Espacial y Análisis Puntual")
     
@@ -1493,7 +1496,6 @@ def display_spatial_distribution_tab(
     with tab_series:
         st.markdown("##### 📈 Series Históricas")
         if df_anual_melted is not None and not df_anual_melted.empty:
-            # Gráfico
             fig = px.line(
                 df_anual_melted, 
                 x=Config.YEAR_COL, 
@@ -1503,9 +1505,7 @@ def display_spatial_distribution_tab(
             )
             st.plotly_chart(fig, use_container_width=True)
             
-            # Tabla de Datos (AQUÍ ESTABA EL ERROR)
             with st.expander("Ver Datos en Tabla"):
-                # CORRECCIÓN: Usamos df_anual_melted en lugar de df_anual
                 pivot_anual = df_anual_melted.pivot(
                     index=Config.YEAR_COL,
                     columns=Config.STATION_NAME_COL,
