@@ -99,8 +99,7 @@ def main():
         # 2. FILTROS GEOGRÁFICOS (Cascada)
         st.header("🗺️ Filtros Geográficos")
         
-        # Detectamos columnas disponibles en gdf_stations para evitar errores
-        # Ajusta "Region", "Municipio", "Altitud" si tus columnas se llaman diferente
+        # Detectamos columnas disponibles
         col_region = "Region" if "Region" in gdf_stations.columns else "region"
         col_muni = "Municipio" if "Municipio" in gdf_stations.columns else "municipio"
         col_alt = "Altitud" if "Altitud" in gdf_stations.columns else "elev"
@@ -116,7 +115,6 @@ def main():
         list_munis = []
         sel_munis = []
         if col_muni in gdf_stations.columns:
-            # Filtramos primero el GDF según la región seleccionada
             if sel_regions:
                 gdf_temp = gdf_stations[gdf_stations[col_region].isin(sel_regions)]
             else:
@@ -133,7 +131,7 @@ def main():
                 max_a = int(gdf_stations[col_alt].max())
                 rango_alt = st.slider("⛰️ Altitud (msnm):", min_a, max_a, (min_a, max_a))
             except:
-                pass # Si hay datos no numéricos, saltamos
+                pass 
 
         st.markdown("---")
 
@@ -190,27 +188,6 @@ def main():
         apply_interp = st.checkbox("🔄 Aplicar Interpolación", value=False)
         analysis_mode = "Anual"
 
-        # 2. RANGO DE AÑOS
-        st.markdown("##### Rango de Años")
-        min_year = int(df_long[Config.YEAR_COL].min())
-        max_year = int(df_long[Config.YEAR_COL].max())
-        
-        year_range = st.slider(
-            "Seleccione periodo:",
-            min_value=min_year,
-            max_value=max_year,
-            value=(min_year, max_year)
-        )
-
-        st.markdown("---") # Separador visual
-
-        # 3. OPCIONES
-        st.markdown("##### Opciones")
-        apply_interp = st.checkbox(
-            "Aplicar Interpolación", value=False, key="apply_interpolation"
-        )
-        analysis_mode = "Anual"
-
     # --- D. APLICAR FILTROS ---
     # 1. Filtro Base (Años y Estaciones)
     mask_base = (
@@ -219,10 +196,9 @@ def main():
         & (df_long[Config.STATION_NAME_COL].isin(stations_for_analysis))
     )
     
-    # Creamos el dataframe filtrado inicial
     df_monthly_filtered = df_long.loc[mask_base].copy()
     
-    # 2. Filtros de Limpieza (NUEVO)
+    # 2. Filtros de Limpieza
     if ignore_zeros:
         df_monthly_filtered = df_monthly_filtered[df_monthly_filtered[Config.PRECIPITATION_COL] != 0]
         
@@ -232,11 +208,11 @@ def main():
     # 3. Filtrar GeoDataFrame de Estaciones
     gdf_filtered = gdf_stations[gdf_stations[Config.STATION_NAME_COL].isin(stations_for_analysis)]
 
-    # 4. Interpolación (Si aplica)
+    # 4. Interpolación
     if apply_interp:
         with st.spinner("Interpolando..."):
-            df_monthly_filtered = complete_series(df_monthly_filtered)    
-
+            df_monthly_filtered = complete_series(df_monthly_filtered)
+    
     df_anual_melted = (
         df_monthly_filtered.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[
             Config.PRECIPITATION_COL
@@ -249,8 +225,6 @@ def main():
     end_date = pd.to_datetime(f"{year_range[1]}-12-31")
 
     # Variables vacías (legacy support)
-    sel_regions = []
-    sel_munis = []
     selected_months = list(range(1, 13))
 
     display_args = {
