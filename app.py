@@ -241,28 +241,41 @@ def main():
 
     tabs = st.tabs(tab_titles)
 
-    with tabs[0]: display_welcome_tab()
-    with tabs[1]: display_realtime_dashboard(df_monthly_filtered, gdf_stations, gdf_filtered)
-    with tabs[2]: display_spatial_distribution_tab(user_loc=None, interpolacion="Si" if apply_interp else "No", **display_args)
-    with tabs[3]: display_graphs_tab(**display_args)
+    with tabs[0]: 
+        display_welcome_tab()
+    with tabs[1]: 
+        display_realtime_dashboard(df_monthly_filtered, gdf_stations, gdf_filtered)
+    with tabs[2]: 
+        display_spatial_distribution_tab(user_loc=None, interpolacion="Si" if apply_interp else "No", **display_args)
+    with tabs[3]: 
+        display_graphs_tab(**display_args)
     with tabs[4]: 
         display_stats_tab(**display_args)
         st.markdown("---")
         display_station_table_tab(**display_args)
-    with tabs[5]: display_climate_forecast_tab(**display_args)
-    with tabs[6]: display_trends_and_forecast_tab(**display_args)
-    with tabs[7]: display_anomalies_tab(**display_args)
-    with tabs[8]: display_correlation_tab(**display_args)
-    with tabs[9]: display_drought_analysis_tab(**display_args)
-    with tabs[10]: display_advanced_maps_tab(**display_args)
+    with tabs[5]: 
+        display_climate_forecast_tab(**display_args)
+    with tabs[6]: 
+        display_trends_and_forecast_tab(**display_args)
+    with tabs[7]: 
+        display_anomalies_tab(**display_args)
+    with tabs[8]: 
+        display_correlation_tab(**display_args)
+    with tabs[9]: 
+        display_drought_analysis_tab(**display_args)
+    with tabs[10]: 
+        display_advanced_maps_tab(**display_args)
     with tabs[11]:
         try:
             display_bias_correction_tab(**display_args)
         except:
             st.info("Módulo Sesgo cargando...")
-    with tabs[12]: display_land_cover_analysis_tab(**display_args)
-    with tabs[13]: display_life_zones_tab(**display_args)
-    with tabs[14]: display_climate_scenarios_tab(**display_args)
+    with tabs[12]: 
+        display_land_cover_analysis_tab(**display_args)
+    with tabs[13]: 
+        display_life_zones_tab(**display_args)
+    with tabs[14]: 
+        display_climate_scenarios_tab(**display_args)
     with tabs[15]:
         st.header("Reporte PDF")
         if st.button("Generar Reporte"):
