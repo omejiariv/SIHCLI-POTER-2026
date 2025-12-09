@@ -6572,3 +6572,28 @@ def display_statistics_summary_tab(df_monthly, df_anual, gdf_stations, **kwargs)
             use_container_width=True,
             hide_index=True,
         )
+
+# --- FUNCIÓN RECUPERADA: RESUMEN DE FILTROS ---
+def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, interpolacion, df_data):
+    """
+    Muestra un resumen visual (métricas) de los filtros activos en la parte superior.
+    """
+    st.markdown("### 🔍 Resumen de Configuración")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("📅 Rango de Años", f"{year_range[0]} - {year_range[1]}")
+        
+    with col2:
+        st.metric("📍 Estaciones Seleccionadas", f"{len(stations_sel)}")
+        
+    with col3:
+        st.metric("🔄 Interpolación", interpolacion)
+        
+    with col4:
+        # Formateamos con separador de miles si es posible
+        count = len(df_data) if df_data is not None else 0
+        st.metric("📊 Registros Cargados", f"{count:,}")
+
+    st.markdown("---")
