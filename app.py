@@ -1,6 +1,7 @@
 # modules/app.py
 
 import warnings
+
 import pandas as pd
 import streamlit as st
 
@@ -11,34 +12,34 @@ warnings.filterwarnings("ignore")
 # --- 2. IMPORTACIONES ---
 try:
     from modules.config import Config
-    from modules.data_processor import complete_series, load_and_process_all_data
+    from modules.data_processor import (complete_series,
+                                        load_and_process_all_data)
     from modules.reporter import generate_pdf_report
-    
+
     # Intentamos importar db_manager
     try:
         import modules.db_manager as db_manager
+
         DB_AVAILABLE = True
     except ImportError:
         DB_AVAILABLE = False
 
-    from modules.visualizer import (
-        display_advanced_maps_tab,
-        display_anomalies_tab,
-        display_climate_forecast_tab,
-        display_climate_scenarios_tab,
-        display_correlation_tab,
-        display_current_filters,
-        display_drought_analysis_tab,
-        display_graphs_tab,
-        display_land_cover_analysis_tab,
-        display_life_zones_tab,
-        display_realtime_dashboard,
-        display_spatial_distribution_tab,
-        display_station_table_tab,
-        display_stats_tab,
-        display_trends_and_forecast_tab,
-        display_welcome_tab,
-    )
+    from modules.visualizer import (display_advanced_maps_tab,
+                                    display_anomalies_tab,
+                                    display_climate_forecast_tab,
+                                    display_climate_scenarios_tab,
+                                    display_correlation_tab,
+                                    display_current_filters,
+                                    display_drought_analysis_tab,
+                                    display_graphs_tab,
+                                    display_land_cover_analysis_tab,
+                                    display_life_zones_tab,
+                                    display_realtime_dashboard,
+                                    display_spatial_distribution_tab,
+                                    display_station_table_tab,
+                                    display_stats_tab,
+                                    display_trends_and_forecast_tab,
+                                    display_welcome_tab)
 except Exception as e:
     st.error(f"Error crítico importando módulos: {e}")
     st.stop()
@@ -80,7 +81,7 @@ def main():
     # --- C. FILTROS (EXPANDER SUPERIOR) ---
     with st.expander("🎛️ Filtros y Configuración (Clic para desplegar)", expanded=True):
         col_f1, col_f2, col_f3 = st.columns(3)
-        
+
         with col_f1:
             st.markdown("##### Estaciones")
             if Config.STATION_NAME_COL in df_long.columns:
@@ -88,7 +89,7 @@ def main():
                 stations_for_analysis = st.multiselect(
                     "Seleccione Estación(es):",
                     options=lista_estaciones,
-                    default=lista_estaciones
+                    default=lista_estaciones,
                 )
             else:
                 st.error(f"Columna {Config.STATION_NAME_COL} no encontrada.")
@@ -98,12 +99,12 @@ def main():
             st.markdown("##### Rango de Años")
             min_year = int(df_long[Config.YEAR_COL].min())
             max_year = int(df_long[Config.YEAR_COL].max())
-            
+
             year_range = st.slider(
                 "Seleccione periodo:",
                 min_value=min_year,
                 max_value=max_year,
-                value=(min_year, max_year)
+                value=(min_year, max_year),
             )
 
         with col_f3:
@@ -111,7 +112,7 @@ def main():
             apply_interp = st.checkbox(
                 "Aplicar Interpolación", value=False, key="apply_interpolation"
             )
-            analysis_mode = "Anual" 
+            analysis_mode = "Anual"
 
     # --- D. APLICAR FILTROS ---
     mask_base = (
@@ -119,14 +120,16 @@ def main():
         & (df_long[Config.YEAR_COL] <= year_range[1])
         & (df_long[Config.STATION_NAME_COL].isin(stations_for_analysis))
     )
-    
+
     df_monthly_filtered = df_long.loc[mask_base].copy()
-    gdf_filtered = gdf_stations[gdf_stations[Config.STATION_NAME_COL].isin(stations_for_analysis)]
+    gdf_filtered = gdf_stations[
+        gdf_stations[Config.STATION_NAME_COL].isin(stations_for_analysis)
+    ]
 
     if apply_interp:
         with st.spinner("Interpolando..."):
             df_monthly_filtered = complete_series(df_monthly_filtered)
-    
+
     df_anual_melted = (
         df_monthly_filtered.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[
             Config.PRECIPITATION_COL
@@ -178,32 +181,40 @@ def main():
         pass
 
     tab_titles = [
-        "🏠 Inicio", "🚨 Monitoreo", "🗺️ Distribución", "📈 Gráficos", 
-        "📊 Estadísticas", "🔮 Pronóstico Climático", "📉 Tendencias", 
-        "⚠️ Anomalías", "🔗 Correlación", "🌊 Extremos", 
-        "🌍 Mapas Avanzados", "🧪 Sesgo", "🌿 Cobertura", 
-        "🌱 Zonas Vida", "🌡️ Clima Futuro", "📄 Reporte"
+        "🏠 Inicio",
+        "🚨 Monitoreo",
+        "🗺️ Distribución",
+        "📈 Gráficos",
+        "📊 Estadísticas",
+        "🔮 Pronóstico Climático",
+        "📉 Tendencias",
+        "⚠️ Anomalías",
+        "🔗 Correlación",
+        "🌊 Extremos",
+        "🌍 Mapas Avanzados",
+        "🧪 Sesgo",
+        "🌿 Cobertura",
+        "🌱 Zonas Vida",
+        "🌡️ Clima Futuro",
+        "📄 Reporte",
     ]
 
     tabs = st.tabs(tab_titles)
 
-    # --- CORRECCIÓN E701: Todo indentado ---
     with tabs[0]:
         display_welcome_tab()
-    
+
     with tabs[1]:
         display_realtime_dashboard(df_monthly_filtered, gdf_stations, gdf_filtered)
-    
+
     with tabs[2]:
         display_spatial_distribution_tab(
-            user_loc=None, 
-            interpolacion="Si" if apply_interp else "No", 
-            **display_args
+            user_loc=None, interpolacion="Si" if apply_interp else "No", **display_args
         )
-    
+
     with tabs[3]:
         display_graphs_tab(**display_args)
-    
+
     with tabs[4]:
         display_stats_tab(**display_args)
         st.markdown("---")
@@ -211,50 +222,46 @@ def main():
 
     with tabs[5]:
         display_climate_forecast_tab(**display_args)
-    
+
     with tabs[6]:
         display_trends_and_forecast_tab(**display_args)
-    
+
     with tabs[7]:
         display_anomalies_tab(**display_args)
-    
+
     with tabs[8]:
         display_correlation_tab(**display_args)
-    
+
     with tabs[9]:
         display_drought_analysis_tab(**display_args)
-    
+
     with tabs[10]:
         display_advanced_maps_tab(**display_args)
 
     with tabs[11]:
         try:
             from modules.visualizer import display_bias_correction_tab
+
             display_bias_correction_tab(**display_args)
         except Exception:
             st.info("Módulo Sesgo cargando...")
 
     with tabs[12]:
         display_land_cover_analysis_tab(**display_args)
-    
+
     with tabs[13]:
         display_life_zones_tab(**display_args)
-    
+
     with tabs[14]:
         display_climate_scenarios_tab(**display_args)
 
     with tabs[15]:
         st.header("Reporte PDF")
         if st.button("Generar Reporte"):
-            res = {
-                "n_estaciones": len(stations_for_analysis), 
-                "rango": f"{year_range}"
-            }
+            res = {"n_estaciones": len(stations_for_analysis), "rango": f"{year_range}"}
             pdf = generate_pdf_report(df_monthly_filtered, gdf_filtered, res)
             if pdf:
-                st.download_button(
-                    "Descargar", pdf, "reporte.pdf", "application/pdf"
-                )
+                st.download_button("Descargar", pdf, "reporte.pdf", "application/pdf")
 
     st.markdown(
         """<style>.stTabs [data-baseweb="tab-panel"] { padding-top: 1rem; }</style>""",

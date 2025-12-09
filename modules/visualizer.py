@@ -14,7 +14,6 @@ from folium.plugins import LocateControl, MarkerCluster
 from plotly.subplots import make_subplots
 from prophet import Prophet
 from scipy import stats
-
 # Imports de Ciencia de Datos y Análisis
 from scipy.interpolate import Rbf, griddata
 from shapely.geometry import Point
@@ -22,26 +21,22 @@ from statsmodels.tsa.seasonal import seasonal_decompose
 from streamlit_folium import st_folium
 
 import modules.life_zones as lz
-
 # Módulos Internos
 from modules.config import Config
 
 # Importar funciones de análisis (Manejo de errores por si faltan)
 try:
-    from modules.analysis import (
-        calculate_climatic_indices,
-        calculate_duration_curve,
-        calculate_hydrological_balance,
-        calculate_hypsometric_curve,
-        calculate_morphometry,
-        calculate_percentiles_extremes,
-        calculate_return_periods,
-        calculate_spei,
-        calculate_water_balance_turc,
-        classify_holdridge_point,
-        estimate_temperature,
-        generate_life_zone_raster,
-    )
+    from modules.analysis import (calculate_climatic_indices,
+                                  calculate_duration_curve,
+                                  calculate_hydrological_balance,
+                                  calculate_hypsometric_curve,
+                                  calculate_morphometry,
+                                  calculate_percentiles_extremes,
+                                  calculate_return_periods, calculate_spei,
+                                  calculate_water_balance_turc,
+                                  classify_holdridge_point,
+                                  estimate_temperature,
+                                  generate_life_zone_raster)
 except ImportError:
     # Dummies para evitar crash visual si falta backend
     def calculate_morphometry(g):
@@ -63,6 +58,7 @@ except ImportError:
 
     def calculate_hypsometric_curve(g):
         return None
+
 
 # PESTAÑA DE BIENVENIDA (PÁGINA DE INICIO RENOVADA)
 # ==============================================================================
@@ -208,9 +204,11 @@ def display_welcome_tab():
                 "El Aleph del tiempo, del clima, del agua, de la biodiversidad, ... del terri-torio."
             )
 
+
 # -----------------------------------------------------------------------------
 # 1. FUNCIONES AUXILIARES
 # -----------------------------------------------------------------------------
+
 
 # --- HELPER: GEOLOCALIZACIÓN MANUAL PARA PLOTLY ---
 def _get_user_location_sidebar(key_suffix=""):
@@ -388,29 +386,29 @@ def _plot_panel_regional(rng, meth, col, tag, u_loc, df_long, gdf_stations):
 
 # --- FILTROS (CAJA DESPLEGABLE SUPERIOR) ---
 with st.expander("🎛️ Filtros y Configuración (Haz clic para desplegar)", expanded=True):
-    col_f1, col_f2 = st.columns(2) # Dividimos en 2 columnas para que se vea ordenado
-    
+    col_f1, col_f2 = st.columns(2)  # Dividimos en 2 columnas para que se vea ordenado
+
     with col_f1:
         st.markdown("##### Estaciones")
         # Asumiendo que 'nom_est' es el nombre de tu columna de estaciones
         # Usa Config.STATION_COL si lo tienes definido en tu config
-        estaciones_disponibles = df['nom_est'].unique()
+        estaciones_disponibles = df["nom_est"].unique()
         estaciones_selec = st.multiselect(
             "Seleccione las estaciones:",
             options=estaciones_disponibles,
-            default=estaciones_disponibles # Por defecto todas
+            default=estaciones_disponibles,  # Por defecto todas
         )
 
     with col_f2:
         st.markdown("##### Rango de Fechas")
-        min_date = pd.to_datetime(df['Fecha']).min()
-        max_date = pd.to_datetime(df['Fecha']).max()
-        
+        min_date = pd.to_datetime(df["Fecha"]).min()
+        max_date = pd.to_datetime(df["Fecha"]).max()
+
         rango_fechas = st.date_input(
             "Seleccione periodo:",
             value=(min_date, max_date),
             min_value=min_date,
-            max_value=max_date
+            max_value=max_date,
         )
 
 # --- APLICAR FILTROS ---
@@ -418,13 +416,13 @@ with st.expander("🎛️ Filtros y Configuración (Haz clic para desplegar)", e
 if len(rango_fechas) == 2:
     inicio, fin = rango_fechas
     mask_filtro = (
-        (df['nom_est'].isin(estaciones_selec)) & 
-        (pd.to_datetime(df['Fecha']).dt.date >= inicio) & 
-        (pd.to_datetime(df['Fecha']).dt.date <= fin)
+        (df["nom_est"].isin(estaciones_selec))
+        & (pd.to_datetime(df["Fecha"]).dt.date >= inicio)
+        & (pd.to_datetime(df["Fecha"]).dt.date <= fin)
     )
     df_filtrado = df[mask_filtro]
 else:
-    df_filtrado = df[df['nom_est'].isin(estaciones_selec)]
+    df_filtrado = df[df["nom_est"].isin(estaciones_selec)]
 
 
 @st.cache_data(ttl=3600)
@@ -576,6 +574,7 @@ def analyze_point_data(lat, lon, df_long, gdf_stations, gdf_municipios, gdf_subc
 
     return results
 
+
 def get_weather_forecast_detailed(lat, lon):
     """
     Obtiene pronóstico detallado de Open-Meteo con 9 variables agrometeorológicas.
@@ -621,6 +620,7 @@ def get_weather_forecast_detailed(lat, lon):
         return df
     except Exception:
         return pd.DataFrame()
+
 
 def create_enso_chart(enso_data):
     """
@@ -735,6 +735,7 @@ def create_enso_chart(enso_data):
 # 1. FUNCIONES AUXILIARES DE PARSEO Y DATOS
 # -----------------------------------------------------------------------------
 
+
 def parse_spanish_date(x):
     if isinstance(x, str):
         x = x.lower().strip()
@@ -769,11 +770,8 @@ def parse_spanish_date(x):
 # NUEVA FUNCIÓN: CONEXIÓN CON IRI (COLUMBIA UNIVERSITY)
 # -----------------------------------------------------------------------------
 try:
-    from modules.iri_api import (
-        fetch_iri_data,
-        process_iri_plume,
-        process_iri_probabilities,
-    )
+    from modules.iri_api import (fetch_iri_data, process_iri_plume,
+                                 process_iri_probabilities)
 except ImportError:
     # Evita que la app se rompa si el archivo iri_api.py aún no se ha creado o cargado
     fetch_iri_data = None
@@ -1290,6 +1288,7 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                     ),
                     use_container_width=True,
                 )
+
 
 # FUNCIÓN DISTRIBUCIÓN ESPACIAL (CON CAJA DE RESUMEN UNIFICADA)
 # ==============================================================================
@@ -2743,7 +2742,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                 temp_media = 0
 
                             # Balance Hídrico (Turc)
-                            from modules.analysis import calculate_water_balance_turc
+                            from modules.analysis import \
+                                calculate_water_balance_turc
 
                             etr_mm, q_mm = calculate_water_balance_turc(
                                 ppt_med, temp_media
@@ -3490,7 +3490,9 @@ def display_climate_forecast_tab(**kwargs):
         else:
             st.warning("No hay datos suficientes para generar proyecciones.")
 
+
 # -----------------------------------------------------------------------------
+
 
 def display_trends_and_forecast_tab(**kwargs):
     st.subheader("📉 Tendencias y Pronósticos (Series de Tiempo)")
@@ -4118,6 +4120,7 @@ def display_anomalies_tab(
                 use_container_width=True,
             )
 
+
 # FUNCIÓN ESTADÍSTICAS (REVISADA Y MEJORADA)
 # ==============================================================================
 def display_stats_tab(df_long, df_anual_melted, gdf_stations, **kwargs):
@@ -4175,10 +4178,16 @@ def display_stats_tab(df_long, df_anual_melted, gdf_stations, **kwargs):
             # --- CORRECCIÓN MATRIZ ---
             # Copiamos para no afectar el original
             df_matrix = df_long.copy()
-            
+
             # Forzamos la creación de una columna 'date' compatible con Pandas
             # Asumiendo que Config.YEAR_COL y Config.MONTH_COL son tus columnas de año y mes
-            df_matrix["date"] = pd.to_datetime(dict(year=df_matrix[Config.YEAR_COL], month=df_matrix[Config.MONTH_COL], day=1))
+            df_matrix["date"] = pd.to_datetime(
+                dict(
+                    year=df_matrix[Config.YEAR_COL],
+                    month=df_matrix[Config.MONTH_COL],
+                    day=1,
+                )
+            )
 
             matrix = df_matrix.pivot_table(
                 index=df_matrix["date"].dt.year,
@@ -4191,10 +4200,23 @@ def display_stats_tab(df_long, df_anual_melted, gdf_stations, **kwargs):
             fig_matrix = px.imshow(
                 matrix,
                 labels=dict(x="Mes", y="Año", color="N° Registros"),
-                x=["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"],
+                x=[
+                    "Ene",
+                    "Feb",
+                    "Mar",
+                    "Abr",
+                    "May",
+                    "Jun",
+                    "Jul",
+                    "Ago",
+                    "Sep",
+                    "Oct",
+                    "Nov",
+                    "Dic",
+                ],
                 title="Matriz de Densidad de Datos (Semáforo)",
-                color_continuous_scale="RdYlGn", # Rojo a Verde
-                aspect="auto", 
+                color_continuous_scale="RdYlGn",  # Rojo a Verde
+                aspect="auto",
             )
             fig_matrix.update_layout(height=600)
             st.plotly_chart(fig_matrix, use_container_width=True)
