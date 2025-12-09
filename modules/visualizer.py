@@ -1249,7 +1249,7 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                 )
 
 
-# --- FUNCIÓN: PESTAÑA DE DISTRIBUCIÓN ESPACIAL (NOMBRES CORREGIDOS) ---
+# --- FUNCIÓN: PESTAÑA DE DISTRIBUCIÓN ESPACIAL (FINAL Y VERIFICADA) ---
 def display_spatial_distribution_tab(
     user_loc, interpolacion, df_long, df_complete, gdf_stations, gdf_filtered,
     gdf_municipios, gdf_subcuencas, gdf_predios, df_enso, stations_for_analysis,
@@ -1264,13 +1264,13 @@ def display_spatial_distribution_tab(
     from streamlit_folium import folium_static
     import streamlit as st
     import pandas as pd
-    import plotly.express as px  # Necesario para la gráfica de series
+    import plotly.express as px
     from modules.config import Config
 
     st.markdown("### 🗺️ Distribución Espacial y Análisis Puntual")
     
-    # 1. DEFINICIÓN DE PESTAÑAS (Aquí nacen las variables)
-    # Definimos explícitamente: tab_mapa, tab_avail, tab_series
+    # 1. DEFINICIÓN DE PESTAÑAS (Variables Maestras)
+    # Aquí definimos: tab_mapa, tab_avail, tab_series
     tab_mapa, tab_avail, tab_series = st.tabs(["📍 Mapa Interactivo", "📊 Disponibilidad", "📅 Series Anuales"])
 
     # --- PESTAÑA 1: MAPA INTERACTIVO ---
@@ -1289,6 +1289,7 @@ def display_spatial_distribution_tab(
                 index=1
             )
 
+        # Lógica de escala
         if escala == "Colombia":
             location_center = [4.57, -74.29]
             zoom_level = 6
@@ -1304,6 +1305,7 @@ def display_spatial_distribution_tab(
             except:
                 pass
 
+        # Mapa Base
         m = folium.Map(
             location=location_center,
             zoom_start=zoom_level,
@@ -1311,6 +1313,7 @@ def display_spatial_distribution_tab(
             control_scale=True
         )
 
+        # Pantalla Completa
         plugins.Fullscreen(
             position="topright",
             title="Pantalla Completa",
@@ -1318,6 +1321,7 @@ def display_spatial_distribution_tab(
             force_separate_button=True,
         ).add_to(m)
 
+        # Marcadores
         if not gdf_filtered.empty:
             cols = gdf_filtered.columns
             # Búsqueda robusta de columnas
@@ -1492,7 +1496,7 @@ def display_spatial_distribution_tab(
             st.warning("No hay datos cargados.")
 
     # --- PESTAÑA 3: SERIES ANUALES ---
-    with tab_matrix:
+    with tab_series:
         st.markdown("#### 📅 Series de Precipitación Anual Acumulada")
         if df_anual is not None and not df_anual.empty:
             fig_lines = px.line(
