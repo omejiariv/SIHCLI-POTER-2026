@@ -6578,6 +6578,8 @@ def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, in
     """
     Muestra un resumen visual (métricas) de los filtros activos en la parte superior.
     """
+    import streamlit as st  # Importación local por seguridad
+
     st.markdown("### 🔍 Resumen de Configuración")
     
     col1, col2, col3, col4 = st.columns(4)
@@ -6592,7 +6594,6 @@ def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, in
         st.metric("🔄 Interpolación", interpolacion)
         
     with col4:
-        # Formateamos con separador de miles si es posible
         count = len(df_data) if df_data is not None else 0
         st.metric("📊 Registros Cargados", f"{count:,}")
 
