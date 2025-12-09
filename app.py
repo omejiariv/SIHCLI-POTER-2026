@@ -77,24 +77,118 @@ def main():
         st.error("No se pudieron cargar los datos. Revise la conexión.")
         st.stop()
 
-    # --- C. FILTROS (BARRA LATERAL / SIDEBAR) ---
+    # --- C. FILTROS AVANZADOS (BARRA LATERAL) ---
     with st.sidebar:
-        st.header("🎛️ Filtros")
+        st.title("🎛️ Panel de Control")
         
-        # 1. ESTACIONES
-        st.markdown("##### Estaciones")
-        if Config.STATION_NAME_COL in df_long.columns:
-            lista_estaciones = df_long[Config.STATION_NAME_COL].unique()
+        # 1. GESTIÓN DE DATOS (Recargar y Manual)
+        with st.expander("📂 Gestión de Datos", expanded=False):
+            st.info("Fuente actual: GitHub (Automático)")
+            # Botón para limpiar caché y recargar
+            if st.button("🔄 Recargar Datos"):
+                st.cache_data.clear()
+                st.rerun()
+            
+            # Opción visual para carga manual (placeholder funcional)
+            use_manual = st.checkbox("Usar Carga Manual", value=False)
+            if use_manual:
+                st.file_uploader("Subir archivo CSV local", type=["csv", "txt"])
+
+        st.markdown("---")
+
+        # 2. FILTROS GEOGRÁFICOS (Cascada)
+        st.header("🗺️ Filtros Geográficos")
+        
+        # Detectamos columnas disponibles en gdf_stations para evitar errores
+        # Ajusta "Region", "Municipio", "Altitud" si tus columnas se llaman diferente
+        col_region = "Region" if "Region" in gdf_stations.columns else "region"
+        col_muni = "Municipio" if "Municipio" in gdf_stations.columns else "municipio"
+        col_alt = "Altitud" if "Altitud" in gdf_stations.columns else "elev"
+
+        # A. Regiones
+        list_regions = []
+        sel_regions = []
+        if col_region in gdf_stations.columns:
+            list_regions = sorted(gdf_stations[col_region].astype(str).unique())
+            sel_regions = st.multiselect("📍 Región / Cuenca:", list_regions, default=list_regions)
+        
+        # B. Municipios (Filtrados por Región seleccionada)
+        list_munis = []
+        sel_munis = []
+        if col_muni in gdf_stations.columns:
+            # Filtramos primero el GDF según la región seleccionada
+            if sel_regions:
+                gdf_temp = gdf_stations[gdf_stations[col_region].isin(sel_regions)]
+            else:
+                gdf_temp = gdf_stations
+            
+            list_munis = sorted(gdf_temp[col_muni].astype(str).unique())
+            sel_munis = st.multiselect("🏙️ Municipio:", list_munis, default=list_munis)
+
+        # C. Rango de Altitud
+        rango_alt = None
+        if col_alt in gdf_stations.columns:
+            try:
+                min_a = int(gdf_stations[col_alt].min())
+                max_a = int(gdf_stations[col_alt].max())
+                rango_alt = st.slider("⛰️ Altitud (msnm):", min_a, max_a, (min_a, max_a))
+            except:
+                pass # Si hay datos no numéricos, saltamos
+
+        st.markdown("---")
+
+        # 3. SELECCIÓN DE ESTACIONES
+        st.header("🌧️ Estaciones")
+        
+        # Filtramos la lista de estaciones disponibles según Región, Muni y Altura
+        mask_geo = pd.Series(True, index=gdf_stations.index)
+        
+        if sel_regions and col_region in gdf_stations.columns:
+            mask_geo &= gdf_stations[col_region].isin(sel_regions)
+        
+        if sel_munis and col_muni in gdf_stations.columns:
+            mask_geo &= gdf_stations[col_muni].isin(sel_munis)
+            
+        if rango_alt and col_alt in gdf_stations.columns:
+            mask_geo &= (gdf_stations[col_alt] >= rango_alt[0]) & (gdf_stations[col_alt] <= rango_alt[1])
+            
+        # Obtenemos los nombres de las estaciones que cumplen los filtros geo
+        stations_avail = gdf_stations.loc[mask_geo, Config.STATION_NAME_COL].unique()
+        
+        # Checkbox "Seleccionar Todas"
+        all_stations = st.checkbox("✅ Seleccionar Todas las filtradas", value=True)
+        
+        if all_stations:
             stations_for_analysis = st.multiselect(
-                "Seleccione Estación(es):",
-                options=lista_estaciones,
-                default=lista_estaciones
+                "Seleccione Estación(es):", 
+                options=stations_avail, 
+                default=stations_avail
             )
         else:
-            st.error(f"Columna {Config.STATION_NAME_COL} no encontrada.")
-            stations_for_analysis = []
+            stations_for_analysis = st.multiselect(
+                "Seleccione Estación(es):", 
+                options=stations_avail
+            )
 
-        st.markdown("---") # Separador visual
+        st.markdown("---")
+
+        # 4. TIEMPO Y LIMPIEZA
+        st.header("⏳ Tiempo y Datos")
+        
+        min_year = int(df_long[Config.YEAR_COL].min())
+        max_year = int(df_long[Config.YEAR_COL].max())
+        
+        year_range = st.slider("📅 Periodo:", min_year, max_year, (min_year, max_year))
+
+        st.markdown("##### Limpieza")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            ignore_zeros = st.checkbox("🚫 Excluir Ceros", value=False)
+        with col_c2:
+            ignore_nulls = st.checkbox("🚫 Excluir Nulos", value=False)
+            
+        apply_interp = st.checkbox("🔄 Aplicar Interpolación", value=False)
+        analysis_mode = "Anual"
 
         # 2. RANGO DE AÑOS
         st.markdown("##### Rango de Años")
@@ -118,19 +212,31 @@ def main():
         analysis_mode = "Anual"
 
     # --- D. APLICAR FILTROS ---
+    # 1. Filtro Base (Años y Estaciones)
     mask_base = (
         (df_long[Config.YEAR_COL] >= year_range[0])
         & (df_long[Config.YEAR_COL] <= year_range[1])
         & (df_long[Config.STATION_NAME_COL].isin(stations_for_analysis))
     )
     
+    # Creamos el dataframe filtrado inicial
     df_monthly_filtered = df_long.loc[mask_base].copy()
+    
+    # 2. Filtros de Limpieza (NUEVO)
+    if ignore_zeros:
+        df_monthly_filtered = df_monthly_filtered[df_monthly_filtered[Config.PRECIPITATION_COL] != 0]
+        
+    if ignore_nulls:
+        df_monthly_filtered = df_monthly_filtered.dropna(subset=[Config.PRECIPITATION_COL])
+
+    # 3. Filtrar GeoDataFrame de Estaciones
     gdf_filtered = gdf_stations[gdf_stations[Config.STATION_NAME_COL].isin(stations_for_analysis)]
 
+    # 4. Interpolación (Si aplica)
     if apply_interp:
         with st.spinner("Interpolando..."):
-            df_monthly_filtered = complete_series(df_monthly_filtered)
-    
+            df_monthly_filtered = complete_series(df_monthly_filtered)    
+
     df_anual_melted = (
         df_monthly_filtered.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[
             Config.PRECIPITATION_COL
