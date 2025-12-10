@@ -1337,80 +1337,100 @@ def display_spatial_distribution_tab(
         # Estaciones con POPUPS HTML INTEGRADOS
         fg_estaciones = folium.FeatureGroup(name="Estaciones", show=True)
         
-        # --- CORRECCIÓN AQUÍ: Definimos el nombre de la columna manualmente ---
-        col_codigo = 'Codigo'  # <--- CAMBIA ESTO si tu columna tiene otro nombre (ej. 'ID', 'Station')
+        # --- AUTO-DETECCIÓN DE COLUMNAS (CORRECCIÓN CLAVE) ---
+        # Buscamos nombres comunes para el CÓDIGO en las columnas disponibles
+        posibles_codigos = ['Codigo', 'CODIGO', 'codigo', 'ID', 'Id', 'station_code', 'StationCode']
+        col_codigo = next((c for c in posibles_codigos if c in gdf_filtered.columns), gdf_filtered.columns[0])
         
+        # Buscamos nombres comunes para el NOMBRE
+        posibles_nombres = ['Nombre', 'NOMBRE', 'nombre', 'StationName', 'Estacion']
+        col_nombre = next((c for c in posibles_nombres if c in gdf_filtered.columns), None) # Puede ser None
+
+        # Para depuración: si no encuentra nada obvio
+        # st.write(f"Columnas detectadas -> Código: {col_codigo}, Nombre: {col_nombre}")
+
         if not gdf_filtered.empty:
             for _, row in gdf_filtered.iterrows():
-                # Datos básicos
-                # Usamos Config para el nombre si existe, o fallback
                 try:
-                    nom = str(row[Config.STATION_NAME_COL])
-                except:
-                    nom = str(row.get('Nombre', 'Estación')) # Fallback si falla Config
-
-                # Usamos la variable col_codigo definida arriba en lugar de Config
-                cod = str(row[col_codigo]) 
-                lat_est = row.geometry.y
-                lon_est = row.geometry.x
-
-                # --- GENERACIÓN DEL POPUP HTML ---
-                html_plot = ""
-                try:
-                    # Filtramos datos para esta estación específica usando col_codigo
-                    df_station = df_long[df_long[col_codigo].astype(str) == cod].copy()
+                    # Datos básicos con manejo de errores
+                    cod = str(row[col_codigo])
                     
-                    if not df_station.empty:
-                        # Convertir fecha y ordenar
-                        df_station['Fecha'] = pd.to_datetime(df_station['Fecha'])
-                        df_station = df_station.sort_values('Fecha')
-                        
-                        # Crear gráfico miniatura con Matplotlib
-                        fig, ax = plt.subplots(figsize=(4, 2))
-                        ax.plot(df_station['Fecha'], df_station['Valor'], color='#1f77b4', linewidth=1)
-                        ax.set_title(f"Serie Histórica: {cod}", fontsize=10)
-                        ax.set_ylabel("mm", fontsize=8)
-                        ax.tick_params(axis='both', which='major', labelsize=7)
-                        plt.tight_layout()
-
-                        # Guardar gráfico en buffer y convertir a base64
-                        buf = io.BytesIO()
-                        plt.savefig(buf, format="png", bbox_inches='tight')
-                        plt.close(fig)
-                        buf.seek(0)
-                        encoded_img = base64.b64encode(buf.read()).decode('utf-8')
-                        
-                        # Crear etiqueta IMG HTML
-                        html_plot = f'<br><img src="data:image/png;base64,{encoded_img}" width="280">'
+                    if col_nombre:
+                        nom = str(row[col_nombre])
                     else:
-                        html_plot = "<br><i>Sin datos históricos disponibles.</i>"
-                except Exception as e:
-                    # Imprimir error en consola para depuración, pero no romper la app
-                    print(f"Error generando gráfico para {cod}: {e}")
-                    html_plot = f"<br><i>No se pudo cargar gráfico.</i>"
+                        nom = f"Estación {cod}" # Fallback si no encuentra columna de nombre
+                        
+                    lat_est = row.geometry.y
+                    lon_est = row.geometry.x
 
-                # Construir el contenido HTML completo del popup
-                html_content = f"""
-                <div style="font-family: sans-serif; width: 300px;">
-                    <h5 style="margin-bottom: 0;">{nom}</h5>
-                    <span style="font-size: 0.9em; color: gray;">Código: {cod}</span>
-                    <br>
-                    <b>Lat:</b> {lat_est:.4f}, <b>Lon:</b> {lon_est:.4f}
-                    {html_plot}
-                </div>
-                """
+                    # --- GENERACIÓN DEL POPUP HTML ---
+                    html_plot = ""
+                    try:
+                        # Intentamos filtrar df_long. 
+                        # IMPORTANTE: df_long también debe tener una columna de código coincidente.
+                        # Asumimos que df_long tiene una columna llamada igual a 'col_codigo' o 'Codigo'
+                        col_codigo_long = next((c for c in posibles_codigos if c in df_long.columns), None)
+                        
+                        if col_codigo_long:
+                            df_station = df_long[df_long[col_codigo_long].astype(str) == cod].copy()
+                        else:
+                            df_station = pd.DataFrame() # No se encontró columna de cruce
+
+                        if not df_station.empty:
+                            # Convertir fecha y ordenar
+                            df_station['Fecha'] = pd.to_datetime(df_station['Fecha'])
+                            df_station = df_station.sort_values('Fecha')
+                            
+                            # Crear gráfico miniatura con Matplotlib
+                            fig, ax = plt.subplots(figsize=(4, 2))
+                            ax.plot(df_station['Fecha'], df_station['Valor'], color='#1f77b4', linewidth=1)
+                            ax.set_title(f"Serie Histórica: {cod}", fontsize=10)
+                            ax.set_ylabel("mm", fontsize=8)
+                            ax.tick_params(axis='both', which='major', labelsize=7)
+                            plt.tight_layout()
+
+                            # Guardar gráfico en buffer y convertir a base64
+                            buf = io.BytesIO()
+                            plt.savefig(buf, format="png", bbox_inches='tight')
+                            plt.close(fig)
+                            buf.seek(0)
+                            encoded_img = base64.b64encode(buf.read()).decode('utf-8')
+                            
+                            # Crear etiqueta IMG HTML
+                            html_plot = f'<br><img src="data:image/png;base64,{encoded_img}" width="280">'
+                        else:
+                            html_plot = "<br><i>Sin datos históricos.</i>"
+                    except Exception as e:
+                        # print(f"Error gráfico {cod}: {e}") 
+                        html_plot = f"<br><i>No data plot.</i>"
+
+                    # Construir el contenido HTML completo del popup
+                    html_content = f"""
+                    <div style="font-family: sans-serif; width: 300px;">
+                        <h5 style="margin-bottom: 0;">{nom}</h5>
+                        <span style="font-size: 0.9em; color: gray;">ID: {cod}</span>
+                        <br>
+                        <b>Lat:</b> {lat_est:.4f}, <b>Lon:</b> {lon_est:.4f}
+                        {html_plot}
+                    </div>
+                    """
+                    
+                    # Crear IFrame y Popup
+                    iframe = folium.IFrame(html_content, width=320, height=250)
+                    popup = folium.Popup(iframe, max_width=320)
+
+                    # Añadir marcador con popup
+                    folium.Marker(
+                        [lat_est, lon_est],
+                        tooltip=f"{nom}",
+                        popup=popup,
+                        icon=folium.Icon(color="blue", icon="cloud")
+                    ).add_to(fg_estaciones)
                 
-                # Crear IFrame y Popup
-                iframe = folium.IFrame(html_content, width=320, height=250)
-                popup = folium.Popup(iframe, max_width=320)
-
-                # Añadir marcador con popup
-                folium.Marker(
-                    [lat_est, lon_est],
-                    tooltip=f"{nom} ({cod})",
-                    popup=popup,
-                    icon=folium.Icon(color="blue", icon="cloud")
-                ).add_to(fg_estaciones)
+                except Exception as e:
+                    # Si falla una estación puntual, continuamos con la siguiente
+                    print(f"Error procesando estación: {e}")
+                    continue
                 
         fg_estaciones.add_to(m)
 
