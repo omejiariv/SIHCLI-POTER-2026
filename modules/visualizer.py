@@ -5404,13 +5404,27 @@ def display_station_table_tab(**kwargs):
         st.warning("No hay datos para mostrar.")
 
 
-# ==============================================================================
-# INICIO DE LA FUNCIÓN display_land_cover_analysis_tab
-# Copia desde aquí hacia abajo
+# FUNCIÓN DE ANÁLISIS DE COBERTURAS (LAND COVER)
 # ==============================================================================
 
 def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     st.subheader("🌿 Análisis de Cobertura del Suelo y Escenarios")
+
+    # --- 0. IMPORTACIÓN DE CONFIGURACIÓN (Ajustada para carpeta 'modules') ---
+    try:
+        # Intento 1: Ruta absoluta estándar si corres desde la raíz
+        from modules.config import Config
+    except ImportError:
+        try:
+            # Intento 2: Importación relativa (si visualizer también está en modules)
+            from .config import Config
+        except ImportError:
+            try:
+                # Intento 3: Si config está en el path directo
+                from config import Config
+            except ImportError:
+                st.error("❌ Error Crítico: No se encuentra 'config.py' en la carpeta 'modules'.")
+                return
 
     # --- 1. RECUPERACIÓN DE DATOS ---
     res_basin = st.session_state.get("basin_res")
@@ -5441,41 +5455,32 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
     # --- 2. PROCESAMIENTO DEL RASTER ---
     try:
-        # Verificamos si existe la configuración (usando el Config global)
-        if not hasattr(Config, "LAND_COVER_RASTER_PATH") or not os.path.exists(
-            Config.LAND_COVER_RASTER_PATH
-        ):
-            st.warning("⚠️ Archivo raster de coberturas no configurado.")
-            # Fallback simple
+        # Verificación de archivo usando la ruta de Config
+        if not hasattr(Config, "LAND_COVER_RASTER_PATH") or not os.path.exists(Config.LAND_COVER_RASTER_PATH):
+            st.warning(f"⚠️ No se encuentra el archivo raster en: {getattr(Config, 'LAND_COVER_RASTER_PATH', 'Ruta no definida')}")
+            
+            # Mapa básico de fallback (solo contorno)
             m = folium.Map(
                 location=[gdf_basin.centroid.y.mean(), gdf_basin.centroid.x.mean()],
                 zoom_start=11,
             )
             folium.GeoJson(
                 gdf_basin,
-                style_function=lambda x: {
-                    "fillColor": "#228B22",
-                    "color": "#006400",
-                    "weight": 2,
-                    "fillOpacity": 0.3,
-                },
-                tooltip=basin_name,
+                style_function=lambda x: {'color': '#228B22', 'fillOpacity': 0.1}
             ).add_to(m)
-            LocateControl(auto_start=False).add_to(m)
             st_folium(m, height=350, use_container_width=True)
             return
 
-        import rasterio
-        from rasterio.mask import mask
-
         with rasterio.open(Config.LAND_COVER_RASTER_PATH) as src:
+            # Reproyección si es necesaria para recortar
             if gdf_basin.crs != src.crs:
                 gdf_basin_proj = gdf_basin.to_crs(src.crs)
             else:
                 gdf_basin_proj = gdf_basin
 
+            # Recorte (Mask)
             out_image, out_transform = mask(src, gdf_basin_proj.geometry, crop=True)
-            data = out_image[0]
+            data = out_image[0] # Tomamos la primera banda
 
         # --- 3. DICCIONARIOS Y COLORES ---
         legend = {
@@ -5491,9 +5496,10 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             10: "Vegetación Secundaria",
             11: "Zonas Degradadas",
             12: "Humedales",
+            13: "Otros / Sin Clasificar"
         }
         
-        # Colores ajustados para el mapa
+        # Mapa de colores (HEX) para visualización
         color_map = {
             1: "#A9A9A9",   # Urbanas - Gris
             2: "#FFFF00",   # Cultivos - Amarillo
@@ -5506,16 +5512,17 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             9: "#228B22",   # Fragmentado - Verde Bosque
             10: "#9ACD32",  # Secundaria - Verde Amarillo
             11: "#8B4513",  # Degradadas - Marrón
-            12: "#00CED1"   # Humedales - Turquesa
+            12: "#00CED1",  # Humedales - Turquesa
+            13: "#FF00FF"   # Clase 13 - Magenta
         }
 
         valid_pixels = data[data != src.nodata]
         if valid_pixels.size == 0:
-            st.warning("Cuenca fuera del raster.")
+            st.warning("La cuenca está fuera del área del raster de coberturas.")
             return
 
-        # --- 4. MAPA VISUAL ---
-        # Calcular centro y bounds
+        # --- 4. MAPA VISUAL CON CAPAS ---
+        # Calculamos centro para el mapa base
         gdf_4326 = gdf_basin.to_crs(epsg=4326)
         bounds_latlon = gdf_4326.total_bounds
         center_lat = (bounds_latlon[1] + bounds_latlon[3]) / 2
@@ -5523,36 +5530,46 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
         m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="CartoDB positron")
 
-        # Preparar imagen RGBA
+        # --- PREPARACIÓN DE IMAGEN OVERLAY ---
+        # Creamos imagen RGBA vacía
         data_rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
         
+        # Llenamos la imagen pixel por pixel
         for val, color_hex in color_map.items():
+            # Convertir hex a rgb
             r, g, b = tuple(int(color_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+            
             mask_val = (data == val)
             data_rgba[mask_val, 0] = r
             data_rgba[mask_val, 1] = g
             data_rgba[mask_val, 2] = b
-            data_rgba[mask_val, 3] = 200 # Alpha
+            data_rgba[mask_val, 3] = 180 # Opacidad
 
-        # Ocultar NoData
+        # Hacer transparente lo que sea NoData o 0
         data_rgba[data == src.nodata, 3] = 0
+        data_rgba[data == 0, 3] = 0 # Por si acaso hay ceros
 
-        # Calcular bounds de la imagen para Folium
+        # Obtener los límites geográficos exactos de la imagen recortada
         minx, miny, maxx, maxy = rasterio.transform.array_bounds(out_image.shape[1], out_image.shape[0], out_transform)
+        
+        # Transformar esos límites a Lat/Lon para Folium
         from pyproj import Transformer
         transformer = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
         lon_min, lat_min = transformer.transform(minx, miny)
         lon_max, lat_max = transformer.transform(maxx, maxy)
+        
         image_bounds = [[lat_min, lon_min], [lat_max, lon_max]]
 
-        # Agregar capas
+        # Agregar la Imagen Raster
         folium.raster_layers.ImageOverlay(
             image=data_rgba,
             bounds=image_bounds,
-            opacity=0.7,
-            name="Cobertura de Suelo"
+            opacity=0.8,
+            name="Cobertura de Suelo",
+            mercator_project=True 
         ).add_to(m)
 
+        # Agregar el vector de la cuenca encima
         folium.GeoJson(
             gdf_basin,
             name="Límite Cuenca",
@@ -5560,9 +5577,9 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
         ).add_to(m)
 
         folium.LayerControl().add_to(m)
-        st_folium(m, height=400, use_container_width=True)
+        st_folium(m, height=450, use_container_width=True)
 
-        # --- 5. ESTADÍSTICAS (Tu código original) ---
+        # --- 5. ESTADÍSTICAS Y GRÁFICAS (Original) ---
         unique, counts = np.unique(valid_pixels, return_counts=True)
         rows = []
         for val, count in zip(unique, counts):
@@ -5597,7 +5614,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
         st.markdown("---")
         
-        # --- 6. SIMULADOR SCS-CN (Tu código original) ---
+        # --- 6. SIMULADOR SCS-CN (Original) ---
         st.subheader("🎛️ Simulador de Escorrentía (Método SCS-CN)")
         with st.expander("Configuración de Números de Curva (CN)", expanded=False):
             c_cn = st.columns(5)
@@ -5710,11 +5727,9 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                 st.plotly_chart(fig_sim, use_container_width=True)
 
     except Exception as e:
+        import traceback
         st.error(f"Error procesando cobertura: {e}")
-
-# ==============================================================================
-# FIN DE LA FUNCIÓN
-# ==============================================================================
+        st.text(traceback.format_exc()) # Ayuda visual para depuración
 
 
 # PESTAÑA: CORRECCIÓN DE SESGO (VERSIÓN BLINDADA)
