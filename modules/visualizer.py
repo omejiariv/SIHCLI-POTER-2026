@@ -1250,7 +1250,6 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                 )
 
 
-# --- FUNCIÓN PRINCIPAL ---
 def display_spatial_distribution_tab(
     user_loc, interpolacion, df_long, df_complete, gdf_stations, gdf_filtered,
     gdf_municipios, gdf_subcuencas, gdf_predios, df_enso, stations_for_analysis,
@@ -1335,26 +1334,89 @@ def display_spatial_distribution_tab(
             ).add_to(fg_predios)
             fg_predios.add_to(m)
 
-        # Estaciones
+        # Estaciones con POPUPS HTML INTEGRADOS
         fg_estaciones = folium.FeatureGroup(name="Estaciones", show=True)
+        
         if not gdf_filtered.empty:
             for _, row in gdf_filtered.iterrows():
+                # Datos básicos
                 nom = str(row[Config.STATION_NAME_COL])
+                cod = str(row[Config.STATION_CODE_COL])
+                lat_est = row.geometry.y
+                lon_est = row.geometry.x
+
+                # --- GENERACIÓN DEL POPUP HTML ---
+                # Intentamos generar un mini gráfico si hay datos en df_long o df_monthly_filtered
+                html_plot = ""
+                try:
+                    # Filtramos datos para esta estación específica
+                    # Asumimos que df_long tiene columna 'Codigo' o similar que coincida con Config.STATION_CODE_COL
+                    # Ajusta 'Codigo' según tu nombre real de columna en df_long
+                    df_station = df_long[df_long[Config.STATION_CODE_COL] == row[Config.STATION_CODE_COL]].copy()
+                    
+                    if not df_station.empty:
+                        # Convertir fecha y ordenar
+                        df_station['Fecha'] = pd.to_datetime(df_station['Fecha'])
+                        df_station = df_station.sort_values('Fecha')
+                        
+                        # Crear gráfico miniatura con Matplotlib
+                        fig, ax = plt.subplots(figsize=(4, 2))
+                        ax.plot(df_station['Fecha'], df_station['Valor'], color='#1f77b4', linewidth=1)
+                        ax.set_title(f"Serie Histórica: {cod}", fontsize=10)
+                        ax.set_ylabel("mm", fontsize=8)
+                        ax.tick_params(axis='both', which='major', labelsize=7)
+                        plt.tight_layout()
+
+                        # Guardar gráfico en buffer y convertir a base64
+                        buf = io.BytesIO()
+                        plt.savefig(buf, format="png", bbox_inches='tight')
+                        plt.close(fig)
+                        buf.seek(0)
+                        encoded_img = base64.b64encode(buf.read()).decode('utf-8')
+                        
+                        # Crear etiqueta IMG HTML
+                        html_plot = f'<br><img src="data:image/png;base64,{encoded_img}" width="280">'
+                    else:
+                        html_plot = "<br><i>Sin datos históricos disponibles.</i>"
+                except Exception as e:
+                    html_plot = f"<br><i>Error cargando gráfico: {e}</i>"
+
+                # Construir el contenido HTML completo del popup
+                html_content = f"""
+                <div style="font-family: sans-serif; width: 300px;">
+                    <h5 style="margin-bottom: 0;">{nom}</h5>
+                    <span style="font-size: 0.9em; color: gray;">Código: {cod}</span>
+                    <br>
+                    <b>Lat:</b> {lat_est:.4f}, <b>Lon:</b> {lon_est:.4f}
+                    {html_plot}
+                </div>
+                """
+                
+                # Crear IFrame y Popup
+                iframe = folium.IFrame(html_content, width=320, height=250)
+                popup = folium.Popup(iframe, max_width=320)
+
+                # Añadir marcador con popup
                 folium.Marker(
-                    [row.geometry.y, row.geometry.x],
-                    tooltip=nom,
+                    [lat_est, lon_est],
+                    tooltip=f"{nom} ({cod})",
+                    popup=popup,
                     icon=folium.Icon(color="blue", icon="cloud")
                 ).add_to(fg_estaciones)
+                
         fg_estaciones.add_to(m)
 
         folium.LayerControl(collapsed=True).add_to(m)
 
-        st.markdown("👆 **Haz clic en el mapa para ver el pronóstico.**")
+        st.markdown("👆 **Haz clic en un marcador para ver detalles o en cualquier punto del mapa para ver el pronóstico.**")
+        
+        # Renderizar mapa con st_folium
         map_output = st_folium(m, width=None, height=600, returned_objects=["last_clicked"])
 
-        # Lógica de Clic
+        # Lógica de Clic (Solo si se hizo clic en el mapa, no en un marcador)
         if map_output and map_output.get("last_clicked"):
             coords = map_output["last_clicked"]
+            # Actualizamos el punto seleccionado para análisis puntual
             st.session_state.selected_point = {"lat": coords["lat"], "lng": coords["lng"]}
 
         # 3. DASHBOARD DE PRONÓSTICO (AQUÍ ESTÁ LA MAGIA RECUPERADA)
