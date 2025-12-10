@@ -5441,9 +5441,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
     # --- 2. PROCESAMIENTO DEL RASTER ---
     try:
-        # Importamos Config aquí por si acaso no está global
-        from config import Config
-        
+        # Verificamos si existe la configuración (usando el Config global)
         if not hasattr(Config, "LAND_COVER_RASTER_PATH") or not os.path.exists(
             Config.LAND_COVER_RASTER_PATH
         ):
@@ -5495,6 +5493,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             12: "Humedales",
         }
         
+        # Colores ajustados para el mapa
         color_map = {
             1: "#A9A9A9",   # Urbanas - Gris
             2: "#FFFF00",   # Cultivos - Amarillo
