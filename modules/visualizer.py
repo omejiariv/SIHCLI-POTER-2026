@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import pymannkendall as mk
 import requests
 import streamlit as st
+import sys
 from folium import plugins
 from folium.plugins import LocateControl, MarkerCluster
 from plotly.subplots import make_subplots
@@ -5409,37 +5410,40 @@ def display_station_table_tab(**kwargs):
 
 def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     st.subheader("🌿 Análisis de Cobertura del Suelo y Escenarios")
-    
-    # --- IMPORTACIONES LOCALES (Para asegurar que no falte nada) ---
+
+    # --- 1. IMPORTACIONES DE SEGURIDAD (DENTRO DE LA FUNCIÓN) ---
+    # Esto evita el error "name 'rasterio' is not defined"
     try:
         import rasterio
         from rasterio.mask import mask
-    except ImportError:
-        st.error("❌ Error: La librería 'rasterio' no está instalada en el entorno.")
+        import folium
+        from streamlit_folium import st_folium
+        from folium.plugins import LocateControl
+    except ImportError as e:
+        st.error(f"❌ Error de librerías: {e}. Asegúrate de tener instalado 'rasterio' y 'folium'.")
         return
 
-    # --- 0. IMPORTACIÓN DE CONFIGURACIÓN ---
+    # --- 2. IMPORTACIÓN DE CONFIGURACIÓN (ROBUSTA) ---
+    # Busca Config donde sea que esté
+    Config = None
     try:
-        # Intento 1: Importación directa desde modules
-        from modules.config import Config
+        from modules.config import Config as Cfg  # Intento 1
+        Config = Cfg
     except ImportError:
         try:
-            # Intento 2: Importación relativa
-            from .config import Config
+            from .config import Config as Cfg # Intento 2 (relativo)
+            Config = Cfg
         except ImportError:
             try:
-                # Intento 3: Importación desde path
-                from config import Config
-            except ImportError:
-                st.error("❌ Error Crítico: No se encuentra 'config.py'.")
-                return
-
-    # --- 1. RECUPERACIÓN DE DATOS ---
+                import config as Cfg # Intento 3 (raíz)
+                Config = Cfg.Config
+            except:
+                pass # Seguiremos sin config si falla
+    
+    # --- 3. RECUPERACIÓN DE DATOS DE SESIÓN ---
     res_basin = st.session_state.get("basin_res")
     if not res_basin or not res_basin.get("ready"):
-        st.info(
-            "ℹ️ Para ver el análisis de coberturas, primero debes delimitar y procesar una cuenca en la pestaña **'Mapas Avanzados'**."
-        )
+        st.info("ℹ️ Para ver el análisis de coberturas, primero debes delimitar y procesar una cuenca en la pestaña **'Mapas Avanzados'**.")
         return
 
     gdf_basin = res_basin.get("gdf_cuenca", res_basin.get("gdf_union"))
@@ -5461,170 +5465,117 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
     st.markdown(f"Cuenca: **{basin_name}** (Ppt ref: {ppt_anual:.0f} mm/año)")
 
-    # --- 2. PROCESAMIENTO DEL RASTER ---
+    # --- 4. PROCESAMIENTO DEL RASTER Y MAPA ---
     try:
-        # Verificación de archivo
-        raster_path = getattr(Config, "LAND_COVER_RASTER_PATH", None)
-        
-        if not raster_path or not os.path.exists(raster_path):
+        # Ruta del raster
+        raster_path = None
+        if Config and hasattr(Config, "LAND_COVER_RASTER_PATH"):
+            raster_path = Config.LAND_COVER_RASTER_PATH
+        else:
+            # Ruta fallback por si falla Config
+            raster_path = "data/Cob25m_WGS84.tif"
+
+        # Verificamos existencia
+        if not os.path.exists(raster_path):
             st.warning(f"⚠️ No se encuentra el archivo raster en: {raster_path}")
-            
-            # Mapa básico de fallback
-            m = folium.Map(
-                location=[gdf_basin.centroid.y.mean(), gdf_basin.centroid.x.mean()],
-                zoom_start=11,
-            )
-            folium.GeoJson(
-                gdf_basin,
-                style_function=lambda x: {'color': '#228B22', 'fillOpacity': 0.1}
-            ).add_to(m)
+            # Mapa simple si no hay raster
+            m = folium.Map(location=[gdf_basin.centroid.y.mean(), gdf_basin.centroid.x.mean()], zoom_start=11)
+            folium.GeoJson(gdf_basin).add_to(m)
             st_folium(m, height=350, use_container_width=True)
             return
 
+        # --- AQUI OCURRE LA MAGIA DEL MAPA ---
         with rasterio.open(raster_path) as src:
-            # Reproyección si es necesaria para recortar
             if gdf_basin.crs != src.crs:
                 gdf_basin_proj = gdf_basin.to_crs(src.crs)
             else:
                 gdf_basin_proj = gdf_basin
 
-            # Recorte (Mask)
             out_image, out_transform = mask(src, gdf_basin_proj.geometry, crop=True)
-            data = out_image[0] # Tomamos la primera banda
+            data = out_image[0]
 
-        # --- 3. DICCIONARIOS Y COLORES ---
+        # Leyenda
         legend = {
-            1: "Zonas Urbanas",
-            2: "Cultivos Transitorios",
-            3: "Pastos",
-            4: "Áreas Agrícolas",
-            5: "Bosques",
-            6: "Vegetación Herbácea",
-            7: "Áreas Abiertas",
-            8: "Aguas",
-            9: "Bosque Fragmentado",
-            10: "Vegetación Secundaria",
-            11: "Zonas Degradadas",
-            12: "Humedales",
-            13: "Otros / Sin Clasificar"
+            1: "Zonas Urbanas", 2: "Cultivos Transitorios", 3: "Pastos", 4: "Áreas Agrícolas",
+            5: "Bosques", 6: "Vegetación Herbácea", 7: "Áreas Abiertas", 8: "Aguas",
+            9: "Bosque Fragmentado", 10: "Vegetación Secundaria", 11: "Zonas Degradadas",
+            12: "Humedales", 13: "Otros / Sin Clasificar"
         }
         
-        # Mapa de colores (HEX)
+        # Colores Hexadecimales
         color_map = {
-            1: "#A9A9A9",   # Urbanas - Gris
-            2: "#FFFF00",   # Cultivos - Amarillo
-            3: "#FFA500",   # Pastos - Naranja
-            4: "#FFD700",   # Agricolas - Dorado
-            5: "#006400",   # Bosques - Verde Oscuro
-            6: "#32CD32",   # Herbacea - Verde Lima
-            7: "#F4A460",   # Abiertas - Arena
-            8: "#0000FF",   # Aguas - Azul
-            9: "#228B22",   # Fragmentado - Verde Bosque
-            10: "#9ACD32",  # Secundaria - Verde Amarillo
-            11: "#8B4513",  # Degradadas - Marrón
-            12: "#00CED1",  # Humedales - Turquesa
-            13: "#FF00FF"   # Clase 13 - Magenta
+            1: "#A9A9A9", 2: "#FFFF00", 3: "#FFA500", 4: "#FFD700",
+            5: "#006400", 6: "#32CD32", 7: "#F4A460", 8: "#0000FF",
+            9: "#228B22", 10: "#9ACD32", 11: "#8B4513", 12: "#00CED1", 13: "#FF00FF"
         }
 
         valid_pixels = data[data != src.nodata]
         if valid_pixels.size == 0:
-            st.warning("La cuenca está fuera del área del raster de coberturas.")
+            st.warning("Cuenca fuera del raster.")
             return
 
-        # --- 4. MAPA VISUAL CON CAPAS ---
-        # Calculamos centro para el mapa base
+        # Preparar Mapa Folium
         gdf_4326 = gdf_basin.to_crs(epsg=4326)
-        bounds_latlon = gdf_4326.total_bounds
-        center_lat = (bounds_latlon[1] + bounds_latlon[3]) / 2
-        center_lon = (bounds_latlon[0] + bounds_latlon[2]) / 2
-
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="CartoDB positron")
-
-        # --- PREPARACIÓN DE IMAGEN OVERLAY ---
-        # Creamos imagen RGBA vacía
-        data_rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
+        bounds = gdf_4326.total_bounds
+        center = [(bounds[1] + bounds[3])/2, (bounds[0] + bounds[2])/2]
         
-        # Llenamos la imagen pixel por pixel
-        for val, color_hex in color_map.items():
-            # Convertir hex a rgb
-            r, g, b = tuple(int(color_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-            
+        m = folium.Map(location=center, zoom_start=12, tiles="CartoDB positron")
+
+        # Crear Imagen RGBA para el mapa
+        data_rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
+        for val, c_hex in color_map.items():
+            r, g, b = tuple(int(c_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
             mask_val = (data == val)
             data_rgba[mask_val, 0] = r
             data_rgba[mask_val, 1] = g
             data_rgba[mask_val, 2] = b
             data_rgba[mask_val, 3] = 180 # Opacidad
 
-        # Hacer transparente lo que sea NoData o 0
         data_rgba[data == src.nodata, 3] = 0
         data_rgba[data == 0, 3] = 0
 
-        # Obtener los límites geográficos exactos de la imagen recortada
+        # Transformar coordenadas para Folium
         minx, miny, maxx, maxy = rasterio.transform.array_bounds(out_image.shape[1], out_image.shape[0], out_transform)
-        
-        # Transformar esos límites a Lat/Lon para Folium
         from pyproj import Transformer
         transformer = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
         lon_min, lat_min = transformer.transform(minx, miny)
         lon_max, lat_max = transformer.transform(maxx, maxy)
-        
         image_bounds = [[lat_min, lon_min], [lat_max, lon_max]]
 
-        # Agregar la Imagen Raster
+        # Agregar imagen al mapa
         folium.raster_layers.ImageOverlay(
-            image=data_rgba,
-            bounds=image_bounds,
-            opacity=0.8,
-            name="Cobertura de Suelo",
-            mercator_project=True 
+            image=data_rgba, bounds=image_bounds, opacity=0.8, name="Cobertura de Suelo", mercator_project=True
         ).add_to(m)
 
-        # Agregar el vector de la cuenca encima
-        folium.GeoJson(
-            gdf_basin,
-            name="Límite Cuenca",
-            style_function=lambda x: {'color': 'black', 'fill': False, 'weight': 2}
-        ).add_to(m)
-
+        # Agregar limite cuenca
+        folium.GeoJson(gdf_basin, name="Límite Cuenca", style_function=lambda x: {'color': 'black', 'fill': False, 'weight': 2}).add_to(m)
+        
         folium.LayerControl().add_to(m)
         st_folium(m, height=450, use_container_width=True)
 
-        # --- 5. ESTADÍSTICAS Y GRÁFICAS ---
+        # --- 5. ESTADÍSTICAS Y GRÁFICAS (MANTENIDO) ---
         unique, counts = np.unique(valid_pixels, return_counts=True)
         rows = []
         for val, count in zip(unique, counts):
             perc = (count / counts.sum()) * 100
             area = (perc / 100) * area_total_km2
-            rows.append(
-                {
-                    "Cobertura": legend.get(val, f"Clase {val}"),
-                    "Área (km²)": area,
-                    "%": perc,
-                }
-            )
+            rows.append({"Cobertura": legend.get(val, f"Clase {val}"), "Área (km²)": area, "%": perc})
 
         df_cover = pd.DataFrame(rows).sort_values("%", ascending=False)
 
         c1, c2 = st.columns([3, 2])
         with c1:
             st.markdown("#### Distribución Actual")
-            st.dataframe(
-                df_cover.style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}%"}),
-                use_container_width=True,
-            )
+            st.dataframe(df_cover.style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}%"}), use_container_width=True)
         with c2:
             fig = px.pie(df_cover, values="Área (km²)", names="Cobertura", hole=0.4)
             fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=300)
             st.plotly_chart(fig, use_container_width=True)
-            st.metric(
-                "Escorrentía Balance (Turc)",
-                f"{q_actual_bal:.0f} mm/año",
-                f"Vol: {vol_actual:.2f} Mm³",
-            )
+            st.metric("Escorrentía Balance (Turc)", f"{q_actual_bal:.0f} mm/año", f"Vol: {vol_actual:.2f} Mm³")
 
         st.markdown("---")
         
-        # --- 6. SIMULADOR SCS-CN ---
+        # --- 6. SIMULADOR SCS-CN (MANTENIDO) ---
         st.subheader("🎛️ Simulador de Escorrentía (Método SCS-CN)")
         with st.expander("Configuración de Números de Curva (CN)", expanded=False):
             c_cn = st.columns(5)
@@ -5645,101 +5596,49 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
         total_p = p_bosque + p_pasto + p_cultivo + p_urbano + p_suelo
 
         if total_p != 100:
-            st.warning(
-                f"⚠️ La suma de porcentajes es {total_p}%. Debe ajustar los sliders para que sumen exactamente 100%."
-            )
+            st.warning(f"⚠️ La suma de porcentajes es {total_p}%. Debe ajustar los sliders para que sumen exactamente 100%.")
         else:
             if st.button("Estimar Escorrentía del Escenario"):
-                cn_escenario = (
-                    (p_bosque * cn_bosque)
-                    + (p_pasto * cn_pasto)
-                    + (p_cultivo * cn_cultivo)
-                    + (p_urbano * cn_urbano)
-                    + (p_suelo * cn_suelo)
-                ) / 100
-                if cn_escenario <= 0:
-                    cn_escenario = 1
+                cn_escenario = ((p_bosque * cn_bosque) + (p_pasto * cn_pasto) + (p_cultivo * cn_cultivo) + (p_urbano * cn_urbano) + (p_suelo * cn_suelo)) / 100
+                if cn_escenario <= 0: cn_escenario = 1
                 S = (25400 / cn_escenario) - 254
                 Ia = 0.2 * S
-                if ppt_anual > Ia:
-                    Q_escenario = ((ppt_anual - Ia) ** 2) / (ppt_anual - Ia + S)
-                else:
-                    Q_escenario = 0
-
+                Q_escenario = ((ppt_anual - Ia) ** 2) / (ppt_anual - Ia + S) if ppt_anual > Ia else 0
                 vol_escenario = (Q_escenario * area_total_km2) / 1000
 
-                # Baseline aproximada SCS
                 cn_actual_pond = 0
                 for _, row in df_cover.iterrows():
                     cob = row["Cobertura"]
                     pct = row["%"]
-                    if "Bosque" in cob:
-                        cn_val = cn_bosque
-                    elif "Pasto" in cob or "Herbácea" in cob:
-                        cn_val = cn_pasto
-                    elif "Urban" in cob:
-                        cn_val = cn_urbano
-                    elif "Agua" in cob:
-                        cn_val = 100
-                    else:
-                        cn_val = cn_cultivo
+                    if "Bosque" in cob: cn_val = cn_bosque
+                    elif "Pasto" in cob or "Herbácea" in cob: cn_val = cn_pasto
+                    elif "Urban" in cob: cn_val = cn_urbano
+                    elif "Agua" in cob: cn_val = 100
+                    else: cn_val = cn_cultivo
                     cn_actual_pond += cn_val * pct / 100
 
                 S_act = (25400 / cn_actual_pond) - 254
                 Ia_act = 0.2 * S_act
-                Q_actual_scs = (
-                    ((ppt_anual - Ia_act) ** 2) / (ppt_anual - Ia_act + S_act)
-                    if ppt_anual > Ia_act
-                    else 0
-                )
-
+                Q_actual_scs = ((ppt_anual - Ia_act) ** 2) / (ppt_anual - Ia_act + S_act) if ppt_anual > Ia_act else 0
                 delta_q = Q_escenario - Q_actual_scs
 
                 st.success("Escenario Calculado Exitosamente")
                 col_res1, col_res2, col_res3 = st.columns(3)
-                col_res1.metric(
-                    "CN Ponderado (Escenario)",
-                    f"{cn_escenario:.1f}",
-                    delta=f"{cn_escenario - cn_actual_pond:.1f}",
-                )
-                col_res2.metric(
-                    "Escorrentía SCS (Q)",
-                    f"{Q_escenario:.0f} mm/año",
-                    delta=f"{delta_q:+.0f} mm/año",
-                )
+                col_res1.metric("CN Ponderado (Escenario)", f"{cn_escenario:.1f}", delta=f"{cn_escenario - cn_actual_pond:.1f}")
+                col_res2.metric("Escorrentía SCS (Q)", f"{Q_escenario:.0f} mm/año", delta=f"{delta_q:+.0f} mm/año")
                 col_res3.metric("Volumen Total", f"{vol_escenario:.2f} Mm³")
 
-                fig_sim = go.Figure(
-                    data=[
-                        go.Bar(
-                            name="Actual (Est. SCS)",
-                            x=["Escorrentía"],
-                            y=[Q_actual_scs],
-                            marker_color="#1f77b4",
-                            text=f"{Q_actual_scs:.0f}",
-                            textposition="auto",
-                        ),
-                        go.Bar(
-                            name="Escenario Futuro",
-                            x=["Escorrentía"],
-                            y=[Q_escenario],
-                            marker_color="#2ca02c",
-                            text=f"{Q_escenario:.0f}",
-                            textposition="auto",
-                        ),
-                    ]
-                )
-                fig_sim.update_layout(
-                    title="Comparación de Escorrentía Directa (mm/año)",
-                    height=300,
-                    yaxis_title="Q (mm)",
-                )
+                fig_sim = go.Figure(data=[
+                    go.Bar(name="Actual (Est. SCS)", x=["Escorrentía"], y=[Q_actual_scs], marker_color="#1f77b4", text=f"{Q_actual_scs:.0f}", textposition="auto"),
+                    go.Bar(name="Escenario Futuro", x=["Escorrentía"], y=[Q_escenario], marker_color="#2ca02c", text=f"{Q_escenario:.0f}", textposition="auto"),
+                ])
+                fig_sim.update_layout(title="Comparación de Escorrentía Directa (mm/año)", height=300, yaxis_title="Q (mm)")
                 st.plotly_chart(fig_sim, use_container_width=True)
 
     except Exception as e:
         import traceback
         st.error(f"Error procesando cobertura: {e}")
-        st.text(traceback.format_exc())
+        st.code(traceback.format_exc())
 
 
 # PESTAÑA: CORRECCIÓN DE SESGO (VERSIÓN BLINDADA)
