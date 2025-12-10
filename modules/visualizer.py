@@ -1337,22 +1337,28 @@ def display_spatial_distribution_tab(
         # Estaciones con POPUPS HTML INTEGRADOS
         fg_estaciones = folium.FeatureGroup(name="Estaciones", show=True)
         
+        # --- CORRECCIÓN AQUÍ: Definimos el nombre de la columna manualmente ---
+        col_codigo = 'Codigo'  # <--- CAMBIA ESTO si tu columna tiene otro nombre (ej. 'ID', 'Station')
+        
         if not gdf_filtered.empty:
             for _, row in gdf_filtered.iterrows():
                 # Datos básicos
-                nom = str(row[Config.STATION_NAME_COL])
-                cod = str(row[Config.STATION_CODE_COL])
+                # Usamos Config para el nombre si existe, o fallback
+                try:
+                    nom = str(row[Config.STATION_NAME_COL])
+                except:
+                    nom = str(row.get('Nombre', 'Estación')) # Fallback si falla Config
+
+                # Usamos la variable col_codigo definida arriba en lugar de Config
+                cod = str(row[col_codigo]) 
                 lat_est = row.geometry.y
                 lon_est = row.geometry.x
 
                 # --- GENERACIÓN DEL POPUP HTML ---
-                # Intentamos generar un mini gráfico si hay datos en df_long o df_monthly_filtered
                 html_plot = ""
                 try:
-                    # Filtramos datos para esta estación específica
-                    # Asumimos que df_long tiene columna 'Codigo' o similar que coincida con Config.STATION_CODE_COL
-                    # Ajusta 'Codigo' según tu nombre real de columna en df_long
-                    df_station = df_long[df_long[Config.STATION_CODE_COL] == row[Config.STATION_CODE_COL]].copy()
+                    # Filtramos datos para esta estación específica usando col_codigo
+                    df_station = df_long[df_long[col_codigo].astype(str) == cod].copy()
                     
                     if not df_station.empty:
                         # Convertir fecha y ordenar
@@ -1379,7 +1385,9 @@ def display_spatial_distribution_tab(
                     else:
                         html_plot = "<br><i>Sin datos históricos disponibles.</i>"
                 except Exception as e:
-                    html_plot = f"<br><i>Error cargando gráfico: {e}</i>"
+                    # Imprimir error en consola para depuración, pero no romper la app
+                    print(f"Error generando gráfico para {cod}: {e}")
+                    html_plot = f"<br><i>No se pudo cargar gráfico.</i>"
 
                 # Construir el contenido HTML completo del popup
                 html_content = f"""
