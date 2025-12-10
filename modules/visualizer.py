@@ -5409,21 +5409,29 @@ def display_station_table_tab(**kwargs):
 
 def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     st.subheader("🌿 Análisis de Cobertura del Suelo y Escenarios")
-
-    # --- 0. IMPORTACIÓN DE CONFIGURACIÓN (Ajustada para carpeta 'modules') ---
+    
+    # --- IMPORTACIONES LOCALES (Para asegurar que no falte nada) ---
     try:
-        # Intento 1: Ruta absoluta estándar si corres desde la raíz
+        import rasterio
+        from rasterio.mask import mask
+    except ImportError:
+        st.error("❌ Error: La librería 'rasterio' no está instalada en el entorno.")
+        return
+
+    # --- 0. IMPORTACIÓN DE CONFIGURACIÓN ---
+    try:
+        # Intento 1: Importación directa desde modules
         from modules.config import Config
     except ImportError:
         try:
-            # Intento 2: Importación relativa (si visualizer también está en modules)
+            # Intento 2: Importación relativa
             from .config import Config
         except ImportError:
             try:
-                # Intento 3: Si config está en el path directo
+                # Intento 3: Importación desde path
                 from config import Config
             except ImportError:
-                st.error("❌ Error Crítico: No se encuentra 'config.py' en la carpeta 'modules'.")
+                st.error("❌ Error Crítico: No se encuentra 'config.py'.")
                 return
 
     # --- 1. RECUPERACIÓN DE DATOS ---
@@ -5455,11 +5463,13 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
     # --- 2. PROCESAMIENTO DEL RASTER ---
     try:
-        # Verificación de archivo usando la ruta de Config
-        if not hasattr(Config, "LAND_COVER_RASTER_PATH") or not os.path.exists(Config.LAND_COVER_RASTER_PATH):
-            st.warning(f"⚠️ No se encuentra el archivo raster en: {getattr(Config, 'LAND_COVER_RASTER_PATH', 'Ruta no definida')}")
+        # Verificación de archivo
+        raster_path = getattr(Config, "LAND_COVER_RASTER_PATH", None)
+        
+        if not raster_path or not os.path.exists(raster_path):
+            st.warning(f"⚠️ No se encuentra el archivo raster en: {raster_path}")
             
-            # Mapa básico de fallback (solo contorno)
+            # Mapa básico de fallback
             m = folium.Map(
                 location=[gdf_basin.centroid.y.mean(), gdf_basin.centroid.x.mean()],
                 zoom_start=11,
@@ -5471,7 +5481,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             st_folium(m, height=350, use_container_width=True)
             return
 
-        with rasterio.open(Config.LAND_COVER_RASTER_PATH) as src:
+        with rasterio.open(raster_path) as src:
             # Reproyección si es necesaria para recortar
             if gdf_basin.crs != src.crs:
                 gdf_basin_proj = gdf_basin.to_crs(src.crs)
@@ -5499,7 +5509,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             13: "Otros / Sin Clasificar"
         }
         
-        # Mapa de colores (HEX) para visualización
+        # Mapa de colores (HEX)
         color_map = {
             1: "#A9A9A9",   # Urbanas - Gris
             2: "#FFFF00",   # Cultivos - Amarillo
@@ -5547,7 +5557,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
         # Hacer transparente lo que sea NoData o 0
         data_rgba[data == src.nodata, 3] = 0
-        data_rgba[data == 0, 3] = 0 # Por si acaso hay ceros
+        data_rgba[data == 0, 3] = 0
 
         # Obtener los límites geográficos exactos de la imagen recortada
         minx, miny, maxx, maxy = rasterio.transform.array_bounds(out_image.shape[1], out_image.shape[0], out_transform)
@@ -5579,7 +5589,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
         folium.LayerControl().add_to(m)
         st_folium(m, height=450, use_container_width=True)
 
-        # --- 5. ESTADÍSTICAS Y GRÁFICAS (Original) ---
+        # --- 5. ESTADÍSTICAS Y GRÁFICAS ---
         unique, counts = np.unique(valid_pixels, return_counts=True)
         rows = []
         for val, count in zip(unique, counts):
@@ -5614,7 +5624,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
         st.markdown("---")
         
-        # --- 6. SIMULADOR SCS-CN (Original) ---
+        # --- 6. SIMULADOR SCS-CN ---
         st.subheader("🎛️ Simulador de Escorrentía (Método SCS-CN)")
         with st.expander("Configuración de Números de Curva (CN)", expanded=False):
             c_cn = st.columns(5)
@@ -5729,7 +5739,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     except Exception as e:
         import traceback
         st.error(f"Error procesando cobertura: {e}")
-        st.text(traceback.format_exc()) # Ayuda visual para depuración
+        st.text(traceback.format_exc())
 
 
 # PESTAÑA: CORRECCIÓN DE SESGO (VERSIÓN BLINDADA)
