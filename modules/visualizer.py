@@ -5404,13 +5404,20 @@ def display_station_table_tab(**kwargs):
         st.warning("No hay datos para mostrar.")
 
 
+# ==============================================================================
+# INICIO DE LA FUNCIÓN display_land_cover_analysis_tab
+# Copia desde aquí hacia abajo
+# ==============================================================================
+
 def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     st.subheader("🌿 Análisis de Cobertura del Suelo y Escenarios")
 
-    # --- 1. RECUPERACIÓN DE DATOS (TU CÓDIGO ORIGINAL) ---
+    # --- 1. RECUPERACIÓN DE DATOS ---
     res_basin = st.session_state.get("basin_res")
     if not res_basin or not res_basin.get("ready"):
-        st.info(ℹ️ Para ver el análisis de coberturas, primero debes delimitar y procesar una cuenca en la pestaña **'Mapas Avanzados'**.")
+        st.info(
+            "ℹ️ Para ver el análisis de coberturas, primero debes delimitar y procesar una cuenca en la pestaña **'Mapas Avanzados'**."
+        )
         return
 
     gdf_basin = res_basin.get("gdf_cuenca", res_basin.get("gdf_union"))
@@ -5432,15 +5439,36 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
     st.markdown(f"Cuenca: **{basin_name}** (Ppt ref: {ppt_anual:.0f} mm/año)")
 
-    # --- 2. PROCESAMIENTO DEL RASTER (MANTENIENDO LÓGICA) ---
+    # --- 2. PROCESAMIENTO DEL RASTER ---
     try:
-        if not hasattr(Config, "LAND_COVER_RASTER_PATH") or not os.path.exists(Config.LAND_COVER_RASTER_PATH):
+        # Importamos Config aquí por si acaso no está global
+        from config import Config
+        
+        if not hasattr(Config, "LAND_COVER_RASTER_PATH") or not os.path.exists(
+            Config.LAND_COVER_RASTER_PATH
+        ):
             st.warning("⚠️ Archivo raster de coberturas no configurado.")
-            # Fallback simple si no hay raster
-            m = folium.Map(location=[gdf_basin.centroid.y.mean(), gdf_basin.centroid.x.mean()], zoom_start=11)
-            folium.GeoJson(gdf_basin, style_function=lambda x: {"color": "green"}).add_to(m)
+            # Fallback simple
+            m = folium.Map(
+                location=[gdf_basin.centroid.y.mean(), gdf_basin.centroid.x.mean()],
+                zoom_start=11,
+            )
+            folium.GeoJson(
+                gdf_basin,
+                style_function=lambda x: {
+                    "fillColor": "#228B22",
+                    "color": "#006400",
+                    "weight": 2,
+                    "fillOpacity": 0.3,
+                },
+                tooltip=basin_name,
+            ).add_to(m)
+            LocateControl(auto_start=False).add_to(m)
             st_folium(m, height=350, use_container_width=True)
             return
+
+        import rasterio
+        from rasterio.mask import mask
 
         with rasterio.open(Config.LAND_COVER_RASTER_PATH) as src:
             if gdf_basin.crs != src.crs:
@@ -5451,7 +5479,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             out_image, out_transform = mask(src, gdf_basin_proj.geometry, crop=True)
             data = out_image[0]
 
-        # --- 3. DICCIONARIO DE LEYENDA (TU CÓDIGO ORIGINAL) ---
+        # --- 3. DICCIONARIOS Y COLORES ---
         legend = {
             1: "Zonas Urbanas",
             2: "Cultivos Transitorios",
@@ -5467,8 +5495,6 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             12: "Humedales",
         }
         
-        # Diccionario de colores para el mapa visual (Nueva Integración)
-        # Ajusta estos colores hexadecimales según prefieras
         color_map = {
             1: "#A9A9A9",   # Urbanas - Gris
             2: "#FFFF00",   # Cultivos - Amarillo
@@ -5489,48 +5515,38 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             st.warning("Cuenca fuera del raster.")
             return
 
-        # --- 4. INTEGRACIÓN DEL MAPA VISUAL (NUEVO DESARROLLO) ---
-        # Calculamos límites para el mapa
-        bounds = gdf_basin.total_bounds # [minx, miny, maxx, maxy]
-        # Folium usa [lat, lon], asi que necesitamos reproyectar bounds si no estan en 4326
+        # --- 4. MAPA VISUAL ---
+        # Calcular centro y bounds
         gdf_4326 = gdf_basin.to_crs(epsg=4326)
         bounds_latlon = gdf_4326.total_bounds
-        
-        # Centro del mapa
         center_lat = (bounds_latlon[1] + bounds_latlon[3]) / 2
         center_lon = (bounds_latlon[0] + bounds_latlon[2]) / 2
 
         m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="CartoDB positron")
 
-        # Colorear imagen para Folium (Mapeo de valores a RGBA)
-        # Creamos una imagen RGBA vacía
+        # Preparar imagen RGBA
         data_rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
         
         for val, color_hex in color_map.items():
-            # Convertir hex a rgb (0-255)
             r, g, b = tuple(int(color_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-            # Asignar color donde coincida el valor
             mask_val = (data == val)
             data_rgba[mask_val, 0] = r
             data_rgba[mask_val, 1] = g
             data_rgba[mask_val, 2] = b
-            data_rgba[mask_val, 3] = 200 # Alpha (transparencia)
+            data_rgba[mask_val, 3] = 200 # Alpha
 
-        # Ocultar NoData (Alpha 0)
+        # Ocultar NoData
         data_rgba[data == src.nodata, 3] = 0
 
-        # Agregar imagen al mapa
-        # Necesitamos los bounds de la imagen recortada en Lat/Lon para ImageOverlay
-        # Usamos los bounds de rasterio transformados
+        # Calcular bounds de la imagen para Folium
         minx, miny, maxx, maxy = rasterio.transform.array_bounds(out_image.shape[1], out_image.shape[0], out_transform)
-        # Transformar estas coordenadas a LatLon (asumiendo que src.crs es proyectado, si no, ajustar)
         from pyproj import Transformer
         transformer = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
         lon_min, lat_min = transformer.transform(minx, miny)
         lon_max, lat_max = transformer.transform(maxx, maxy)
-        
         image_bounds = [[lat_min, lon_min], [lat_max, lon_max]]
 
+        # Agregar capas
         folium.raster_layers.ImageOverlay(
             image=data_rgba,
             bounds=image_bounds,
@@ -5538,7 +5554,6 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             name="Cobertura de Suelo"
         ).add_to(m)
 
-        # Agregar el límite de la cuenca
         folium.GeoJson(
             gdf_basin,
             name="Límite Cuenca",
@@ -5548,7 +5563,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
         folium.LayerControl().add_to(m)
         st_folium(m, height=400, use_container_width=True)
 
-        # --- 5. ESTADÍSTICAS Y TABLAS (TU CÓDIGO ORIGINAL) ---
+        # --- 5. ESTADÍSTICAS (Tu código original) ---
         unique, counts = np.unique(valid_pixels, return_counts=True)
         rows = []
         for val, count in zip(unique, counts):
@@ -5583,7 +5598,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
         st.markdown("---")
         
-        # --- 6. SIMULADOR SCS-CN (TU CÓDIGO ORIGINAL - INTACTO) ---
+        # --- 6. SIMULADOR SCS-CN (Tu código original) ---
         st.subheader("🎛️ Simulador de Escorrentía (Método SCS-CN)")
         with st.expander("Configuración de Números de Curva (CN)", expanded=False):
             c_cn = st.columns(5)
@@ -5627,7 +5642,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
                 vol_escenario = (Q_escenario * area_total_km2) / 1000
 
-                # Baseline aproximada SCS para comparación
+                # Baseline aproximada SCS
                 cn_actual_pond = 0
                 for _, row in df_cover.iterrows():
                     cob = row["Cobertura"]
@@ -5697,6 +5712,10 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
     except Exception as e:
         st.error(f"Error procesando cobertura: {e}")
+
+# ==============================================================================
+# FIN DE LA FUNCIÓN
+# ==============================================================================
 
 
 # PESTAÑA: CORRECCIÓN DE SESGO (VERSIÓN BLINDADA)
