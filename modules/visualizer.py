@@ -5497,13 +5497,12 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     if Config and hasattr(Config, "LAND_COVER_RASTER_PATH"):
         raster_path = Config.LAND_COVER_RASTER_PATH
 
-    # 2. Control de Vista
+    # 2. Control de Vista (Selector Manual)
     res_basin = st.session_state.get("basin_res")
     has_basin_data = res_basin and res_basin.get("ready")
     
     col_ctrl, col_info = st.columns([1, 2])
     with col_ctrl:
-        # Selector manual: Regional o Cuenca
         idx = 1 if has_basin_data else 0
         view_mode = st.radio("📍 Modo Visualización:", ["Regional", "Cuenca"], index=idx, horizontal=True)
     
@@ -5530,6 +5529,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     try:
         import modules.land_cover as lc
         
+        # Procesar Raster (Con escala 10x si es Regional para no bloquear la app)
         data, transform, crs, nodata = lc.process_land_cover_raster(
             raster_path, gdf_mask=gdf_mask, scale_factor=10 if view_mode=="Regional" else 1
         )
@@ -5538,6 +5538,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             st.error("Error cargando mapa de coberturas.")
             return
 
+        # Cálculo de Estadísticas (Pasando area_cuenca_km2 para corregir volumen)
         df_res, area_total_km2 = lc.calculate_land_cover_stats(
             data, transform, nodata, manual_area_km2=area_cuenca_km2
         )
@@ -5552,7 +5553,6 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                 use_hover = st.checkbox("🔍 Hover (Info)", value=False, help="Activa interactividad (puede ser lento).")
                 show_legend = st.checkbox("📝 Leyenda", value=True)
                 
-                # Botón Descarga TIFF
                 tiff_bytes = lc.get_tiff_bytes(data, transform, crs, nodata)
                 st.download_button("📥 Bajar Mapa (TIFF)", tiff_bytes, "cobertura.tif", "image/tiff")
 
@@ -5562,7 +5562,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                 import folium
                 from streamlit_folium import st_folium
 
-                # Calcular Bounds
+                # Calcular Bounds Correctos
                 h, w = data.shape
                 minx, miny, maxx, maxy = array_bounds(h, w, transform)
                 transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
@@ -5573,9 +5573,11 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
                 m = folium.Map(location=center, zoom_start=12 if view_mode=="Cuenca" else 8, tiles="CartoDB positron")
                 
-                # Capa Raster (Imagen)
+                # Capa Raster (Imagen Base64 Optimizada)
                 img_url = lc.get_raster_img_b64(data, nodata)
-                folium.raster_layers.ImageOverlay(image=img_url, bounds=bounds, opacity=0.7, name="Cobertura").add_to(m)
+                folium.raster_layers.ImageOverlay(
+                    image=img_url, bounds=bounds, opacity=0.7, name="Cobertura"
+                ).add_to(m)
 
                 # Capa Interactiva (Hover)
                 if use_hover:
@@ -5590,19 +5592,18 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                             ).add_to(m)
 
                 if view_mode == "Cuenca" and gdf_mask is not None:
-                    folium.GeoJson(gdf_mask, style_function=lambda x: {'color': 'black', 'fill': False}).add_to(m)
+                    folium.GeoJson(gdf_mask, style_function=lambda x: {'color': 'black', 'fill': False, 'weight': 2}).add_to(m)
 
                 if show_legend:
                     m.get_root().html.add_child(folium.Element(lc.generate_legend_html()))
 
                 folium.LayerControl().add_to(m)
-                st_folium(m, height=600, use_container_width=True, key="map_lc_final")
+                st_folium(m, height=600, use_container_width=True, key="map_lc_final_v2")
 
         with tab_stat:
             c1, c2 = st.columns([1, 1])
             with c1:
                 st.dataframe(df_res[["ID", "Cobertura", "Área (km²)", "%"]].style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}"}), use_container_width=True)
-                # Botón Descarga CSV
                 csv = df_res.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Descargar Tabla (CSV)", csv, "stats_coberturas.csv", "text/csv")
             with c2:
@@ -5641,7 +5642,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                         q_act = lc.calculate_scs_runoff(cn_act, ppt_anual)
                         q_fut = lc.calculate_scs_runoff(cn_fut, ppt_anual)
                         
-                        # Fix Volumen 0.00: Ahora usa el área real
+                        # Corrección Volumen
                         vol_act = (q_act * area_total_km2) / 1000
                         vol_fut = (q_fut * area_total_km2) / 1000
                         
@@ -5651,17 +5652,17 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                         c_res[2].metric("Volumen Total", f"{vol_fut:.2f} Mm³", delta=f"{vol_fut-vol_act:.2f} Mm³")
                         
                         fig_sim = go.Figure(data=[
-                            go.Bar(name="Actual", x=["Escorrentía"], y=[q_act], marker_color="#1f77b4", text=f"{q_act:.0f}", textposition="auto"),
-                            go.Bar(name="Futuro", x=["Escorrentía"], y=[q_fut], marker_color="#2ca02c", text=f"{q_fut:.0f}", textposition="auto"),
+                            go.Bar(name="Actual", x=["Escorrentía"], y=[q_act], marker_color="#1f77b4", text=f"{q_act:.0f} mm", textposition="auto"),
+                            go.Bar(name="Futuro", x=["Escorrentía"], y=[q_fut], marker_color="#2ca02c", text=f"{q_fut:.0f} mm", textposition="auto"),
                         ])
                         st.plotly_chart(fig_sim, use_container_width=True)
                 else:
                     st.warning("La suma debe ser 100%.")
             else:
-                st.info("Requiere modo Cuenca.")
+                st.info("⚠️ El simulador requiere el modo 'Cuenca'.")
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error en módulo de coberturas: {e}")
 
 
 # PESTAÑA: CORRECCIÓN DE SESGO (VERSIÓN BLINDADA)
