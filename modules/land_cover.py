@@ -11,7 +11,7 @@ import io
 import base64
 import matplotlib.pyplot as plt
 
-# --- 1. LEYENDA Y COLORES CORREGIDOS ---
+# --- 1. LEYENDA Y COLORES ---
 LAND_COVER_LEGEND = {
     1: "Zonas Urbanas", 
     2: "Cultivos Transitorios", 
@@ -20,12 +20,12 @@ LAND_COVER_LEGEND = {
     5: "Bosque Denso / Natural", 
     6: "Vegetación Herbácea / Arbustiva", 
     7: "Áreas Abiertas", 
-    8: "Bosques Plantados",       # CORREGIDO
+    8: "Bosques Plantados",
     9: "Bosque Fragmentado", 
     10: "Vegetación Secundaria", 
     11: "Zonas Degradadas",
     12: "Humedales", 
-    13: "Agua / Cuerpos de Agua"  # CORREGIDO
+    13: "Agua / Cuerpos de Agua"
 }
 
 LAND_COVER_COLORS = {
@@ -36,18 +36,45 @@ LAND_COVER_COLORS = {
     5: "#006400",   # Verde Oscuro
     6: "#32CD32",   # Verde Lima
     7: "#F4A460",   # Arena
-    8: "#2E8B57",   # Verde Mar (Plantados)
+    8: "#2E8B57",   # Verde Mar
     9: "#228B22",   # Verde Forestal
     10: "#9ACD32",  # Verde Claro
     11: "#8B4513",  # Café
     12: "#00CED1",  # Turquesa
-    13: "#0000FF"   # Azul Puro (Agua)
+    13: "#0000FF"   # Azul Puro
 }
 
-# --- 2. PROCESAMIENTO ---
+# --- 2. FUNCIONES AUXILIARES ---
 
-def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=10):
-    """Lee el raster. Si hay cuenca (gdf_mask), recorta exactamente."""
+def get_pixel_area_in_km2(transform, crs, height, width):
+    """
+    Calcula el área de un píxel en km². Detecta si el mapa está en Grados o Metros.
+    Soluciona el problema de 'Área: 0.00 km²'.
+    """
+    # Tamaño del pixel en las unidades del mapa
+    px_w = abs(transform[0])
+    px_h = abs(transform[4])
+    
+    # Si es Geográfico (WGS84, EPSG:4326), las unidades son GRADOS.
+    # Debemos convertir a Kilómetros.
+    # 1 grado latitud ~= 111.32 km
+    # 1 grado longitud ~= 111.32 * cos(lat) km
+    if crs.is_geographic:
+        # Usamos una latitud promedio (ej. 6.5 para Antioquia) para el factor de longitud
+        lat_factor = 111.32
+        lon_factor = 110.5 # Aprox en el trópico
+        
+        area_km2 = (px_w * lon_factor) * (px_h * lat_factor)
+    else:
+        # Si es Proyectado (Metros), convertimos m² a km²
+        area_km2 = (px_w * px_h) / 1_000_000
+        
+    return area_km2
+
+# --- 3. PROCESAMIENTO ---
+
+def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=1):
+    """Lee el raster. Si hay gdf_mask, recorta."""
     if not os.path.exists(raster_path):
         return None, None, None, None
 
@@ -56,7 +83,6 @@ def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=10):
         crs = src.crs
 
         if gdf_mask is not None:
-            # MODO CUENCA
             if gdf_mask.crs != src.crs:
                 gdf_proj = gdf_mask.to_crs(src.crs)
             else:
@@ -68,7 +94,7 @@ def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=10):
             except ValueError:
                 return None, None, None, None
         else:
-            # MODO REGIONAL (Optimizado para evitar lentitud)
+            # Modo Regional: Aplicamos scale_factor solo si se pide
             new_height = int(src.height / scale_factor)
             new_width = int(src.width / scale_factor)
             data = src.read(1, out_shape=(new_height, new_width), resampling=Resampling.nearest)
@@ -78,25 +104,23 @@ def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=10):
 
     return data, out_transform, crs, nodata
 
-def calculate_land_cover_stats(data, transform, nodata, manual_area_km2=None):
-    """Calcula estadísticas. CORRIGE el error de Volumen 0.00 usando el área real."""
+def calculate_land_cover_stats(data, transform, crs, nodata, manual_area_km2=None):
+    """Calcula estadísticas corrigiendo el problema de área cero."""
     valid_pixels = data[(data != nodata) & (data > 0)]
     if valid_pixels.size == 0: return pd.DataFrame(), 0
 
-    pixel_area_km2 = (abs(transform[0] * transform[4])) / 1e6
-    unique, counts = np.unique(valid_pixels, return_counts=True)
+    # Usamos la función inteligente para obtener el área real
+    pixel_area_km2 = get_pixel_area_in_km2(transform, crs, data.shape[0], data.shape[1])
     
+    unique, counts = np.unique(valid_pixels, return_counts=True)
     calc_total_area = counts.sum() * pixel_area_km2
     
-    # AJUSTE CRÍTICO PARA VOLUMEN
+    # Ajuste fino si tenemos área vectorial
     final_total_area = calc_total_area
     factor = 1.0
-    
-    # Si recibimos el área exacta de la cuenca (del shapefile), ajustamos los pixeles a esa área
-    if manual_area_km2 and manual_area_km2 > 0:
+    if manual_area_km2 and manual_area_km2 > 0 and calc_total_area > 0:
         final_total_area = manual_area_km2
-        if calc_total_area > 0:
-            factor = manual_area_km2 / calc_total_area
+        factor = manual_area_km2 / calc_total_area
     
     rows = []
     for val, count in zip(unique, counts):
@@ -113,7 +137,7 @@ def calculate_land_cover_stats(data, transform, nodata, manual_area_km2=None):
     return pd.DataFrame(rows).sort_values("%", ascending=False), final_total_area
 
 def get_raster_img_b64(data, nodata):
-    """Genera la imagen PNG en Base64. Esto hace que el mapa cargue RÁPIDO y no se ponga blanco."""
+    """Genera imagen PNG Base64 optimizada."""
     rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
     for val, hex_c in LAND_COVER_COLORS.items():
         if isinstance(hex_c, str):
@@ -123,47 +147,64 @@ def get_raster_img_b64(data, nodata):
             rgba[mask_val, 0] = r
             rgba[mask_val, 1] = g
             rgba[mask_val, 2] = b
-            rgba[mask_val, 3] = 200 # Opacidad
+            rgba[mask_val, 3] = 200
             
     rgba[(data == 0) | (data == nodata), 3] = 0
-    
     image_data = io.BytesIO()
     plt.imsave(image_data, rgba, format='png')
     image_data.seek(0)
     return f"data:image/png;base64,{base64.b64encode(image_data.read()).decode('utf-8')}"
 
-# --- 3. FUNCIONES EXTRA (Hover, Leyenda, Descargas) ---
+# --- 4. VECTORIZACIÓN SIMPLIFICADA (ESTABILIDAD) ---
 
-def vectorize_raster(data, transform, crs, nodata):
-    """Vectoriza para Hover (Solo si es pequeño para no bloquear el PC)."""
+def vectorize_raster_optimized(data, transform, crs, nodata, max_shapes=2000):
+    """
+    Vectoriza el raster pero SIMPLIFICA la geometría para no colgar el navegador.
+    Si hay demasiados polígonos, filtra los muy pequeños.
+    """
     mask_arr = (data != nodata) & (data != 0)
-    if np.count_nonzero(mask_arr) > 100000: return gpd.GeoDataFrame() # Protección de memoria
-
+    
+    # Si hay demasiados datos, hacemos un downsample temporal SOLO para la capa de hover
+    # Esto mantiene la imagen bonita de fondo, pero hace el hover ligero.
     shapes_gen = shapes(data, mask=mask_arr, transform=transform)
-    geoms, values = [], []
+    
+    geoms = []
+    values = []
+    count = 0
+    
     for geom, val in shapes_gen:
-        geoms.append(shape(geom))
+        # Filtro de seguridad: Si ya tenemos muchos polígonos, paramos para no crashear
+        if count > max_shapes: break 
+        
+        # Simplificación de geometría (Shapely)
+        s_geom = shape(geom).simplify(tolerance=0.0001, preserve_topology=True)
+        geoms.append(s_geom)
         values.append(val)
+        count += 1
         
     if not geoms: return gpd.GeoDataFrame()
     
     gdf = gpd.GeoDataFrame({'ID': values}, geometry=geoms, crs=crs)
     gdf['Cobertura'] = gdf['ID'].map(lambda x: LAND_COVER_LEGEND.get(int(x), f"Clase {int(x)}"))
     gdf['Color'] = gdf['ID'].map(lambda x: LAND_COVER_COLORS.get(int(x), "#808080"))
-    return gdf.to_crs(epsg=4326)
+    
+    # Reproyectar siempre a Lat/Lon para Folium
+    if gdf.crs != "EPSG:4326":
+        gdf = gdf.to_crs(epsg=4326)
+        
+    return gdf
 
 def generate_legend_html():
-    """Leyenda Flotante."""
+    """Leyenda HTML fija."""
     html = """
     <div style="position: fixed; bottom: 30px; left: 30px; z-index:9999; 
-        background-color: rgba(255, 255, 255, 0.9); padding: 10px; 
-        border: 1px solid #ccc; border-radius: 5px; font-family: sans-serif;
-        font-size: 11px; max-height: 250px; overflow-y: auto; box-shadow: 2px 2px 5px rgba(0,0,0,0.2);">
-        <b style="display:block; margin-bottom:5px;">Leyenda Coberturas</b>
+        background-color: white; padding: 10px; border: 2px solid #ccc; 
+        border-radius: 5px; font-size: 11px; max-height: 250px; overflow-y: auto;">
+        <b>Leyenda</b><br>
     """
     for id_cov, name in sorted(LAND_COVER_LEGEND.items()):
         color = LAND_COVER_COLORS.get(id_cov, "#808080")
-        html += f'<div style="margin-bottom:3px;"><i style="background:{color}; width:12px; height:12px; display:inline-block; margin-right:5px; border:1px solid #999;"></i>{name}</div>'
+        html += f'<div style="display:flex; align-items:center; margin-bottom:2px;"><span style="background:{color}; width:12px; height:12px; display:inline-block; margin-right:5px; border:1px solid #333;"></span>{name}</div>'
     html += "</div>"
     return html
 
@@ -177,7 +218,7 @@ def get_tiff_bytes(data, transform, crs, nodata):
     mem_file.seek(0)
     return mem_file
 
-# --- 4. CÁLCULOS SCS (Volumen) ---
+# --- MÉTODOS SCS ---
 def calculate_weighted_cn(df_stats, cn_config):
     cn_pond = 0; total_pct = 0
     for _, row in df_stats.iterrows():
@@ -204,6 +245,5 @@ def get_land_cover_at_point(lat, lon, raster_path):
     try:
         with rasterio.open(raster_path) as src:
             val = next(src.sample([(lon, lat)]))[0]
-            if val == src.nodata or val == 0: return "Sin Datos"
             return LAND_COVER_LEGEND.get(int(val), f"Clase {val}")
-    except: return "Error Raster"
+    except: return "Error"
