@@ -1337,104 +1337,68 @@ def display_spatial_distribution_tab(
         # Estaciones con POPUPS HTML INTEGRADOS
         fg_estaciones = folium.FeatureGroup(name="Estaciones", show=True)
         
-        # --- AUTO-DETECCIÓN DE COLUMNAS (CORRECCIÓN CLAVE) ---
-        # Buscamos nombres comunes para el CÓDIGO en las columnas disponibles
-        posibles_codigos = ['Codigo', 'CODIGO', 'codigo', 'ID', 'Id', 'station_code', 'StationCode']
-        col_codigo = next((c for c in posibles_codigos if c in gdf_filtered.columns), gdf_filtered.columns[0])
-        
-        # Buscamos nombres comunes para el NOMBRE
-        posibles_nombres = ['Nombre', 'NOMBRE', 'nombre', 'StationName', 'Estacion']
-        col_nombre = next((c for c in posibles_nombres if c in gdf_filtered.columns), None) # Puede ser None
-
-        # Para depuración: si no encuentra nada obvio
-        # st.write(f"Columnas detectadas -> Código: {col_codigo}, Nombre: {col_nombre}")
+        # Función auxiliar para leer columnas sin importar mayúsculas/minúsculas
+        def get_val(row, keys, default="N/A"):
+            for k in keys:
+                if k in row.index: return row[k]
+            return default
 
         if not gdf_filtered.empty:
             for _, row in gdf_filtered.iterrows():
                 try:
-                    # Datos básicos con manejo de errores
-                    cod = str(row[col_codigo])
+                    # 1. Extracción Segura de Datos (Soluciona campos faltantes)
+                    cod = str(get_val(row, ['Codigo', 'CODIGO', 'ID', 'id', 'StationCode'], 'Sin ID'))
+                    nom = str(get_val(row, ['Nombre', 'NOMBRE', 'StationName', 'Estacion'], 'Estación'))
                     
-                    if col_nombre:
-                        nom = str(row[col_nombre])
-                    else:
-                        nom = f"Estación {cod}" # Fallback si no encuentra columna de nombre
-                        
+                    # Nuevos campos solicitados
+                    mun = str(get_val(row, ['Municipio', 'MUNICIPIO', 'Muni', 'Ciudad'], 'Desconocido'))
+                    alt = str(get_val(row, ['Altitud', 'ALTITUD', 'Elevacion', 'Z', 'Cota'], '0'))
+                    cue = str(get_val(row, ['Subcuenca', 'SUBCUENCA', 'Cuenca'], 'N/A'))
+                    
+                    # Intentar obtener datos estadísticos si existen en el GeoJson
+                    precip = str(get_val(row, ['Precipitacion_Media', 'Promedio', 'Valor'], 'N/A'))
+                    anios = str(get_val(row, ['Anios_Registro', 'Periodo'], 'N/A'))
+
                     lat_est = row.geometry.y
                     lon_est = row.geometry.x
 
-                    # --- GENERACIÓN DEL POPUP HTML ---
-                    html_plot = ""
-                    try:
-                        # Intentamos filtrar df_long. 
-                        # IMPORTANTE: df_long también debe tener una columna de código coincidente.
-                        # Asumimos que df_long tiene una columna llamada igual a 'col_codigo' o 'Codigo'
-                        col_codigo_long = next((c for c in posibles_codigos if c in df_long.columns), None)
-                        
-                        if col_codigo_long:
-                            df_station = df_long[df_long[col_codigo_long].astype(str) == cod].copy()
-                        else:
-                            df_station = pd.DataFrame() # No se encontró columna de cruce
-
-                        if not df_station.empty:
-                            # Convertir fecha y ordenar
-                            df_station['Fecha'] = pd.to_datetime(df_station['Fecha'])
-                            df_station = df_station.sort_values('Fecha')
-                            
-                            # Crear gráfico miniatura con Matplotlib
-                            fig, ax = plt.subplots(figsize=(4, 2))
-                            ax.plot(df_station['Fecha'], df_station['Valor'], color='#1f77b4', linewidth=1)
-                            ax.set_title(f"Serie Histórica: {cod}", fontsize=10)
-                            ax.set_ylabel("mm", fontsize=8)
-                            ax.tick_params(axis='both', which='major', labelsize=7)
-                            plt.tight_layout()
-
-                            # Guardar gráfico en buffer y convertir a base64
-                            buf = io.BytesIO()
-                            plt.savefig(buf, format="png", bbox_inches='tight')
-                            plt.close(fig)
-                            buf.seek(0)
-                            encoded_img = base64.b64encode(buf.read()).decode('utf-8')
-                            
-                            # Crear etiqueta IMG HTML
-                            html_plot = f'<br><img src="data:image/png;base64,{encoded_img}" width="280">'
-                        else:
-                            html_plot = "<br><i>Sin datos históricos.</i>"
-                    except Exception as e:
-                        # print(f"Error gráfico {cod}: {e}") 
-                        html_plot = f"<br><i>No data plot.</i>"
-
-                    # Construir el contenido HTML completo del popup
+                    # 2. POPUP HTML LIGERO (Soluciona la lentitud)
+                    # Usamos HTML simple en lugar de generar una imagen con Matplotlib
                     html_content = f"""
-                    <div style="font-family: sans-serif; width: 300px;">
-                        <h5 style="margin-bottom: 0;">{nom}</h5>
-                        <span style="font-size: 0.9em; color: gray;">ID: {cod}</span>
+                    <div style="font-family: Arial, sans-serif; width: 260px; font-size: 12px;">
+                        <h4 style="margin: 0; color: #2c3e50; border-bottom: 1px solid #eee;">{nom}</h4>
+                        <span style="color: #7f8c8d; font-size: 11px;">ID: {cod}</span>
+                        <br><br>
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr><td><b>Municipio:</b></td><td>{mun}</td></tr>
+                            <tr><td><b>Altitud:</b></td><td>{alt} msnm</td></tr>
+                            <tr><td><b>Subcuenca:</b></td><td>{cue}</td></tr>
+                            <tr><td colspan="2"><hr style="margin:3px 0; border:0; border-top:1px dashed #ccc;"></td></tr>
+                            <tr><td><b>P. Media:</b></td><td>{precip}</td></tr>
+                            <tr><td><b>Histórico:</b></td><td>{anios}</td></tr>
+                        </table>
                         <br>
-                        <b>Lat:</b> {lat_est:.4f}, <b>Lon:</b> {lon_est:.4f}
-                        {html_plot}
+                        <i style="color: blue; font-size: 11px;">👉 Clic para ver pronóstico abajo</i>
                     </div>
                     """
                     
-                    # Crear IFrame y Popup
-                    iframe = folium.IFrame(html_content, width=320, height=250)
-                    popup = folium.Popup(iframe, max_width=320)
+                    iframe = folium.IFrame(html_content, width=280, height=220)
+                    popup = folium.Popup(iframe, max_width=280)
 
-                    # Añadir marcador con popup
+                    # Añadir marcador
                     folium.Marker(
                         [lat_est, lon_est],
                         tooltip=f"{nom}",
                         popup=popup,
-                        icon=folium.Icon(color="blue", icon="cloud")
+                        icon=folium.Icon(color="blue", icon="cloud", prefix='fa')
                     ).add_to(fg_estaciones)
                 
                 except Exception as e:
-                    # Si falla una estación puntual, continuamos con la siguiente
-                    print(f"Error procesando estación: {e}")
+                    # Si una estación falla, la saltamos y seguimos con las demás
+                    print(f"Error estación {row}: {e}")
                     continue
                 
         fg_estaciones.add_to(m)
-
-        folium.LayerControl(collapsed=True).add_to(m)
 
         st.markdown("👆 **Haz clic en un marcador para ver detalles o en cualquier punto del mapa para ver el pronóstico.**")
         
