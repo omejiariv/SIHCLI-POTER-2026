@@ -82,7 +82,7 @@ def calculate_land_cover_stats(data, transform, nodata, manual_area_km2=None):
     # Cálculo total basado en pixeles
     calc_total_area = counts.sum() * pixel_area_km2
     
-    # AJUSTE DE VOLUMEN: Si tenemos área vectorial, la usamos como verdad absoluta
+    # AJUSTE DE VOLUMEN
     if manual_area_km2 and manual_area_km2 > 0:
         factor = manual_area_km2 / calc_total_area if calc_total_area > 0 else 1
         final_total_area = manual_area_km2
@@ -93,7 +93,10 @@ def calculate_land_cover_stats(data, transform, nodata, manual_area_km2=None):
     rows = []
     for val, count in zip(unique, counts):
         area = (count * pixel_area_km2) * factor
-        pct = (area / final_total_area) * 100 if final_total_area > 0 else 0
+        if final_total_area > 0:
+            pct = (area / final_total_area) * 100
+        else:
+            pct = 0
         
         rows.append({
             "Cobertura": LAND_COVER_LEGEND.get(val, f"Clase {val}"),
@@ -109,7 +112,6 @@ def calculate_land_cover_stats(data, transform, nodata, manual_area_km2=None):
 def get_raster_img_b64(data, nodata):
     """
     Convierte la matriz a imagen PNG Base64.
-    ESTO SOLUCIONA EL MAPA INVISIBLE.
     """
     # Crear matriz RGBA
     rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
@@ -139,35 +141,59 @@ def get_raster_img_b64(data, nodata):
 
 
 def get_land_cover_at_point(lat, lon, raster_path):
-    """Obtiene la cobertura en un punto (Para analyze_point_data)."""
-    if not os.path.exists(raster_path): return "Raster no encontrado"
+    """Obtiene la cobertura en un punto."""
+    if not os.path.exists(raster_path):
+        return "Raster no encontrado"
     try:
         with rasterio.open(raster_path) as src:
             val_gen = src.sample([(lon, lat)])
             val = next(val_gen)[0]
-            if val == src.nodata or val == 0: return "Sin Datos"
+            if val == src.nodata or val == 0:
+                return "Sin Datos"
             return LAND_COVER_LEGEND.get(int(val), f"Clase {val}")
-    except: return "Error Raster"
+    except Exception:
+        return "Error Raster"
 
 
 def calculate_scs_runoff(cn, ppt_mm):
-    if cn >= 100: return ppt_mm
-    if cn <= 0: return 0
-    s = (25400 / cn) - 254; ia = 0.2 * s
-    return ((ppt_mm - ia) ** 2) / (ppt_mm - ia + s) if ppt_mm > ia else 0
+    if cn >= 100:
+        return ppt_mm
+    if cn <= 0:
+        return 0
+    
+    s = (25400 / cn) - 254
+    ia = 0.2 * s
+    
+    if ppt_mm > ia:
+        return ((ppt_mm - ia) ** 2) / (ppt_mm - ia + s)
+    else:
+        return 0
 
 
 def calculate_weighted_cn(df_stats, cn_config):
-    cn_pond = 0; total_pct = 0
+    cn_pond = 0
+    total_pct = 0
     for _, row in df_stats.iterrows():
-        cob = row["Cobertura"]; pct = row["%"]
+        cob = row["Cobertura"]
+        pct = row["%"]
         val = 85 # Default
-        if "Bosque" in cob: val = cn_config['bosque']
-        elif "Pasto" in cob or "Herbácea" in cob: val = cn_config['pasto']
-        elif "Urban" in cob: val = cn_config['urbano']
-        elif "Agua" in cob: val = 100
-        elif "Suelo" in cob or "Degradada" in cob: val = cn_config['suelo']
-        elif "Cultivo" in cob or "Agrícola" in cob: val = cn_config['cultivo']
+        if "Bosque" in cob:
+            val = cn_config['bosque']
+        elif "Pasto" in cob or "Herbácea" in cob:
+            val = cn_config['pasto']
+        elif "Urban" in cob:
+            val = cn_config['urbano']
+        elif "Agua" in cob:
+            val = 100
+        elif "Suelo" in cob or "Degradada" in cob:
+            val = cn_config['suelo']
+        elif "Cultivo" in cob or "Agrícola" in cob:
+            val = cn_config['cultivo']
+        
         cn_pond += val * pct / 100
         total_pct += pct
-    return (cn_pond / total_pct) * 100 if total_pct > 0 else 0
+    
+    if total_pct > 0:
+        return (cn_pond / total_pct) * 100
+    else:
+        return 0

@@ -420,17 +420,46 @@ def analyze_point_data(lat, lon, df_long, gdf_stations, gdf_municipios, gdf_subc
     2. Datos Históricos (Interpolados).
     3. Variables Ambientales (Raster).
     """
+    # --- IMPORTACIONES LOCALES PARA ROBUSTEZ ---
+    from shapely.geometry import Point
+    import numpy as np
+    import pandas as pd
+    
+    # Importar módulos propios de forma segura
+    try:
+        import modules.land_cover as lc
+    except ImportError:
+        lc = None
+        
+    try:
+        from modules import life_zones as lz
+    except ImportError:
+        lz = None
+
+    try:
+        import pymannkendall as mk
+    except ImportError:
+        mk = None
+
+    # Recuperar Configuración
+    Config = None
+    try:
+        from modules.config import Config as Cfg
+        Config = Cfg
+    except: pass
+
     results = {}
     point_geom = Point(lon, lat)  # Ojo: Shapely usa (lon, lat)
 
+    # ---------------------------------------------------------
     # 1. CONTEXTO GEOGRÁFICO (TOPONIMIA)
+    # ---------------------------------------------------------
     results["Municipio"] = "Desconocido"
     results["Cuenca"] = "Fuera de cuencas principales"
 
     try:
         # Buscar Municipio
         if gdf_municipios is not None and not gdf_municipios.empty:
-            # Asumiendo CRS WGS84 (EPSG:4326)
             matches = gdf_municipios[gdf_municipios.contains(point_geom)]
             if not matches.empty:
                 results["Municipio"] = matches.iloc[0].get("nombre", "Sin Nombre")
@@ -443,19 +472,27 @@ def analyze_point_data(lat, lon, df_long, gdf_stations, gdf_municipios, gdf_subc
     except Exception as e:
         print(f"Error espacial: {e}")
 
-    # 2. INTERPOLACIÓN DE LLUVIA
+    # ---------------------------------------------------------
+    # 2. INTERPOLACIÓN DE LLUVIA (MANTENIENDO TU LÓGICA)
+    # ---------------------------------------------------------
     try:
         df_locs = gdf_stations.set_index(Config.STATION_NAME_COL)[
             ["latitude", "longitude"]
         ].copy()
+        
+        # Distancia Euclidiana
         df_locs["dist"] = np.sqrt(
             (df_locs["latitude"] - lat) ** 2 + (df_locs["longitude"] - lon) ** 2
         )
+        
+        # IDW (Inverse Distance Weighting) con los 5 vecinos más cercanos
         nearest = df_locs.nsmallest(5, "dist")
         nearest["weights"] = 1 / (nearest["dist"] ** 2).replace(0, 0.00001)
 
-        # Ppt Anual
+        # Filtrar datos de esas estaciones vecinas
         df_vecinas = df_long[df_long[Config.STATION_NAME_COL].isin(nearest.index)]
+        
+        # Calcular precipitación anual promedio histórica
         annual_sums = (
             df_vecinas.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[
                 Config.PRECIPITATION_COL
@@ -467,63 +504,88 @@ def analyze_point_data(lat, lon, df_long, gdf_stations, gdf_municipios, gdf_subc
             Config.PRECIPITATION_COL
         ].mean()
 
+        # Ponderación
         df_calc = pd.concat([avg_annual_ppt, nearest["weights"]], axis=1, join="inner")
-        results["Ppt_Media"] = (
-            df_calc[Config.PRECIPITATION_COL] * df_calc["weights"]
-        ).sum() / df_calc["weights"].sum()
+        
+        val_ppt = (df_calc[Config.PRECIPITATION_COL] * df_calc["weights"]).sum() / df_calc["weights"].sum()
+        results["Ppt_Media"] = val_ppt
 
-        # Tendencia
+        # Tendencia (Mann-Kendall)
         slopes = []
-        for stn in nearest.index:
-            df_st = df_long[df_long[Config.STATION_NAME_COL] == stn]
-            df_ann = df_st.groupby(Config.YEAR_COL)[Config.PRECIPITATION_COL].sum()
-            if len(df_ann) > 10:
-                try:
-                    slopes.append(mk.original_test(df_ann).slope)
-                except:
+        if mk:
+            for stn in nearest.index:
+                df_st = df_long[df_long[Config.STATION_NAME_COL] == stn]
+                df_ann = df_st.groupby(Config.YEAR_COL)[Config.PRECIPITATION_COL].sum()
+                if len(df_ann) > 10:
+                    try:
+                        slopes.append(mk.original_test(df_ann).slope)
+                    except:
+                        slopes.append(0.0)
+                else:
                     slopes.append(0.0)
-            else:
-                slopes.append(0.0)
-        results["Tendencia"] = np.average(
-            slopes, weights=nearest["weights"].values[: len(slopes)]
-        )
+            
+            # Promedio ponderado de pendientes
+            results["Tendencia"] = np.average(
+                slopes, weights=nearest["weights"].values[: len(slopes)]
+            )
+        else:
+            results["Tendencia"] = 0.0
 
-    except:
+    except Exception:
         results["Ppt_Media"] = 0
         results["Tendencia"] = 0
 
-    # 3. RASTERS (ALTITUD Y COBERTURA)
+    # ---------------------------------------------------------
+    # 3. RASTERS (ALTITUD Y COBERTURA - OPTIMIZADO)
+    # ---------------------------------------------------------
     results["Altitud"] = 1500  # Default
-    results["Cobertura"] = "No disponible" 
+    results["Cobertura"] = "No disponible"
 
     try:
         import rasterio
+        import os
         
-        # A. Altitud (Se mantiene igual o podrías moverlo a un modulo 'terrain.py' en el futuro)
-        if os.path.exists(Config.DEM_FILE_PATH):
+        # A. Altitud (DEM)
+        dem_path = getattr(Config, "DEM_FILE_PATH", "")
+        if dem_path and os.path.exists(dem_path):
             try:
-                with rasterio.open(Config.DEM_FILE_PATH) as src:
-                    val = list(src.sample([(lon, lat)]))[0][0]
-                    if val > -1000: # Filtro básico de validez
+                with rasterio.open(dem_path) as src:
+                    # Sample devuelve un generador
+                    val_gen = src.sample([(lon, lat)])
+                    val = list(val_gen)[0][0]
+                    if val > -1000:
                         results["Altitud"] = int(val)
-            except: pass
+            except Exception:
+                pass
 
-        # B. Cobertura (AHORA USANDO EL MÓDULO CENTRALIZADO)
-        # Esto elimina la duplicidad de la leyenda y la lógica de rasterio manual
-        if hasattr(Config, "LAND_COVER_RASTER_PATH"):
-            results["Cobertura"] = lc.get_land_cover_at_point(
-                lat, 
-                lon, 
-                Config.LAND_COVER_RASTER_PATH
-            )
+        # B. Cobertura (USANDO TU NUEVO MÓDULO CENTRALIZADO)
+        cov_path = getattr(Config, "LAND_COVER_RASTER_PATH", "")
+        if lc and cov_path:
+            results["Cobertura"] = lc.get_land_cover_at_point(lat, lon, cov_path)
             
     except Exception as e:
-        results["Cobertura"] = f"Error: {str(e)}"
+        results["Cobertura"] = f"Error Raster: {str(e)}"
 
+    # ---------------------------------------------------------
     # 4. ZONA DE VIDA
-    results["Zona_Vida"] = classify_holdridge_point(
-        results["Ppt_Media"], results["Altitud"]
-    )
+    # ---------------------------------------------------------
+    if lz:
+        try:
+            # Usamos la función clásica de Holdridge del módulo life_zones
+            # Nota: Asegúrate que classify_life_zone_alt_ppt o classify_holdridge_point existan en lz
+            if hasattr(lz, "classify_life_zone_alt_ppt"):
+                z_id = lz.classify_life_zone_alt_ppt(results["Altitud"], results["Ppt_Media"])
+                # Convertimos ID numérico a Nombre usando el diccionario de lz
+                z_name = lz.holdridge_int_to_name_simplified.get(z_id, "Desconocido")
+                results["Zona_Vida"] = z_name
+            elif hasattr(lz, "classify_holdridge_point"):
+                results["Zona_Vida"] = lz.classify_holdridge_point(results["Ppt_Media"], results["Altitud"])
+            else:
+                results["Zona_Vida"] = "Función no encontrada"
+        except Exception:
+            results["Zona_Vida"] = "Error cálculo"
+    else:
+        results["Zona_Vida"] = "Módulo LZ inactivo"
 
     return results
 
@@ -5627,10 +5689,6 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
     except Exception as e:
         st.error(f"Error: {e}")
-PASO 3: Limpiar analyze_point_data (En visualizer.py)
-Busca la función analyze_point_data en visualizer.py y reemplaza solo la sección "3. RASTERS" con esto. Ahora usaremos la función get_land_cover_at_point que creamos en el Paso 1, eliminando todo el código duplicado.
-
-Python
 
     # 3. RASTERS (ALTITUD Y COBERTURA)
     results["Altitud"] = 1500  # Default
