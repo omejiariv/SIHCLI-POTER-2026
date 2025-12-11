@@ -241,9 +241,12 @@ def calculate_scs_runoff(cn, ppt_mm):
     return ((ppt_mm - ia) ** 2) / (ppt_mm - ia + s) if ppt_mm > ia else 0
 
 def get_land_cover_at_point(lat, lon, raster_path):
-    if not os.path.exists(raster_path): return "Raster no encontrado"
+    if not os.path.exists(raster_path):
+        return "Raster no encontrado"
     try:
         with rasterio.open(raster_path) as src:
             val = next(src.sample([(lon, lat)]))[0]
+            # Usamos int(val) para buscar en el diccionario
             return LAND_COVER_LEGEND.get(int(val), f"Clase {val}")
-    except: return "Error"
+    except Exception:
+        return "Error"
