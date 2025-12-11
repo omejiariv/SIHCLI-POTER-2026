@@ -927,7 +927,7 @@ def display_iri_forecast_tab():
             ),
         )
         st.plotly_chart(fig_bar, use_container_width=True)
-        st.dataframe(df_probs.set_index("Trimestre"), use_container_width=True)
+        st.dataframe(df_probs.set_index("Trimestre"), width="stretch")
 
 
 # CENTRO DE MONITOREO Y TIEMPO REAL (DASHBOARD)
@@ -1129,7 +1129,7 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
 
                 # 4. TABLA DETALLADA
                 with st.expander("Ver Tabla de Datos Completa"):
-                    st.dataframe(df_forecast, use_container_width=True)
+                    st.dataframe(df_forecast, width="stretch")
             else:
                 st.info(
                     "No se pudo obtener el pronóstico para esta ubicación. Intente más tarde."
@@ -1226,7 +1226,7 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                     alts.sort_values(Config.PRECIPITATION_COL, ascending=False).head(
                         100
                     ),
-                    use_container_width=True,
+                    width="stretch",
                 )
 
 
@@ -1491,7 +1491,7 @@ def display_spatial_distribution_tab(
 
                         # C. TABLA DE DATOS (RECUPERADA)
                         with st.expander("📋 Ver Tabla de Datos del Pronóstico", expanded=False):
-                            st.dataframe(fc, use_container_width=True)
+                            st.dataframe(fc, width="stretch")
 
                     else:
                         st.warning("⚠️ No se pudo obtener el pronóstico. Verifica tu conexión.")
@@ -1628,7 +1628,7 @@ def display_spatial_distribution_tab(
                     pivot_avail.style.background_gradient(
                         cmap="Greens", vmin=0, vmax=12
                     ).format("{:.0f}"),
-                    use_container_width=True,
+                    width="stretch",
                 )
         else:
             st.warning("No hay datos cargados.")
@@ -1652,7 +1652,7 @@ def display_spatial_distribution_tab(
                     columns=Config.STATION_NAME_COL,
                     values=Config.PRECIPITATION_COL
                 )
-                st.dataframe(pivot_anual, use_container_width=True)
+                st.dataframe(pivot_anual, width="stretch")
         else:
             st.warning("No hay datos suficientes para graficar series.")
 
@@ -1940,7 +1940,7 @@ def display_graphs_tab(
             desc = df_plot.groupby(Config.STATION_NAME_COL)[
                 Config.PRECIPITATION_COL
             ].describe()
-            st.dataframe(desc, use_container_width=True)
+            st.dataframe(desc, width="stretch")
 
     # -------------------------------------------------------------------------
     # 6. ANÁLISIS ESTACIONAL DETALLADO (TU CÓDIGO CORREGIDO)
@@ -2050,7 +2050,7 @@ def display_graphs_tab(
                     (comp_df["Año Seleccionado"] - comp_df["Promedio Histórico"])
                     / comp_df["Promedio Histórico"]
                 ) * 100
-                st.dataframe(comp_df.style.format("{:.1f}"), use_container_width=True)
+                st.dataframe(comp_df.style.format("{:.1f}"), width="stretch")
 
 
 def display_weekly_forecast_tab(stations_for_analysis, gdf_filtered):
@@ -2080,7 +2080,7 @@ def display_weekly_forecast_tab(stations_for_analysis, gdf_filtered):
 
             df = get_weather_forecast_simple(lat, lon)
             if not df.empty:
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width="stretch")
 
                 fig = go.Figure()
                 fig.add_trace(
@@ -3914,7 +3914,7 @@ def display_anomalies_tab(
                 driest.style.format(
                     "{:.1f}", subset=["Ppt Real", "Ppt Normal", "Diferencia"]
                 ),
-                use_container_width=True,
+                width="stretch",
             )
 
         with c2:
@@ -3926,7 +3926,7 @@ def display_anomalies_tab(
                 wettest.style.format(
                     "{:.1f}", subset=["Ppt Real", "Ppt Normal", "Diferencia"]
                 ),
-                use_container_width=True,
+                width="stretch",
             )
 
 
@@ -3966,7 +3966,7 @@ def display_stats_tab(df_long, df_anual_melted, gdf_stations, **kwargs):
         stats_df["Total Histórico (mm)"] = sum_total
 
         # Formatear y mostrar
-        st.dataframe(stats_df.style.format("{:.1f}"), use_container_width=True)
+        st.dataframe(stats_df.style.format("{:.1f}"), width="stretch")
 
         # Botón de descarga
         st.download_button(
@@ -4617,7 +4617,7 @@ def display_life_zones_tab(
                                     pd.DataFrame(data)
                                     .sort_values("%", ascending=False)
                                     .style.format({"Ha": "{:,.1f}", "%": "{:.1f}%"}),
-                                    use_container_width=True,
+                                    width="stretch",
                                 )
 
                                 tiff = lz.get_raster_bytes(lz_arr, profile)
@@ -4711,7 +4711,7 @@ def display_life_zones_tab(
                             Config.ALTITUDE_COL,
                         ]
                     ],
-                    use_container_width=True,
+                    width="stretch",
                 )
             except Exception as e:
                 st.error(f"Error en puntos: {e}")
@@ -4900,7 +4900,7 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
             with c1:
                 st.dataframe(
                     res_df.style.format({"Ppt Máxima Esperada (mm)": "{:.1f}"}),
-                    use_container_width=True,
+                    width="stretch",
                 )
             with c2:
                 annual_max = debug_data["data"]
@@ -5446,7 +5446,7 @@ def display_climate_scenarios_tab(**kwargs):
                         "Tipo",
                     ]
                 ],
-                use_container_width=True,
+                width="stretch",
             )
         else:
             st.warning("Seleccione escenarios para comparar.")
@@ -5467,7 +5467,7 @@ def display_station_table_tab(**kwargs):
 
         # Selección de columnas limpias
         cols = ["Fecha", Config.STATION_NAME_COL, Config.PRECIPITATION_COL]
-        st.dataframe(df_show[cols], use_container_width=True)
+        st.dataframe(df_show[cols], width="stretch")
 
         # Botón de descarga
         csv = df_show[cols].to_csv(index=False).encode("utf-8")
@@ -5619,7 +5619,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             c1, c2 = st.columns([1, 1])
             with c1:
                 # Tabla con Areas Correctas
-                st.dataframe(df_res[["ID", "Cobertura", "Área (km²)", "%"]].style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}"}), use_container_width=True)
+                st.dataframe(df_res[["ID", "Cobertura", "Área (km²)", "%"]].style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}"}), width="stretch")
                 csv = df_res.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Descargar CSV", csv, "stats_coberturas.csv", "text/csv")
             with c2:
@@ -6040,7 +6040,7 @@ def display_bias_correction_tab(df_long, gdf_stations, gdf_filtered, **kwargs):
                             "diff_mm",
                         ]
                     ].sort_values(by=[Config.STATION_NAME_COL, "date"]),
-                    use_container_width=True,
+                    width="stretch",
                 )
 
                 c_csv, c_geo = st.columns(2)
@@ -6360,7 +6360,7 @@ def display_statistics_summary_tab(df_monthly, df_anual, gdf_stations, **kwargs)
                     },
                 ]
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -6381,7 +6381,7 @@ def display_statistics_summary_tab(df_monthly, df_anual, gdf_stations, **kwargs)
                     },
                 ]
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
