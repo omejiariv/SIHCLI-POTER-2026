@@ -1,3 +1,1 @@
-ffmpeg
-gdal-bin
-libgdal-dev
+unixodbc-dev
