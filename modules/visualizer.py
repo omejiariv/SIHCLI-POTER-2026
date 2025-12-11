@@ -5497,82 +5497,131 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     if Config and hasattr(Config, "LAND_COVER_RASTER_PATH"):
         raster_path = Config.LAND_COVER_RASTER_PATH
 
-    # 2. Modo (Regional vs Cuenca)
+    # 2. CONTROL DE VISTA (Req 5: Selector Manual)
     res_basin = st.session_state.get("basin_res")
-    has_basin = res_basin and res_basin.get("ready")
+    has_basin_data = res_basin and res_basin.get("ready")
     
-    gdf_basin = None
+    col_ctrl, col_info = st.columns([1, 2])
+    with col_ctrl:
+        view_mode = st.radio("📍 Modo de Visualización:", ["Regional", "Cuenca"], horizontal=True)
+    
+    # Lógica de Selección
+    gdf_mask = None
     basin_name = "Regional (Antioquia)"
     ppt_anual = 2000
-    area_cuenca_km2 = None 
+    area_cuenca_km2 = None
     
-    c_status, c_mode = st.columns([3, 1])
-    
-    if has_basin:
-        gdf_basin = res_basin.get("gdf_cuenca", res_basin.get("gdf_union"))
-        basin_name = res_basin.get("names", "Cuenca Actual")
-        bal = res_basin.get("bal", {}); ppt_anual = bal.get("P", 2000)
-        morph = res_basin.get("morph", {}); area_cuenca_km2 = morph.get("area_km2", 0)
-        
-        c_status.success(f"📍 Analizando Cuenca: **{basin_name}** (Área: {area_cuenca_km2:.2f} km²)")
-        c_mode.metric("Modo", "Cuenca")
-    else:
-        c_status.info("🌎 Visualizando Cobertura Regional. Para simular, delimita una cuenca.")
-        c_mode.metric("Modo", "Regional")
+    if view_mode == "Cuenca":
+        if has_basin_data:
+            gdf_mask = res_basin.get("gdf_cuenca", res_basin.get("gdf_union"))
+            basin_name = res_basin.get("names", "Cuenca Actual")
+            # Datos hidrológicos
+            bal = res_basin.get("bal", {})
+            ppt_anual = bal.get("P", 2000)
+            morph = res_basin.get("morph", {})
+            area_cuenca_km2 = morph.get("area_km2", 0)
+            with col_info:
+                st.success(f"Analizando: **{basin_name}** ({area_cuenca_km2:.1f} km²)")
+        else:
+            st.warning("⚠️ Seleccionaste 'Cuenca', pero no has delimitado ninguna en 'Mapas Avanzados'. Mostrando Regional.")
+            view_mode = "Regional"
 
-    # 3. Procesamiento (USANDO EL MÓDULO NUEVO)
+    # 3. PROCESAMIENTO
     try:
-        # Importación segura dentro de la función
         import modules.land_cover as lc
         
+        # Procesar Raster
         data, transform, crs, nodata = lc.process_land_cover_raster(
-            raster_path, gdf_mask=gdf_basin if has_basin else None
+            raster_path, gdf_mask=gdf_mask, scale_factor=10 if view_mode == "Regional" else 1
         )
         
         if data is None:
-            st.warning("⚠️ No se pudo cargar el raster o la cuenca está fuera del área.")
+            st.error("Error cargando el mapa. Verifica la ruta del archivo o la geometría de la cuenca.")
             return
 
-        # Calcular Estadísticas
+        # Estadísticas
         df_res, area_total_km2 = lc.calculate_land_cover_stats(
             data, transform, nodata, manual_area_km2=area_cuenca_km2
         )
 
-        # 4. Visualización
-        tab_map, tab_stat, tab_sim = st.tabs(["🗺️ Mapa de Coberturas", "📊 Estadísticas", "🎛️ Simulador SCS-CN"])
+        # 4. VISUALIZACIÓN
+        tab_map, tab_stat, tab_sim = st.tabs(["🗺️ Mapa Interactivo", "📊 Tabla & Gráficos", "🎛️ Simulador SCS-CN"])
 
         with tab_map:
-            img_url = lc.get_raster_img_b64(data, nodata)
-            
-            # Calcular Bounds
-            from rasterio.transform import array_bounds
-            from pyproj import Transformer
-            
-            h, w = data.shape
-            minx, miny, maxx, maxy = array_bounds(h, w, transform)
-            transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-            lon_min, lat_min = transformer.transform(minx, miny)
-            lon_max, lat_max = transformer.transform(maxx, maxy)
-            bounds = [[lat_min, lon_min], [lat_max, lon_max]]
+            c_tools, c_map = st.columns([1, 4])
+            with c_tools:
+                st.markdown("##### Herramientas")
+                # Req 2: Interactividad (Hover)
+                show_interactive = st.checkbox("🔍 Activar Hover (Lento)", value=False, help="Convierte el mapa a vectores para ver datos al pasar el mouse.")
+                
+                # Req 3: Descarga Mapa (TIFF)
+                tiff_bytes = lc.get_tiff_bytes(data, transform, crs, nodata)
+                st.download_button("📥 Bajar Mapa (TIFF)", tiff_bytes, "cobertura.tif", "image/tiff")
+                
+                # Req 2: Leyenda
+                show_legend = st.checkbox("📝 Ver Leyenda", value=True)
 
-            center = [(lat_min+lat_max)/2, (lon_min+lon_max)/2] if has_basin else [6.5, -75.5]
-            zoom = 12 if has_basin else 8
+            with c_map:
+                from rasterio.transform import array_bounds
+                from pyproj import Transformer
+                import folium
+                from streamlit_folium import st_folium
 
-            import folium
-            from streamlit_folium import st_folium
-            
-            m = folium.Map(location=center, zoom_start=zoom, tiles="CartoDB positron")
-            folium.raster_layers.ImageOverlay(image=img_url, bounds=bounds, opacity=0.8, name="Cobertura").add_to(m)
-            if has_basin:
-                folium.GeoJson(gdf_basin, style_function=lambda x: {'color': 'black', 'fill': False}).add_to(m)
-            
-            folium.LayerControl().add_to(m)
-            st_folium(m, height=550, use_container_width=True, key="lc_map_fix_final")
+                # Bounds
+                h, w = data.shape
+                minx, miny, maxx, maxy = array_bounds(h, w, transform)
+                transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+                lon_min, lat_min = transformer.transform(minx, miny)
+                lon_max, lat_max = transformer.transform(maxx, maxy)
+                bounds = [[lat_min, lon_min], [lat_max, lon_max]]
+                center = [(lat_min+lat_max)/2, (lon_min+lon_max)/2]
+
+                m = folium.Map(location=center, zoom_start=12 if view_mode=="Cuenca" else 8, tiles="CartoDB positron")
+                
+                # CAPA 1: Imagen Estática (Rápida) - Siempre visible
+                img_url = lc.get_raster_img_b64(data, nodata)
+                folium.raster_layers.ImageOverlay(
+                    image=img_url, bounds=bounds, opacity=0.7, name="Imagen Raster"
+                ).add_to(m)
+
+                # CAPA 2: Interactiva (Opcional para Hover)
+                if show_interactive:
+                    with st.spinner("Vectorizando para interactividad..."):
+                        # Usamos downscale para que no se cuelgue si es muy grande
+                        gdf_vec = lc.vectorize_raster(data, transform, crs, nodata)
+                        if not gdf_vec.empty:
+                            folium.GeoJson(
+                                gdf_vec,
+                                style_function=lambda x: {'fillColor': x['properties']['Color'], 'color': 'none', 'fillOpacity': 0.5},
+                                tooltip=folium.GeoJsonTooltip(fields=['Cobertura', 'ID'], aliases=['Tipo:', 'Código:']),
+                                name="Interactivo"
+                            ).add_to(m)
+
+                # Límite Cuenca
+                if view_mode == "Cuenca" and gdf_mask is not None:
+                    folium.GeoJson(gdf_mask, style_function=lambda x: {'color': 'black', 'fill': False, 'weight': 2}).add_to(m)
+
+                # Leyenda Flotante
+                if show_legend:
+                    legend_html = lc.generate_legend_html()
+                    m.get_root().html.add_child(folium.Element(legend_html))
+
+                folium.LayerControl().add_to(m)
+                st_folium(m, height=600, use_container_width=True)
 
         with tab_stat:
             c1, c2 = st.columns([1, 1])
             with c1:
-                st.dataframe(df_res[["Cobertura", "Área (km²)", "%"]].style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}"}), use_container_width=True)
+                st.markdown("##### Inventario de Coberturas")
+                # Req 4: Tabla Descargable
+                st.dataframe(
+                    df_res[["ID", "Cobertura", "Área (km²)", "%"]].style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}"}),
+                    use_container_width=True
+                )
+                # El botón de descarga CSV ya viene integrado en st.dataframe, pero podemos poner uno explícito si quieres
+                csv = df_res.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Descargar Tabla (CSV)", csv, "stats_cobertura.csv", "text/csv")
+                
             with c2:
                 import plotly.express as px
                 fig = px.pie(df_res, values="Área (km²)", names="Cobertura", color="Cobertura", 
@@ -5580,7 +5629,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                 st.plotly_chart(fig, use_container_width=True)
 
         with tab_sim:
-            if has_basin:
+            if view_mode == "Cuenca":
                 st.info("Simula cambios de uso del suelo.")
                 with st.expander("⚙️ Configuración CN", expanded=False):
                     cc = st.columns(5)
@@ -5609,7 +5658,6 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                         q_act = lc.calculate_scs_runoff(cn_act, ppt_anual)
                         q_fut = lc.calculate_scs_runoff(cn_fut, ppt_anual)
                         
-                        # Corrección Volumen
                         vol_act = (q_act * area_total_km2) / 1000
                         vol_fut = (q_fut * area_total_km2) / 1000
                         
@@ -5626,10 +5674,10 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                 else:
                     st.warning("La suma debe ser 100%.")
             else:
-                st.info("Requiere cuenca delimitada.")
+                st.info("⚠️ El simulador requiere el modo 'Cuenca' con una delimitación activa.")
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error en módulo de coberturas: {e}")
 
 
 # PESTAÑA: CORRECCIÓN DE SESGO (VERSIÓN BLINDADA)
