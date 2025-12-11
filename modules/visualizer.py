@@ -5,11 +5,16 @@ import folium
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import base64
 import plotly.express as px
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+from rasterio.transform import array_bounds
+from pyproj import Transformer
 import pymannkendall as mk
 import requests
 import streamlit as st
+import io
 import sys
 from folium import plugins
 from folium.plugins import LocateControl, MarkerCluster
