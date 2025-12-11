@@ -1336,56 +1336,55 @@ def display_spatial_distribution_tab(
 
         # Estaciones con POPUPS HTML INTEGRADOS
         fg_estaciones = folium.FeatureGroup(name="Estaciones", show=True)
-        
-        # Función auxiliar para leer columnas sin importar mayúsculas/minúsculas
-        def get_val(row, keys, default="N/A"):
-            for k in keys:
-                if k in row.index: return row[k]
-            return default
 
         if not gdf_filtered.empty:
             for _, row in gdf_filtered.iterrows():
                 try:
-                    # 1. Extracción Segura de Datos (Soluciona campos faltantes)
-                    cod = str(get_val(row, ['Codigo', 'CODIGO', 'ID', 'id', 'StationCode'], 'Sin ID'))
-                    nom = str(get_val(row, ['Nombre', 'NOMBRE', 'StationName', 'Estacion'], 'Estación'))
+                    # 1. EXTRACCIÓN EXACTA USANDO TU CONFIGURACIÓN
+                    # Usamos 'Config.STATION_NAME_COL' -> 'nom_est'
+                    # Usamos 'Config.MUNICIPALITY_COL' -> 'municipio'
+                    # Usamos 'Config.ALTITUDE_COL'     -> 'alt_est'
                     
-                    # Nuevos campos solicitados
-                    mun = str(get_val(row, ['Municipio', 'MUNICIPIO', 'Muni', 'Ciudad'], 'Desconocido'))
-                    alt = str(get_val(row, ['Altitud', 'ALTITUD', 'Elevacion', 'Z', 'Cota'], '0'))
-                    cue = str(get_val(row, ['Subcuenca', 'SUBCUENCA', 'Cuenca'], 'N/A'))
+                    nom = str(row[Config.STATION_NAME_COL])
+                    mun = str(row.get(Config.MUNICIPALITY_COL, 'Desconocido'))
+                    alt = str(row.get(Config.ALTITUDE_COL, 0))
                     
-                    # Intentar obtener datos estadísticos si existen en el GeoJson
-                    precip = str(get_val(row, ['Precipitacion_Media', 'Promedio', 'Valor'], 'N/A'))
-                    anios = str(get_val(row, ['Anios_Registro', 'Periodo'], 'N/A'))
+                    # Para el CÓDIGO: Como no está en tu Config, buscamos 'codigo' o 'cod_est'
+                    # (Te sugiero agregar STATION_CODE_COL = "codigo" en tu config.py)
+                    cod = str(row.get('codigo', row.get('cod_est', row.get('id', 'Sin ID'))))
+                    
+                    # Para SUBCUENCA: Buscamos 'subcuenca' o usamos N/A si no existe
+                    cue = str(row.get('subcuenca', row.get('cuenca', 'N/A')))
+                    
+                    # Datos calculados (si existen en el dataframe)
+                    precip = str(row.get('precipitacion_media', row.get('promedio', 'N/A')))
+                    anios = str(row.get('anios_registro', row.get('hist', 'N/A')))
 
                     lat_est = row.geometry.y
                     lon_est = row.geometry.x
 
-                    # 2. POPUP HTML LIGERO (Soluciona la lentitud)
-                    # Usamos HTML simple en lugar de generar una imagen con Matplotlib
+                    # 2. POPUP HTML (Diseño limpio y funcional)
                     html_content = f"""
                     <div style="font-family: Arial, sans-serif; width: 260px; font-size: 12px;">
-                        <h4 style="margin: 0; color: #2c3e50; border-bottom: 1px solid #eee;">{nom}</h4>
-                        <span style="color: #7f8c8d; font-size: 11px;">ID: {cod}</span>
-                        <br><br>
-                        <table style="width: 100%; border-collapse: collapse;">
-                            <tr><td><b>Municipio:</b></td><td>{mun}</td></tr>
-                            <tr><td><b>Altitud:</b></td><td>{alt} msnm</td></tr>
-                            <tr><td><b>Subcuenca:</b></td><td>{cue}</td></tr>
-                            <tr><td colspan="2"><hr style="margin:3px 0; border:0; border-top:1px dashed #ccc;"></td></tr>
-                            <tr><td><b>P. Media:</b></td><td>{precip}</td></tr>
-                            <tr><td><b>Histórico:</b></td><td>{anios}</td></tr>
-                        </table>
+                        <h4 style="margin: 0; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 4px;">{nom}</h4>
+                        <div style="margin-top: 5px; color: #7f8c8d; font-size: 11px;"><b>ID:</b> {cod}</div>
                         <br>
-                        <i style="color: blue; font-size: 11px;">👉 Clic para ver pronóstico abajo</i>
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr style="border-bottom: 1px solid #eee;"><td><b>📍 Municipio:</b></td><td style="text-align:right;">{mun}</td></tr>
+                            <tr style="border-bottom: 1px solid #eee;"><td><b>⛰️ Altitud:</b></td><td style="text-align:right;">{alt} m</td></tr>
+                            <tr style="border-bottom: 1px solid #eee;"><td><b>💧 Subcuenca:</b></td><td style="text-align:right;">{cue}</td></tr>
+                            <tr style="border-bottom: 1px solid #eee;"><td><b>🌧️ P. Media:</b></td><td style="text-align:right;">{precip}</td></tr>
+                            <tr><td><b>📅 Histórico:</b></td><td style="text-align:right;">{anios}</td></tr>
+                        </table>
+                        <div style="margin-top: 10px; text-align: center; background-color: #f0f8ff; padding: 5px; border-radius: 4px;">
+                            <i style="color: #2980b9; font-size: 11px;">👉 Clic para ver gráficas abajo</i>
+                        </div>
                     </div>
                     """
                     
-                    iframe = folium.IFrame(html_content, width=280, height=220)
+                    iframe = folium.IFrame(html_content, width=280, height=240)
                     popup = folium.Popup(iframe, max_width=280)
 
-                    # Añadir marcador
                     folium.Marker(
                         [lat_est, lon_est],
                         tooltip=f"{nom}",
@@ -1394,8 +1393,7 @@ def display_spatial_distribution_tab(
                     ).add_to(fg_estaciones)
                 
                 except Exception as e:
-                    # Si una estación falla, la saltamos y seguimos con las demás
-                    print(f"Error estación {row}: {e}")
+                    print(f"Error procesando estación: {e}")
                     continue
                 
         fg_estaciones.add_to(m)
