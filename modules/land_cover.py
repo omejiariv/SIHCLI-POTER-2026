@@ -37,7 +37,6 @@ def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=10):
 
         if gdf_mask is not None:
             # --- MODO RECORTE (CUENCA) ---
-            # Asegurar proyección
             if gdf_mask.crs != src.crs:
                 gdf_proj = gdf_mask.to_crs(src.crs)
             else:
@@ -47,11 +46,9 @@ def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=10):
                 out_image, out_transform = mask(src, gdf_proj.geometry, crop=True)
                 data = out_image[0]
             except ValueError:
-                # La cuenca no intersecta el raster
                 return None, None, None, None
         else:
             # --- MODO REGIONAL (OPTIMIZADO) ---
-            # Leemos 1 de cada 'scale_factor' pixeles para velocidad
             new_height = int(src.height / scale_factor)
             new_width = int(src.width / scale_factor)
             
@@ -60,7 +57,6 @@ def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=10):
                 out_shape=(new_height, new_width),
                 resampling=Resampling.nearest
             )
-            # Ajustar la transformación espacial a la nueva escala
             out_transform = src.transform * src.transform.scale(
                 (src.width / data.shape[-1]),
                 (src.height / data.shape[-2])
@@ -71,17 +67,14 @@ def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=10):
 
 def calculate_land_cover_stats(data, transform, nodata, manual_area_km2=None):
     """
-    Calcula estadísticas.
-    Si manual_area_km2 (área vectorial exacta) se provee, ajustamos los totales para
-    que el cálculo de volumen sea preciso y no dependa solo de pixeles.
+    Calcula estadísticas. Usa 'manual_area_km2' para corregir el volumen total.
     """
-    # Filtrar pixeles válidos
     valid_pixels = data[(data != nodata) & (data > 0)]
     
     if valid_pixels.size == 0:
         return pd.DataFrame(), 0
 
-    # Área de un pixel en km2 (ancho * alto) / 1e6
+    # Área de pixel en km2
     pixel_area_km2 = (abs(transform[0] * transform[4])) / 1e6
 
     unique, counts = np.unique(valid_pixels, return_counts=True)
@@ -89,8 +82,7 @@ def calculate_land_cover_stats(data, transform, nodata, manual_area_km2=None):
     # Cálculo total basado en pixeles
     calc_total_area = counts.sum() * pixel_area_km2
     
-    # Factor de corrección: Si tenemos el área exacta de la cuenca (vectorial),
-    # forzamos a que la suma de coberturas coincida con esa área real.
+    # AJUSTE DE VOLUMEN: Si tenemos área vectorial, la usamos como verdad absoluta
     if manual_area_km2 and manual_area_km2 > 0:
         factor = manual_area_km2 / calc_total_area if calc_total_area > 0 else 1
         final_total_area = manual_area_km2
@@ -117,12 +109,12 @@ def calculate_land_cover_stats(data, transform, nodata, manual_area_km2=None):
 def get_raster_img_b64(data, nodata):
     """
     Convierte la matriz a imagen PNG Base64.
-    SOLUCIÓN AL MAPA INVISIBLE: Esto garantiza que Folium pueda renderizar la capa.
+    ESTO SOLUCIONA EL MAPA INVISIBLE.
     """
     # Crear matriz RGBA
     rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
     
-    # Colorear según diccionario
+    # Colorear
     for val, hex_c in LAND_COVER_COLORS.items():
         if isinstance(hex_c, str):
             hex_c = hex_c.lstrip('#')
@@ -134,7 +126,7 @@ def get_raster_img_b64(data, nodata):
             rgba[mask_val, 2] = b
             rgba[mask_val, 3] = 180 # Opacidad
     
-    # Transparencia total para NoData y 0
+    # Transparencia total para NoData
     rgba[(data == 0) | (data == nodata), 3] = 0
     
     # Guardar en memoria como PNG
@@ -146,29 +138,29 @@ def get_raster_img_b64(data, nodata):
     return f"data:image/png;base64,{b64_encoded}"
 
 
+def get_land_cover_at_point(lat, lon, raster_path):
+    """Obtiene la cobertura en un punto (Para analyze_point_data)."""
+    if not os.path.exists(raster_path): return "Raster no encontrado"
+    try:
+        with rasterio.open(raster_path) as src:
+            val_gen = src.sample([(lon, lat)])
+            val = next(val_gen)[0]
+            if val == src.nodata or val == 0: return "Sin Datos"
+            return LAND_COVER_LEGEND.get(int(val), f"Clase {val}")
+    except: return "Error Raster"
+
+
 def calculate_scs_runoff(cn, ppt_mm):
-    """Calcula escorrentía (Q) en mm."""
     if cn >= 100: return ppt_mm
     if cn <= 0: return 0
-    
-    s = (25400 / cn) - 254
-    ia = 0.2 * s
-    
-    if ppt_mm > ia:
-        return ((ppt_mm - ia) ** 2) / (ppt_mm - ia + s)
-    return 0
+    s = (25400 / cn) - 254; ia = 0.2 * s
+    return ((ppt_mm - ia) ** 2) / (ppt_mm - ia + s) if ppt_mm > ia else 0
 
 
 def calculate_weighted_cn(df_stats, cn_config):
-    """Calcula CN ponderado actual."""
-    cn_pond = 0
-    total_pct = 0
-    
+    cn_pond = 0; total_pct = 0
     for _, row in df_stats.iterrows():
-        cob = row["Cobertura"]
-        pct = row["%"]
-        
-        # Asignación simple basada en nombres clave
+        cob = row["Cobertura"]; pct = row["%"]
         val = 85 # Default
         if "Bosque" in cob: val = cn_config['bosque']
         elif "Pasto" in cob or "Herbácea" in cob: val = cn_config['pasto']
@@ -176,36 +168,6 @@ def calculate_weighted_cn(df_stats, cn_config):
         elif "Agua" in cob: val = 100
         elif "Suelo" in cob or "Degradada" in cob: val = cn_config['suelo']
         elif "Cultivo" in cob or "Agrícola" in cob: val = cn_config['cultivo']
-        
         cn_pond += val * pct / 100
         total_pct += pct
-        
-    # Normalizar si no suma exactamente 100%
-    if total_pct > 0:
-        cn_pond = (cn_pond / total_pct) * 100
-        
-    return cn_pond
-
-def get_land_cover_at_point(lat, lon, raster_path):
-    """
-    Obtiene la descripción de la cobertura en una coordenada específica (lat, lon).
-    """
-    if not os.path.exists(raster_path):
-        return "Raster no encontrado"
-
-    try:
-        with rasterio.open(raster_path) as src:
-            # Rasterio espera coordenadas (x, y) -> (lon, lat)
-            # sample devuelve un generador, tomamos el primer valor
-            val_gen = src.sample([(lon, lat)])
-            val = next(val_gen)[0]
-
-            # Verificar NoData
-            if val == src.nodata or val == 0:
-                return "Sin Datos / Fuera del área"
-            
-            # Usar la leyenda centralizada
-            return LAND_COVER_LEGEND.get(int(val), f"Clase Desconocida ({val})")
-
-    except Exception as e:
-        return f"Error leyendo raster: {str(e)}"
+    return (cn_pond / total_pct) * 100 if total_pct > 0 else 0

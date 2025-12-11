@@ -5499,7 +5499,7 @@ def display_station_table_tab(**kwargs):
 def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     st.subheader("🌿 Análisis de Cobertura del Suelo y Escenarios")
 
-    # 1. Configuración de Rutas
+    # 1. Configuración
     Config = None
     try:
         from modules.config import Config as Cfg
@@ -5510,8 +5510,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     if Config and hasattr(Config, "LAND_COVER_RASTER_PATH"):
         raster_path = Config.LAND_COVER_RASTER_PATH
 
-    # 2. Determinar Modo (Regional vs Cuenca)
-    # Sin bloqueos: si no hay cuenca, mostramos regional
+    # 2. Modo (Regional vs Cuenca)
     res_basin = st.session_state.get("basin_res")
     has_basin = res_basin and res_basin.get("ready")
     
@@ -5523,55 +5522,40 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     c_status, c_mode = st.columns([3, 1])
     
     if has_basin:
-        # --- MODO CUENCA ---
         gdf_basin = res_basin.get("gdf_cuenca", res_basin.get("gdf_union"))
         basin_name = res_basin.get("names", "Cuenca Actual")
-        
-        # Datos hidrológicos de la cuenca
-        bal = res_basin.get("bal", {})
-        ppt_anual = bal.get("P", 2000)
-        
-        # Área exacta (Vectorial) para cálculo preciso de volumen
-        morph = res_basin.get("morph", {})
-        area_cuenca_km2 = morph.get("area_km2", 0)
+        bal = res_basin.get("bal", {}); ppt_anual = bal.get("P", 2000)
+        morph = res_basin.get("morph", {}); area_cuenca_km2 = morph.get("area_km2", 0)
         
         c_status.success(f"📍 Analizando Cuenca: **{basin_name}** (Área: {area_cuenca_km2:.2f} km²)")
         c_mode.metric("Modo", "Cuenca")
     else:
-        # --- MODO REGIONAL ---
-        c_status.info("🌎 Visualizando Cobertura Regional. Para simular escenarios, delimita una cuenca en 'Mapas Avanzados'.")
+        c_status.info("🌎 Visualizando Cobertura Regional. Para simular, delimita una cuenca.")
         c_mode.metric("Modo", "Regional")
 
-    # 3. Procesamiento (Usando modules/land_cover.py)
+    # 3. Procesamiento (USANDO EL MÓDULO NUEVO)
     try:
-        # A. Leer y Procesar Raster
         data, transform, crs, nodata = lc.process_land_cover_raster(
-            raster_path, 
-            gdf_mask=gdf_basin if has_basin else None
+            raster_path, gdf_mask=gdf_basin if has_basin else None
         )
         
         if data is None:
-            st.warning("⚠️ No se pudo cargar el archivo raster o la cuenca está fuera del área de cobertura.")
+            st.warning("⚠️ No se pudo cargar el raster o la cuenca está fuera del área.")
             return
 
-        # B. Calcular Estadísticas (Ajustando al área real si existe)
+        # Calcular Estadísticas (Pasando el área real para corregir volumen)
         df_res, area_total_km2 = lc.calculate_land_cover_stats(
             data, transform, nodata, manual_area_km2=area_cuenca_km2
         )
-        
-        if df_res.empty:
-            st.warning("El área seleccionada no tiene datos válidos.")
-            return
 
-        # 4. Visualización con Pestañas
+        # 4. Visualización
         tab_map, tab_stat, tab_sim = st.tabs(["🗺️ Mapa de Coberturas", "📊 Estadísticas", "🎛️ Simulador SCS-CN"])
 
-        # --- PESTAÑA MAPA ---
         with tab_map:
-            # Obtener imagen Base64 (Soluciona mapa invisible)
+            # MAGIA AQUÍ: Convertir a imagen B64 para que el mapa NO salga en blanco
             img_url = lc.get_raster_img_b64(data, nodata)
             
-            # Calcular Bounds para Folium
+            # Calcular Bounds
             h, w = data.shape
             minx, miny, maxx, maxy = array_bounds(h, w, transform)
             transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
@@ -5579,43 +5563,31 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             lon_max, lat_max = transformer.transform(maxx, maxy)
             bounds = [[lat_min, lon_min], [lat_max, lon_max]]
 
-            # Centro y Zoom dinámicos
             center = [(lat_min+lat_max)/2, (lon_min+lon_max)/2] if has_basin else [6.5, -75.5]
             zoom = 12 if has_basin else 8
 
             m = folium.Map(location=center, zoom_start=zoom, tiles="CartoDB positron")
-            
-            # Capa Raster (Overlay)
-            folium.raster_layers.ImageOverlay(
-                image=img_url, bounds=bounds, opacity=0.8, name="Cobertura"
-            ).add_to(m)
-            
-            # Capa Vectorial (Cuenca)
+            folium.raster_layers.ImageOverlay(image=img_url, bounds=bounds, opacity=0.8, name="Cobertura").add_to(m)
             if has_basin:
-                folium.GeoJson(gdf_basin, style_function=lambda x: {'color': 'black', 'fill': False, 'weight': 2}).add_to(m)
-
+                folium.GeoJson(gdf_basin, style_function=lambda x: {'color': 'black', 'fill': False}).add_to(m)
+            
             folium.LayerControl().add_to(m)
-            st_folium(m, height=550, use_container_width=True, key="lc_map_final")
+            st_folium(m, height=550, use_container_width=True, key="lc_map_fix")
 
-        # --- PESTAÑA ESTADÍSTICAS ---
         with tab_stat:
             c1, c2 = st.columns([1, 1])
             with c1:
                 st.dataframe(df_res[["Cobertura", "Área (km²)", "%"]].style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}"}), use_container_width=True)
-                st.caption(f"Área Total Analizada: {area_total_km2:.2f} km²")
             with c2:
                 fig = px.pie(df_res, values="Área (km²)", names="Cobertura", color="Cobertura", 
                              color_discrete_map={r["Cobertura"]: r["Color"] for _, r in df_res.iterrows()}, hole=0.4)
                 st.plotly_chart(fig, use_container_width=True)
 
-        # --- PESTAÑA SIMULADOR ---
         with tab_sim:
             if has_basin:
-                st.info("Simula cambios de uso del suelo y su impacto hidrológico (Q y Volumen).")
-                
-                with st.expander("⚙️ Configuración CN (Números de Curva)", expanded=False):
+                st.info("Simula cambios de uso del suelo.")
+                with st.expander("⚙️ Configuración CN", expanded=False):
                     cc = st.columns(5)
-                    # Diccionario de configuración CN
                     cn_cfg = {
                         'bosque': cc[0].number_input("Bosque", value=55),
                         'pasto': cc[1].number_input("Pasto", value=75),
@@ -5623,56 +5595,69 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                         'urbano': cc[3].number_input("Urbano", value=95),
                         'suelo': cc[4].number_input("Suelo", value=90)
                     }
-
-                st.write("**Defina el Escenario Futuro (% Área):**")
+                
+                st.write("**Defina el Escenario Futuro (%):**")
                 sl = st.columns(5)
-                # Sliders
-                inputs = [
-                    sl[0].slider("% Bosque", 0, 100, 40),
-                    sl[1].slider("% Pasto", 0, 100, 30),
-                    sl[2].slider("% Cultivo", 0, 100, 20),
-                    sl[3].slider("% Urbano", 0, 100, 5),
-                    sl[4].slider("% Suelo", 0, 100, 5)
-                ]
+                inputs = [sl[0].slider("% Bosque",0,100,40), sl[1].slider("% Pasto",0,100,30),
+                          sl[2].slider("% Cultivo",0,100,20), sl[3].slider("% Urbano",0,100,5),
+                          sl[4].slider("% Suelo",0,100,5)]
 
-                suma_inputs = sum(inputs)
-                if abs(suma_inputs - 100) > 0.1:
-                    st.warning(f"⚠️ La suma es {suma_inputs}%. Debe ser 100%.")
-                else:
-                    if st.button("🚀 Calcular Escenario"):
-                        # 1. CN Actual
+                if sum(inputs) == 100:
+                    if st.button("🚀 Calcular"):
                         cn_act = lc.calculate_weighted_cn(df_res, cn_cfg)
-                        # 2. CN Futuro
                         cn_fut = (inputs[0]*cn_cfg['bosque'] + inputs[1]*cn_cfg['pasto'] + 
                                   inputs[2]*cn_cfg['cultivo'] + inputs[3]*cn_cfg['urbano'] + 
                                   inputs[4]*cn_cfg['suelo']) / 100
                         
-                        # 3. Escorrentía y Volumen
                         q_act = lc.calculate_scs_runoff(cn_act, ppt_anual)
                         q_fut = lc.calculate_scs_runoff(cn_fut, ppt_anual)
                         
-                        # Volúmenes (Mm³) = Q(mm) * Area(km²) / 1000
+                        # Corrección Volumen
                         vol_act = (q_act * area_total_km2) / 1000
                         vol_fut = (q_fut * area_total_km2) / 1000
                         
-                        # Resultados
-                        st.divider()
                         c_res = st.columns(3)
                         c_res[0].metric("CN Escenario", f"{cn_fut:.1f}", delta=f"{cn_fut-cn_act:.1f}", delta_color="inverse")
-                        c_res[1].metric("Escorrentía Q", f"{q_fut:.0f} mm/año", delta=f"{q_fut-q_act:.0f} mm", delta_color="inverse")
+                        c_res[1].metric("Escorrentía Q", f"{q_fut:.0f} mm", delta=f"{q_fut-q_act:.0f} mm", delta_color="inverse")
                         c_res[2].metric("Volumen Total", f"{vol_fut:.2f} Mm³", delta=f"{vol_fut-vol_act:.2f} Mm³")
-                        
-                        fig_sim = go.Figure(data=[
-                            go.Bar(name="Actual", x=["Escorrentía"], y=[q_act], marker_color="#1f77b4", text=f"{q_act:.0f} mm", textposition="auto"),
-                            go.Bar(name="Futuro", x=["Escorrentía"], y=[q_fut], marker_color="#2ca02c", text=f"{q_fut:.0f} mm", textposition="auto"),
-                        ])
-                        fig_sim.update_layout(height=250, title="Comparativa Escorrentía Directa")
-                        st.plotly_chart(fig_sim, use_container_width=True)
+                else:
+                    st.warning("La suma debe ser 100%.")
             else:
-                st.info("ℹ️ El simulador requiere una cuenca delimitada para calcular volúmenes exactos.")
+                st.info("Requiere cuenca delimitada.")
 
     except Exception as e:
-        st.error(f"Error en módulo de coberturas: {e}")
+        st.error(f"Error: {e}")
+PASO 3: Limpiar analyze_point_data (En visualizer.py)
+Busca la función analyze_point_data en visualizer.py y reemplaza solo la sección "3. RASTERS" con esto. Ahora usaremos la función get_land_cover_at_point que creamos en el Paso 1, eliminando todo el código duplicado.
+
+Python
+
+    # 3. RASTERS (ALTITUD Y COBERTURA)
+    results["Altitud"] = 1500  # Default
+    results["Cobertura"] = "No disponible"
+
+    try:
+        import rasterio
+        
+        # A. Altitud (Se mantiene igual)
+        if os.path.exists(Config.DEM_FILE_PATH):
+            try:
+                with rasterio.open(Config.DEM_FILE_PATH) as src:
+                    val = list(src.sample([(lon, lat)]))[0][0]
+                    if val > -1000:
+                        results["Altitud"] = int(val)
+            except: pass
+
+        # B. Cobertura (AHORA USANDO EL MÓDULO CENTRALIZADO)
+        if hasattr(Config, "LAND_COVER_RASTER_PATH"):
+            results["Cobertura"] = lc.get_land_cover_at_point(
+                lat, 
+                lon, 
+                Config.LAND_COVER_RASTER_PATH
+            )
+            
+    except Exception as e:
+        results["Cobertura"] = f"Error: {str(e)}"
 
 
 # PESTAÑA: CORRECCIÓN DE SESGO (VERSIÓN BLINDADA)
