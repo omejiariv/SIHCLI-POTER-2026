@@ -5497,69 +5497,64 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     if Config and hasattr(Config, "LAND_COVER_RASTER_PATH"):
         raster_path = Config.LAND_COVER_RASTER_PATH
 
-    # 2. CONTROL DE VISTA (Req 5: Selector Manual)
+    # 2. Control de Vista
     res_basin = st.session_state.get("basin_res")
     has_basin_data = res_basin and res_basin.get("ready")
     
     col_ctrl, col_info = st.columns([1, 2])
     with col_ctrl:
-        view_mode = st.radio("📍 Modo de Visualización:", ["Regional", "Cuenca"], horizontal=True)
+        # Selector manual: Regional o Cuenca
+        idx = 1 if has_basin_data else 0
+        view_mode = st.radio("📍 Modo Visualización:", ["Regional", "Cuenca"], index=idx, horizontal=True)
     
-    # Lógica de Selección
     gdf_mask = None
     basin_name = "Regional (Antioquia)"
     ppt_anual = 2000
-    area_cuenca_km2 = None
+    area_cuenca_km2 = None 
     
     if view_mode == "Cuenca":
         if has_basin_data:
             gdf_mask = res_basin.get("gdf_cuenca", res_basin.get("gdf_union"))
             basin_name = res_basin.get("names", "Cuenca Actual")
-            # Datos hidrológicos
             bal = res_basin.get("bal", {})
             ppt_anual = bal.get("P", 2000)
             morph = res_basin.get("morph", {})
             area_cuenca_km2 = morph.get("area_km2", 0)
             with col_info:
-                st.success(f"Analizando: **{basin_name}** ({area_cuenca_km2:.1f} km²)")
+                st.success(f"Analizando: **{basin_name}** ({area_cuenca_km2:.2f} km²)")
         else:
-            st.warning("⚠️ Seleccionaste 'Cuenca', pero no has delimitado ninguna en 'Mapas Avanzados'. Mostrando Regional.")
+            st.warning("⚠️ No hay cuenca delimitada. Cambiando a modo Regional.")
             view_mode = "Regional"
 
-    # 3. PROCESAMIENTO
+    # 3. Procesamiento
     try:
         import modules.land_cover as lc
         
-        # Procesar Raster
         data, transform, crs, nodata = lc.process_land_cover_raster(
-            raster_path, gdf_mask=gdf_mask, scale_factor=10 if view_mode == "Regional" else 1
+            raster_path, gdf_mask=gdf_mask, scale_factor=10 if view_mode=="Regional" else 1
         )
         
         if data is None:
-            st.error("Error cargando el mapa. Verifica la ruta del archivo o la geometría de la cuenca.")
+            st.error("Error cargando mapa de coberturas.")
             return
 
-        # Estadísticas
         df_res, area_total_km2 = lc.calculate_land_cover_stats(
             data, transform, nodata, manual_area_km2=area_cuenca_km2
         )
 
-        # 4. VISUALIZACIÓN
+        # 4. Visualización
         tab_map, tab_stat, tab_sim = st.tabs(["🗺️ Mapa Interactivo", "📊 Tabla & Gráficos", "🎛️ Simulador SCS-CN"])
 
         with tab_map:
             c_tools, c_map = st.columns([1, 4])
             with c_tools:
-                st.markdown("##### Herramientas")
-                # Req 2: Interactividad (Hover)
-                show_interactive = st.checkbox("🔍 Activar Hover (Lento)", value=False, help="Convierte el mapa a vectores para ver datos al pasar el mouse.")
+                st.markdown("##### Opciones")
+                use_hover = st.checkbox("🔍 Hover (Info)", value=False, help="Activa interactividad (puede ser lento).")
+                show_legend = st.checkbox("📝 Leyenda", value=True)
                 
-                # Req 3: Descarga Mapa (TIFF)
+                # Botón Descarga TIFF
                 tiff_bytes = lc.get_tiff_bytes(data, transform, crs, nodata)
                 st.download_button("📥 Bajar Mapa (TIFF)", tiff_bytes, "cobertura.tif", "image/tiff")
-                
-                # Req 2: Leyenda
-                show_legend = st.checkbox("📝 Ver Leyenda", value=True)
 
             with c_map:
                 from rasterio.transform import array_bounds
@@ -5567,7 +5562,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                 import folium
                 from streamlit_folium import st_folium
 
-                # Bounds
+                # Calcular Bounds
                 h, w = data.shape
                 minx, miny, maxx, maxy = array_bounds(h, w, transform)
                 transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
@@ -5578,50 +5573,38 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
 
                 m = folium.Map(location=center, zoom_start=12 if view_mode=="Cuenca" else 8, tiles="CartoDB positron")
                 
-                # CAPA 1: Imagen Estática (Rápida) - Siempre visible
+                # Capa Raster (Imagen)
                 img_url = lc.get_raster_img_b64(data, nodata)
-                folium.raster_layers.ImageOverlay(
-                    image=img_url, bounds=bounds, opacity=0.7, name="Imagen Raster"
-                ).add_to(m)
+                folium.raster_layers.ImageOverlay(image=img_url, bounds=bounds, opacity=0.7, name="Cobertura").add_to(m)
 
-                # CAPA 2: Interactiva (Opcional para Hover)
-                if show_interactive:
-                    with st.spinner("Vectorizando para interactividad..."):
-                        # Usamos downscale para que no se cuelgue si es muy grande
+                # Capa Interactiva (Hover)
+                if use_hover:
+                    with st.spinner("Generando interactividad..."):
                         gdf_vec = lc.vectorize_raster(data, transform, crs, nodata)
                         if not gdf_vec.empty:
                             folium.GeoJson(
                                 gdf_vec,
-                                style_function=lambda x: {'fillColor': x['properties']['Color'], 'color': 'none', 'fillOpacity': 0.5},
-                                tooltip=folium.GeoJsonTooltip(fields=['Cobertura', 'ID'], aliases=['Tipo:', 'Código:']),
-                                name="Interactivo"
+                                style_function=lambda x: {'fillColor': x['properties']['Color'], 'color': 'none', 'fillOpacity': 0},
+                                tooltip=folium.GeoJsonTooltip(fields=['Cobertura'], aliases=['Tipo:']),
+                                name="Datos Hover"
                             ).add_to(m)
 
-                # Límite Cuenca
                 if view_mode == "Cuenca" and gdf_mask is not None:
-                    folium.GeoJson(gdf_mask, style_function=lambda x: {'color': 'black', 'fill': False, 'weight': 2}).add_to(m)
+                    folium.GeoJson(gdf_mask, style_function=lambda x: {'color': 'black', 'fill': False}).add_to(m)
 
-                # Leyenda Flotante
                 if show_legend:
-                    legend_html = lc.generate_legend_html()
-                    m.get_root().html.add_child(folium.Element(legend_html))
+                    m.get_root().html.add_child(folium.Element(lc.generate_legend_html()))
 
                 folium.LayerControl().add_to(m)
-                st_folium(m, height=600, use_container_width=True)
+                st_folium(m, height=600, use_container_width=True, key="map_lc_final")
 
         with tab_stat:
             c1, c2 = st.columns([1, 1])
             with c1:
-                st.markdown("##### Inventario de Coberturas")
-                # Req 4: Tabla Descargable
-                st.dataframe(
-                    df_res[["ID", "Cobertura", "Área (km²)", "%"]].style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}"}),
-                    use_container_width=True
-                )
-                # El botón de descarga CSV ya viene integrado en st.dataframe, pero podemos poner uno explícito si quieres
+                st.dataframe(df_res[["ID", "Cobertura", "Área (km²)", "%"]].style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}"}), use_container_width=True)
+                # Botón Descarga CSV
                 csv = df_res.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Descargar Tabla (CSV)", csv, "stats_cobertura.csv", "text/csv")
-                
+                st.download_button("📥 Descargar Tabla (CSV)", csv, "stats_coberturas.csv", "text/csv")
             with c2:
                 import plotly.express as px
                 fig = px.pie(df_res, values="Área (km²)", names="Cobertura", color="Cobertura", 
@@ -5658,6 +5641,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                         q_act = lc.calculate_scs_runoff(cn_act, ppt_anual)
                         q_fut = lc.calculate_scs_runoff(cn_fut, ppt_anual)
                         
+                        # Fix Volumen 0.00: Ahora usa el área real
                         vol_act = (q_act * area_total_km2) / 1000
                         vol_fut = (q_fut * area_total_km2) / 1000
                         
@@ -5667,17 +5651,17 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                         c_res[2].metric("Volumen Total", f"{vol_fut:.2f} Mm³", delta=f"{vol_fut-vol_act:.2f} Mm³")
                         
                         fig_sim = go.Figure(data=[
-                            go.Bar(name="Actual", x=["Escorrentía"], y=[q_act], marker_color="#1f77b4", text=f"{q_act:.0f} mm", textposition="auto"),
-                            go.Bar(name="Futuro", x=["Escorrentía"], y=[q_fut], marker_color="#2ca02c", text=f"{q_fut:.0f} mm", textposition="auto"),
+                            go.Bar(name="Actual", x=["Escorrentía"], y=[q_act], marker_color="#1f77b4", text=f"{q_act:.0f}", textposition="auto"),
+                            go.Bar(name="Futuro", x=["Escorrentía"], y=[q_fut], marker_color="#2ca02c", text=f"{q_fut:.0f}", textposition="auto"),
                         ])
                         st.plotly_chart(fig_sim, use_container_width=True)
                 else:
                     st.warning("La suma debe ser 100%.")
             else:
-                st.info("⚠️ El simulador requiere el modo 'Cuenca' con una delimitación activa.")
+                st.info("Requiere modo Cuenca.")
 
     except Exception as e:
-        st.error(f"Error en módulo de coberturas: {e}")
+        st.error(f"Error: {e}")
 
 
 # PESTAÑA: CORRECCIÓN DE SESGO (VERSIÓN BLINDADA)
