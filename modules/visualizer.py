@@ -1335,35 +1335,79 @@ def display_spatial_distribution_tab(
             fg_predios.add_to(m)
 
         # Estaciones con POPUPS HTML INTEGRADOS
+        # --- BLOQUE CORREGIDO: CÁLCULO DE ESTADÍSTICAS REALES ---
+        
         fg_estaciones = folium.FeatureGroup(name="Estaciones", show=True)
+
+        # 1. PRE-CÁLCULO DE ESTADÍSTICAS (La solución a los N/A)
+        # En lugar de buscar columnas que no existen, calculamos los datos usando el historial.
+        stats_cache = {}
+        if not df_long.empty:
+            try:
+                # Detectar columna de código en df_long (usualmente 'Codigo' o 'id_estacion')
+                col_cod_long = next((c for c in ['Codigo', 'CODIGO', 'id_estacion', 'station_code'] if c in df_long.columns), df_long.columns[0])
+                
+                # Agrupamos por estación
+                grp = df_long.groupby(col_cod_long)[Config.PRECIPITATION_COL]
+                
+                # Calculamos media y conteo de registros
+                medias = grp.mean()
+                conteos = grp.count()
+                
+                # Guardamos en un diccionario para acceso rápido
+                for cod_stat, val_media in medias.items():
+                    anios = conteos[cod_stat] / 12  # Aprox meses a años
+                    stats_cache[str(cod_stat)] = {
+                        'media': f"{val_media:.1f} mm/mes",
+                        'hist': f"{anios:.1f} años"
+                    }
+            except Exception as e:
+                print(f"No se pudieron calcular estadísticas: {e}")
+
+        # 2. FUNCIÓN DE BÚSQUEDA FLEXIBLE (Para encontrar la Subcuenca)
+        def get_fuzzy_col(row, aliases, default="N/A"):
+            # Busca columnas que contengan partes de los alias (ej: 'SZH' encuentra 'COD_SZH')
+            row_cols_lower = {c.lower(): c for c in row.index}
+            for alias in aliases:
+                for col_lower, col_real in row_cols_lower.items():
+                    if alias in col_lower:
+                        val = row[col_real]
+                        return str(val) if pd.notna(val) else default
+            return default
 
         if not gdf_filtered.empty:
             for _, row in gdf_filtered.iterrows():
                 try:
-                    # 1. EXTRACCIÓN EXACTA USANDO TU CONFIGURACIÓN
-                    # Usamos 'Config.STATION_NAME_COL' -> 'nom_est'
-                    # Usamos 'Config.MUNICIPALITY_COL' -> 'municipio'
-                    # Usamos 'Config.ALTITUDE_COL'     -> 'alt_est'
-                    
+                    # --- A. DATOS DE IDENTIFICACIÓN ---
+                    # Usamos Config para lo seguro
                     nom = str(row[Config.STATION_NAME_COL])
                     mun = str(row.get(Config.MUNICIPALITY_COL, 'Desconocido'))
                     alt = str(row.get(Config.ALTITUDE_COL, 0))
                     
-                    # Para el CÓDIGO: Como no está en tu Config, buscamos 'codigo' o 'cod_est'
-                    # (Te sugiero agregar STATION_CODE_COL = "codigo" en tu config.py)
-                    cod = str(row.get('codigo', row.get('cod_est', row.get('id', 'Sin ID'))))
+                    # Identificar ID (Buscamos 'codigo', 'id', etc.)
+                    cod = get_fuzzy_col(row, ['codigo', 'id', 'serial', 'cod'], 'Sin ID')
                     
-                    # Para SUBCUENCA: Buscamos 'subcuenca' o usamos N/A si no existe
-                    cue = str(row.get('subcuenca', row.get('cuenca', 'N/A')))
+                    # --- B. DATOS FALTANTES (SOLUCIÓN) ---
                     
-                    # Datos calculados (si existen en el dataframe)
-                    precip = str(row.get('precipitacion_media', row.get('promedio', 'N/A')))
-                    anios = str(row.get('anios_registro', row.get('hist', 'N/A')))
+                    # 1. Subcuenca: Buscamos variaciones comunes en shapefiles
+                    cue = get_fuzzy_col(row, ['subcuenca', 'cuenca', 'szh', 'vertiente', 'micro', 'zona'], 'N/A')
+                    
+                    # 2. Estadísticas: Sacadas del cálculo real, no de columnas vacías
+                    # Buscamos el código en nuestro diccionario calculado arriba
+                    stat_data = stats_cache.get(cod, {'media': 'N/A', 'hist': 'N/A'})
+                    
+                    # Si falló por formato (int vs str), intentamos convertir
+                    if stat_data['media'] == 'N/A':
+                        try: stat_data = stats_cache.get(str(int(float(cod))), {'media': 'N/A', 'hist': 'N/A'})
+                        except: pass
+
+                    precip = stat_data['media']
+                    anios = stat_data['hist']
 
                     lat_est = row.geometry.y
                     lon_est = row.geometry.x
 
-                    # 2. POPUP HTML (Diseño limpio y funcional)
+                    # --- C. POPUP HTML (Estilo Conservado) ---
                     html_content = f"""
                     <div style="font-family: Arial, sans-serif; width: 260px; font-size: 12px;">
                         <h4 style="margin: 0; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 4px;">{nom}</h4>
@@ -1393,10 +1437,11 @@ def display_spatial_distribution_tab(
                     ).add_to(fg_estaciones)
                 
                 except Exception as e:
-                    print(f"Error procesando estación: {e}")
+                    # print(f"Error procesando estación: {e}") 
                     continue
                 
         fg_estaciones.add_to(m)
+
 
         st.markdown("👆 **Haz clic en un marcador para ver detalles o en cualquier punto del mapa para ver el pronóstico.**")
         
