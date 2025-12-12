@@ -1,6 +1,10 @@
 import os
 from math import cos, radians
 
+
+import tempfile
+import zipfile
+import shutil
 import folium
 import geopandas as gpd
 import numpy as np
@@ -25,6 +29,7 @@ from scipy import stats
 # Imports de Ciencia de Datos y Análisis
 from scipy.interpolate import Rbf, griddata
 from shapely.geometry import Point
+from shapely.geometry import LineString, MultiLineString
 from statsmodels.tsa.seasonal import seasonal_decompose
 from streamlit_folium import st_folium, folium_static
 
@@ -2518,6 +2523,56 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             .reset_index()
         )
 
+    # --- HELPER: VECTORIZAR ISOYETAS ---
+    def generate_isohyets_gdf(gx, gy, gz, levels=10, crs="EPSG:4326"):
+        """Convierte la matriz numpy en líneas vectoriales (GeoDataFrame)."""
+        try:
+            # Usamos matplotlib para calcular los contornos matemáticos
+            fig, ax = plt.subplots()
+            contour = ax.contour(gx, gy, gz, levels=levels)
+            plt.close(fig) # Cerramos para no mostrar en streamlit
+
+            lines = []
+            values = []
+
+            for collection in contour.collections:
+                paths = collection.get_paths()
+                level_val = collection.get_label() # O obtenemos el valor del nivel
+                # Hack para obtener el valor z del nivel (matplotlib a veces lo esconde)
+                # Iteramos por niveles conocidos si es necesario, pero intentemos extraerlo:
+                try:
+                    z_val = collection.level
+                except:
+                    z_val = 0
+                
+                for path in paths:
+                    if len(path.vertices) >= 2:
+                        lines.append(LineString(path.vertices))
+                        values.append(z_val)
+            
+            if not lines:
+                return None
+
+            gdf_iso = gpd.GeoDataFrame({"precip_mm": values, "geometry": lines}, crs=crs)
+            return gdf_iso
+        except Exception as e:
+            print(f"Error vectorizando: {e}")
+            return None
+
+    # --- HELPER: ZIP SHAPEFILE ---
+    def create_zipped_shapefile(gdf, filename_base):
+        """Guarda un GDF como shapefile comprimido en memoria."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, f"{filename_base}.shp")
+            gdf.to_file(path, driver="ESRI Shapefile")
+            
+            # Comprimir
+            base_zip = os.path.join(tmpdir, filename_base)
+            shutil.make_archive(base_zip, 'zip', tmpdir)
+            
+            with open(f"{base_zip}.zip", "rb") as f:
+                return f.read()
+
     # ==========================================================================
     # MODO 1: REGIONAL (COMPARACIÓN)
     # ==========================================================================
@@ -2588,143 +2643,191 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
 
     # ==========================================================================
-    # MODO 2: CUENCA (OPTIMIZADO)
+# MODO CUENCA (PERSISTENTE Y DESCARGABLE)
     # ==========================================================================
     else:
-        st.markdown("#### ⛰️ Análisis Hidrológico Detallado por Cuenca")
         gdf_subcuencas = kwargs.get("gdf_subcuencas")
-
         if gdf_subcuencas is None or gdf_subcuencas.empty:
             st.warning("⚠️ No se ha cargado la capa de Cuencas.")
             return
 
         col_name = next((c for c in gdf_subcuencas.columns if "nombre" in c.lower() or "cuenca" in c.lower()), gdf_subcuencas.columns[0])
-        sel_cuencas = st.multiselect("Seleccionar Cuenca(s):", sorted(gdf_subcuencas[col_name].unique().astype(str)))
+        
+        # Recuperar selección previa si existe
+        default_cuencas = st.session_state.get("last_sel_cuencas", [])
+        # Filtrar para asegurar que existen en la lista actual
+        avail_opts = sorted(gdf_subcuencas[col_name].unique().astype(str))
+        valid_defaults = [x for x in default_cuencas if x in avail_opts]
+        
+        sel_cuencas = st.multiselect("Seleccionar Cuenca(s):", avail_opts, default=valid_defaults)
 
-        # --- CONFIGURACIÓN DE BUFFER (Ahora integrado en el flujo) ---
         with st.expander("⚙️ Configuración Avanzada", expanded=False):
-             buffer_km = st.slider("Radio búsqueda estaciones (km):", 0, 50, 15, step=5)
+             buffer_km = st.slider("Radio búsqueda (km):", 0, 50, 15, step=5)
 
         if sel_cuencas:
             c_p1, c_p2 = st.columns(2)
             rng_c = c_p1.slider("Periodo:", 1980, 2025, (2000, 2020))
             meth_c = c_p2.selectbox("Método Interpolación:", ["Kriging (RBF)", "IDW"])
 
+            # --- LÓGICA DE CÁLCULO (SOLO SI SE PRESIONA EL BOTÓN) ---
             if st.button("⚡ Analizar Cuenca"):
-                with st.spinner("Procesando geometría y datos..."):
-                    # 1. Geometría OPTIMIZADA (La clave de la velocidad)
+                st.session_state["last_sel_cuencas"] = sel_cuencas # Guardar selección
+                with st.spinner("Interpolando y Vectorizando..."):
+                    # 1. Geometría
                     sub = gdf_subcuencas[gdf_subcuencas[col_name].isin(sel_cuencas)]
-                    
-                    # [OPTIMIZACIÓN] Simplificar geometría antes de unir. 
-                    # 0.01 grados aprox 1km. Suficiente para buffer de búsqueda.
-                    # Esto hace que el buffer sea 100 veces más rápido.
                     try:
-                        geom_simplificada = sub.geometry.simplify(tolerance=0.01)
-                        geom_union_shape = geom_simplificada.unary_union
+                        geom_union_shape = sub.geometry.simplify(0.01).unary_union
                     except:
-                        geom_union_shape = sub.unary_union # Fallback
+                        geom_union_shape = sub.unary_union
                     
-                    # Buffer para búsqueda de estaciones
-                    buffer_grados = buffer_km / 111.32
-                    buf_shape = geom_union_shape.buffer(buffer_grados)
-                    
-                    # GeoDataFrames para visualización y cortes
-                    gdf_union_real = gpd.GeoDataFrame({"geometry": [sub.unary_union]}, crs=gdf_subcuencas.crs) # Para pintar bonito
-                    gdf_buffer = gpd.GeoDataFrame({"geometry": [buf_shape]}, crs=gdf_stations.crs) # Para buscar
+                    # GeoDataFrames Base
+                    gdf_union_real = gpd.GeoDataFrame({"geometry": [sub.unary_union], "tipo": "Cuenca"}, crs=gdf_subcuencas.crs)
+                    buf_shape = geom_union_shape.buffer(buffer_km / 111.32)
+                    gdf_buffer = gpd.GeoDataFrame({"geometry": [buf_shape], "tipo": "Buffer"}, crs=gdf_stations.crs)
 
-                    # 2. Intersección Espacial (Usando la geometría simplificada es más rápido)
+                    # 2. Datos
                     stns_zone = gpd.sjoin(gdf_stations, gdf_buffer, predicate="intersects")
                     
                     if not stns_zone.empty:
+                        # Filtrar datos tiempo
                         mask = (
                             (df_long[Config.STATION_NAME_COL].isin(stns_zone[Config.STATION_NAME_COL].unique()))
-                            & (df_long[Config.YEAR_COL] >= rng_c[0])
-                            & (df_long[Config.YEAR_COL] <= rng_c[1])
+                            & (df_long[Config.YEAR_COL] >= rng_c[0]) & (df_long[Config.YEAR_COL] <= rng_c[1])
                         )
                         df_raw = df_long[mask].copy()
-
-                        # 3. Promedios Reales
-                        df_ppt = calcular_promedios_reales(df_raw)
-                        if isinstance(df_ppt, pd.Series): df_ppt = df_ppt.to_frame()
+                        
+                        # Promedios
+                        conteo = df_raw[df_raw[Config.PRECIPITATION_COL] >= 0].groupby([Config.STATION_NAME_COL, Config.YEAR_COL]).size()
+                        anos_validos = conteo[conteo >= 5].index
+                        df_filtrado = df_raw.set_index([Config.STATION_NAME_COL, Config.YEAR_COL]).loc[anos_validos].reset_index()
+                        suma_anual = df_filtrado.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[Config.PRECIPITATION_COL].sum().reset_index()
+                        df_ppt = suma_anual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index()
+                        
                         if Config.STATION_NAME_COL not in df_ppt.columns: df_ppt = df_ppt.reset_index()
-
                         df_interp = pd.merge(df_ppt, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
+                        gdf_puntos_interp = gpd.GeoDataFrame(
+                            df_interp, geometry=gpd.points_from_xy(df_interp.longitude, df_interp.latitude), crs=gdf_stations.crs
+                        )
 
                         if len(df_interp) >= 3:
-                            # 4. Interpolación
-                            # Usamos bounds del buffer para asegurar cobertura
+                            # 3. Interpolación
                             minx, miny, maxx, maxy = gdf_buffer.total_bounds
-                            # Margen extra pequeño
-                            bounds_correctos = [minx, maxx, miny, maxy]
+                            bounds = [minx, maxx, miny, maxy]
                             
-                            gx, gy, gz = run_interp(df_interp, meth_c, bounds_correctos)
+                            # Helper interno para interpolar
+                            gx, gy = np.mgrid[bounds[0]:bounds[1]:75j, bounds[2]:bounds[3]:75j]
+                            pts = df_interp[["longitude", "latitude"]].values
+                            vals = df_interp[Config.PRECIPITATION_COL].values
+                            
+                            if "Kriging" in meth_c:
+                                rbf = Rbf(pts[:, 0], pts[:, 1], vals, function="thin_plate")
+                                gz = rbf(gx, gy)
+                            else:
+                                gz = griddata(pts, vals, (gx, gy), method="linear")
 
-                            # 5. Cálculos Hidrológicos
-                            ppt_med = np.nanmean(gz) if gz is not None else df_interp[Config.PRECIPITATION_COL].mean()
-                            if np.isnan(ppt_med) or ppt_med <= 0: ppt_med = df_interp[Config.PRECIPITATION_COL].mean()
+                            # 4. VECTORIZACIÓN (NUEVO)
+                            gdf_isoyetas = generate_isohyets_gdf(gx, gy, gz, levels=15, crs=gdf_stations.crs)
 
-                            # Usamos la geometría REAL (no simplificada) para morfometría precisa
+                            # 5. Métricas (Igual que antes)
+                            ppt_med = np.nanmean(gz) if gz is not None else 0
                             morph = analysis.calculate_morphometry(gdf_union_real)
                             area_km2 = morph.get("area_km2", 100)
-                            alt_media = morph.get("alt_prom_m", 1500)
-                            temp_media = 28 - (0.006 * alt_media) # Gradiente térmico simple
+                            temp_media = 28 - (0.006 * morph.get("alt_prom_m", 1500))
                             if temp_media < 0: temp_media = 5
-
                             etr_mm, q_mm = analysis.calculate_water_balance_turc(ppt_med, temp_media)
                             vol_hm3 = (q_mm * area_km2) / 1000 
                             q_m3s = (vol_hm3 * 1_000_000) / 31536000
-
-                            bal = {
-                                "P": ppt_med, "ET": etr_mm, "Q": q_mm, "Q_mm": q_mm,
-                                "Q_m3s": q_m3s, "Vol": vol_hm3, "T_avg": temp_media,
-                            }
-
-                            bs_ts = df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean()
-                            c_run = q_mm / ppt_med if ppt_med > 0 else 0.4
-                            fdc = analysis.calculate_duration_curve(bs_ts, c_run, area_km2)
-                            idx = analysis.calculate_climatic_indices(bs_ts, alt_media)
-
+                            
+                            # Guardar todo en Session State
                             st.session_state["basin_res"] = {
                                 "ready": True, "gz": gz, "gx": gx, "gy": gy,
-                                "df_interp": df_interp, "df_raw": df_raw,
-                                "gdf_cuenca": gdf_union_real, "gdf_buffer": gdf_buffer,
-                                "bal": bal, "morph": morph, "fdc": fdc, "idx": idx,
-                                "bounds": bounds_correctos, "names": ", ".join(sel_cuencas),
+                                "gdf_puntos": gdf_puntos_interp, # Guardamos como GDF
+                                "gdf_cuenca": gdf_union_real, 
+                                "gdf_isoyetas": gdf_isoyetas, # Guardamos isoyetas vectoriales
+                                "bal": {"P": ppt_med, "ET": etr_mm, "Q_m3s": q_m3s, "Vol": vol_hm3},
+                                "morph": morph,
+                                "names": ", ".join(sel_cuencas)
                             }
                         else:
-                            st.error("Insuficientes estaciones (<3) en el área del buffer para interpolar.")
+                            st.error("Insuficientes estaciones (<3).")
+                            st.session_state["basin_res"] = None
                     else:
-                        st.error(f"Sin estaciones cercanas en {buffer_km} km a la redonda.")
+                        st.error("Sin estaciones cercanas.")
+                        st.session_state["basin_res"] = None
 
             # --- MOSTRAR RESULTADOS ---
+--
             res = st.session_state.get("basin_res")
+            
             if res and res.get("ready"):
-                st.markdown(f"##### 🌧️ Mapa de Isoyetas: {res['names']}")
+                st.markdown(f"##### 🌧️ Resultados: {res['names']}")
                 
-                # Gráfico Principal
+                # Mapa Visual (Plotly)
                 fig = go.Figure(go.Contour(
                     z=res["gz"].T, x=res["gx"][:, 0], y=res["gy"][0, :],
-                    colorscale="Blues", colorbar=dict(title="mm"), contours=dict(start=0, end=4000, size=200),
+                    colorscale="Blues", colorbar=dict(title="mm"), contours=dict(start=0, end=5000, size=200)
                 ))
-                fig.add_trace(go.Scatter(
-                    x=res["df_interp"].longitude, y=res["df_interp"].latitude, mode="markers",
-                    marker=dict(color="red", size=6), text=res["df_interp"][Config.STATION_NAME_COL], name="Estaciones"
-                ))
-                
-                # Dibujar Buffer (Gris) y Cuenca (Negro)
+                # Cuenca
                 try:
-                    # Cuenca
-                    for geom in (res["gdf_cuenca"].geometry.iloc[0].geoms if res["gdf_cuenca"].geometry.iloc[0].geom_type == "MultiPolygon" else [res["gdf_cuenca"].geometry.iloc[0]]):
+                    g = res["gdf_cuenca"].geometry.iloc[0]
+                    geoms = g.geoms if g.geom_type == "MultiPolygon" else [g]
+                    for geom in geoms:
                         xs, ys = geom.exterior.xy
                         fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=2), name="Cuenca"))
-                    # Buffer
-                    for geom in (res["gdf_buffer"].geometry.iloc[0].geoms if res["gdf_buffer"].geometry.iloc[0].geom_type == "MultiPolygon" else [res["gdf_buffer"].geometry.iloc[0]]):
-                        xs, ys = geom.exterior.xy
-                        fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="gray", width=1, dash='dash'), name="Buffer"))
-                except:
-                    pass
-
+                except: pass
+                # Puntos
+                df_p = res["gdf_puntos"]
+                fig.add_trace(go.Scatter(x=df_p.geometry.x, y=df_p.geometry.y, mode="markers", marker=dict(color="red"), name="Estaciones"))
+                
                 st.plotly_chart(fig, use_container_width=True)
+
+                # --- ZONA DE DESCARGAS GIS ---
+                st.markdown("---")
+                st.subheader("💾 Descarga de Capas GIS (Vectores)")
+                
+                c_gis1, c_gis2, c_gis3 = st.columns(3)
+                
+                # 1. Descarga Estaciones (Puntos)
+                gdf_pts = res["gdf_puntos"]
+                c_gis1.download_button(
+                    "📍 Estaciones (GeoJSON)", 
+                    data=gdf_pts.to_json(), 
+                    file_name="estaciones_interpoladas.geojson", 
+                    mime="application/json"
+                )
+                
+                # 2. Descarga Cuenca (Polígono)
+                gdf_basin = res["gdf_cuenca"]
+                c_gis2.download_button(
+                    "🗺️ Cuenca (GeoJSON)", 
+                    data=gdf_basin.to_json(), 
+                    file_name="cuenca_analisis.geojson", 
+                    mime="application/json"
+                )
+                
+                # 3. Descarga Isoyetas (Líneas) - LA JOYA DE LA CORONA
+                gdf_iso = res["gdf_isoyetas"]
+                if gdf_iso is not None:
+                    c_gis3.download_button(
+                        "〰️ Isoyetas (GeoJSON)", 
+                        data=gdf_iso.to_json(), 
+                        file_name="isoyetas_generadas.geojson", 
+                        mime="application/json"
+                    )
+
+                # Botón extra para Shapefile (ZIP)
+                with st.expander("📦 Descargar como Shapefile (.zip)"):
+                    st.caption("Compatible con ArcGIS/QGIS. Incluye .shp, .shx, .dbf, .prj")
+                    col_shp1, col_shp2 = st.columns(2)
+                    
+                    # SHP Isoyetas
+                    if gdf_iso is not None:
+                        zip_iso = create_zipped_shapefile(gdf_iso, "isoyetas")
+                        col_shp1.download_button("Descargar Isoyetas (.shp)", zip_iso, "isoyetas.zip", "application/zip")
+                    
+                    # SHP Cuenca
+                    zip_basin = create_zipped_shapefile(gdf_basin, "cuenca")
+                    col_shp2.download_button("Descargar Cuenca (.shp)", zip_basin, "cuenca.zip", "application/zip")
 
                 # B. Métricas
                 st.markdown("---")
