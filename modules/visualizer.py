@@ -9,6 +9,7 @@ import base64
 import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
+import branca.colormap as cm
 from rasterio.transform import array_bounds
 from pyproj import Transformer
 import pymannkendall as mk
@@ -2469,6 +2470,14 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # Esto soluciona el NameError 'user_loc' más adelante
     user_loc = _get_user_location_sidebar(key_suffix="Adv")
 
+    # -------------------------------------------------------------------------
+    # [NUEVO] CONTROL DE BUFFER (Insertado aquí para no estorbar abajo)
+    # -------------------------------------------------------------------------
+    with st.expander("📡 Configuración de Estaciones Vecinas (Buffer)", expanded=False):
+        st.info("Incluye estaciones fuera de la zona seleccionada para mejorar la interpolación en los bordes.")
+        buffer_km = st.slider("Radio de expansión (km):", 0, 50, 15, step=5)
+    # -------------------------------------------------------------------------
+
     # --- HELPER INTERPOLACIÓN (Definida internamente) ---
     def run_interp(df_puntos, metodo, bounds_box):
         try:
@@ -2673,29 +2682,18 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
 
     # ==========================================================================
-    # MODO 2: CUENCA
+    # MODO 2: CUENCA (AQUÍ ESTÁ LA MEJORA DEL BUFFER)
+    # ==========================================================================
     else:
         st.markdown("#### ⛰️ Análisis Hidrológico Detallado por Cuenca")
-        # gdf_subcuencas se pasa en kwargs o se asume disponible globalmente si no se pasa explícitamente en argumentos de función
-        # Ajuste: Recuperar de kwargs si existe
         gdf_subcuencas = kwargs.get("gdf_subcuencas")
 
         if gdf_subcuencas is None or gdf_subcuencas.empty:
             st.warning("⚠️ No se ha cargado la capa de Cuencas.")
             return
 
-        col_name = next(
-            (
-                c
-                for c in gdf_subcuencas.columns
-                if "nombre" in c.lower() or "cuenca" in c.lower()
-            ),
-            gdf_subcuencas.columns[0],
-        )
-        sel_cuencas = st.multiselect(
-            "Seleccionar Cuenca(s):",
-            sorted(gdf_subcuencas[col_name].unique().astype(str)),
-        )
+        col_name = next((c for c in gdf_subcuencas.columns if "nombre" in c.lower() or "cuenca" in c.lower()), gdf_subcuencas.columns[0])
+        sel_cuencas = st.multiselect("Seleccionar Cuenca(s):", sorted(gdf_subcuencas[col_name].unique().astype(str)))
 
         if sel_cuencas:
             c_p1, c_p2 = st.columns(2)
@@ -2703,29 +2701,32 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             meth_c = c_p2.selectbox("Método:", ["Kriging (RBF)", "IDW"])
 
             if st.button("⚡ Analizar Cuenca"):
-                with st.spinner("Procesando hidrología..."):
+                with st.spinner(f"Procesando con buffer de {buffer_km} km..."):
                     # 1. Geometría
                     sub = gdf_subcuencas[gdf_subcuencas[col_name].isin(sel_cuencas)]
-                    geom_union = gpd.GeoDataFrame(
-                        {"geometry": [sub.unary_union]}, crs=gdf_subcuencas.crs
-                    )
-                    buf = geom_union.geometry.buffer(0.3).unary_union
-                    gdf_buffer = gpd.GeoDataFrame(
-                        {"geometry": [buf]}, crs=gdf_stations.crs
-                    )
+                    geom_union = gpd.GeoDataFrame({"geometry": [sub.unary_union]}, crs=gdf_subcuencas.crs)
+                    
+                    # -------------------------------------------------------------
+                    # [CAMBIO CLAVE] BUFFER DINÁMICO (Variable del slider)
+                    # -------------------------------------------------------------
+                    # Convertimos km a grados aprox (1 grado ~ 111.32 km)
+                    buffer_grados = buffer_km / 111.32
+                    
+                    # Antes tenías: .buffer(0.3) -> Ahora usamos buffer_grados
+                    buf = geom_union.geometry.buffer(buffer_grados).unary_union
+                    
+                    gdf_buffer = gpd.GeoDataFrame({"geometry": [buf]}, crs=gdf_stations.crs)
+                    # -------------------------------------------------------------
 
-                    # 2. Estaciones
-                    stns_zone = gpd.sjoin(
-                        gdf_stations, gdf_buffer, predicate="intersects"
-                    )
+                    # 2. Estaciones (Intersección Espacial)
+                    stns_zone = gpd.sjoin(gdf_stations, gdf_buffer, predicate="intersects")
+                    
+                    # Feedback visual de cuántas estaciones entran
+                    st.toast(f"Usando {len(stns_zone)} estaciones (Buffer: {buffer_km}km)")
 
                     if not stns_zone.empty:
                         mask = (
-                            (
-                                df_long[Config.STATION_NAME_COL].isin(
-                                    stns_zone[Config.STATION_NAME_COL].unique()
-                                )
-                            )
+                            (df_long[Config.STATION_NAME_COL].isin(stns_zone[Config.STATION_NAME_COL].unique()))
                             & (df_long[Config.YEAR_COL] >= rng_c[0])
                             & (df_long[Config.YEAR_COL] <= rng_c[1])
                         )
@@ -2733,150 +2734,101 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
                         # 3. Promedios Reales
                         df_ppt = calcular_promedios_reales(df_raw)
-                        if isinstance(df_ppt, pd.Series):
-                            df_ppt = df_ppt.to_frame()
-                        if Config.STATION_NAME_COL not in df_ppt.columns:
-                            df_ppt = df_ppt.reset_index()
+                        if isinstance(df_ppt, pd.Series): df_ppt = df_ppt.to_frame()
+                        if Config.STATION_NAME_COL not in df_ppt.columns: df_ppt = df_ppt.reset_index()
 
-                        df_interp = pd.merge(
-                            df_ppt, gdf_stations, on=Config.STATION_NAME_COL
-                        ).dropna(subset=["latitude", "longitude"])
+                        df_interp = pd.merge(df_ppt, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
 
                         if len(df_interp) >= 3:
                             # 4. Interpolación
                             b = geom_union.total_bounds
-                            bounds = [
-                                b[0] - 0.05,
-                                b[2] + 0.05,
-                                b[1] - 0.05,
-                                b[3] + 0.05,
-                            ]
-                            gx, gy, gz = run_interp(df_interp, meth_c, bounds)
+                            # Margen dinámico para el mapa
+                            margin = buffer_grados if buffer_grados > 0.05 else 0.05
+                            bounds = [b[0]-margin, b[1]+margin, b[2]-margin, b[3]+margin] # [minx, maxx, miny, maxy] CORREGIDO ORDEN PARA MGRID
+                            # OJO: mgrid usa [min_x:max_x, min_y:max_y]. 
+                            # Tu función run_interp espera bounds_box = [minx, maxx, miny, maxy]
+                            # Aseguramos el orden correcto:
+                            bounds_interp = [b[0]-margin, b[2]+margin, b[1]-margin, b[3]+margin] 
+                            # Espera, mgrid en run_interp: bounds_box[0]:bounds_box[1] (x), bounds_box[2]:bounds_box[3] (y)
+                            # Bounds de geopandas son: [minx, miny, maxx, maxy]
+                            # Así que pasamos: [minx, maxx, miny, maxy]
+                            bounds_correctos = [b[0]-margin, b[2]+margin, b[1]-margin, b[3]+margin]
+                            
+                            gx, gy, gz = run_interp(df_interp, meth_c, bounds_correctos)
 
-                            # 5. Cálculos Hidrológicos Completos (CORREGIDO)
-                            ppt_med = (
-                                np.nanmean(gz)
-                                if gz is not None
-                                else df_interp[Config.PRECIPITATION_COL].mean()
-                            )
-                            if np.isnan(ppt_med) or ppt_med <= 0:
-                                ppt_med = df_interp[Config.PRECIPITATION_COL].mean()
+                            # 5. Cálculos Hidrológicos Completos
+                            ppt_med = np.nanmean(gz) if gz is not None else df_interp[Config.PRECIPITATION_COL].mean()
+                            if np.isnan(ppt_med) or ppt_med <= 0: ppt_med = df_interp[Config.PRECIPITATION_COL].mean()
 
                             morph = calculate_morphometry(geom_union)
                             area_km2 = morph.get("area_km2", 100)
                             alt_media = morph.get("alt_prom_m", 1500)
-
-                            # Temperatura Media (Estimación)
                             temp_media = 28 - (0.006 * alt_media)
-                            if temp_media < 0:
-                                temp_media = 0
+                            if temp_media < 0: temp_media = 0
 
-                            # Balance Hídrico (Turc)
-                            from modules.analysis import \
-                                calculate_water_balance_turc
-
-                            etr_mm, q_mm = calculate_water_balance_turc(
-                                ppt_med, temp_media
-                            )
-
-                            # Caudal y Volumen
+                            etr_mm, q_mm = calculate_water_balance_turc(ppt_med, temp_media)
                             vol_m3 = (q_mm / 1000) * (area_km2 * 1_000_000)
                             q_m3s = vol_m3 / 31536000
                             vol_hm3 = vol_m3 / 1_000_000
 
                             bal = {
-                                "P": ppt_med,
-                                "ET": etr_mm,
-                                "Q": q_mm,
-                                "Q_mm": q_mm,
-                                "Q_m3s": q_m3s,
-                                "Vol": vol_hm3,
-                                "T_avg": temp_media,
+                                "P": ppt_med, "ET": etr_mm, "Q": q_mm, "Q_mm": q_mm,
+                                "Q_m3s": q_m3s, "Vol": vol_hm3, "T_avg": temp_media,
                             }
 
-                            # Series de Tiempo e Índices
-                            bs_ts = df_raw.groupby(Config.DATE_COL)[
-                                Config.PRECIPITATION_COL
-                            ].mean()
+                            bs_ts = df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean()
                             c_run = q_mm / ppt_med if ppt_med > 0 else 0.4
                             fdc = calculate_duration_curve(bs_ts, c_run, area_km2)
                             idx = calculate_climatic_indices(bs_ts, alt_media)
 
                             st.session_state["basin_res"] = {
-                                "ready": True,
-                                "gz": gz,
-                                "gx": gx,
-                                "gy": gy,
-                                "df_interp": df_interp,
-                                "df_raw": df_raw,
-                                "gdf_cuenca": geom_union,
-                                "gdf_buffer": gdf_buffer,
-                                "bal": bal,
-                                "morph": morph,
-                                "fdc": fdc,
-                                "idx": idx,
-                                "bounds": bounds,
-                                "names": ", ".join(sel_cuencas),
+                                "ready": True, "gz": gz, "gx": gx, "gy": gy,
+                                "df_interp": df_interp, "df_raw": df_raw,
+                                "gdf_cuenca": geom_union, "gdf_buffer": gdf_buffer,
+                                "bal": bal, "morph": morph, "fdc": fdc, "idx": idx,
+                                "bounds": bounds_correctos, "names": ", ".join(sel_cuencas),
                             }
                         else:
-                            st.error("Insuficientes estaciones (<3).")
+                            st.error("Insuficientes estaciones (<3) en el área del buffer.")
                     else:
-                        st.error("Sin estaciones cercanas.")
+                        st.error(f"Sin estaciones cercanas en {buffer_km} km a la redonda.")
 
             # --- MOSTRAR RESULTADOS ---
             res = st.session_state.get("basin_res")
             if res and res.get("ready"):
-                # A. Mapa Isoyetas
                 st.markdown(f"##### 🌧️ Mapa de Isoyetas: {res['names']}")
-                fig = go.Figure(
-                    go.Contour(
-                        z=res["gz"].T,
-                        x=res["gx"][:, 0],
-                        y=res["gy"][0, :],
-                        colorscale="Blues",
-                        colorbar=dict(title="mm"),
-                        contours=dict(start=0, end=6000, size=250),
-                    )
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=res["df_interp"].longitude,
-                        y=res["df_interp"].latitude,
-                        mode="markers+text",
-                        marker=dict(color="red", size=8),
-                        text=res["df_interp"][Config.STATION_NAME_COL],
-                        textposition="top center",
-                    )
-                )
+                fig = go.Figure(go.Contour(
+                    z=res["gz"].T, x=res["gx"][:, 0], y=res["gy"][0, :],
+                    colorscale="Blues", colorbar=dict(title="mm"), contours=dict(start=0, end=6000, size=250),
+                ))
+                fig.add_trace(go.Scatter(
+                    x=res["df_interp"].longitude, y=res["df_interp"].latitude, mode="markers+text",
+                    marker=dict(color="red", size=8), text=res["df_interp"][Config.STATION_NAME_COL], textposition="top center",
+                ))
+                
+                # Dibujar contorno de cuenca
                 try:
                     g = res["gdf_cuenca"].geometry.iloc[0]
-                    if g.geom_type == "Polygon":
-                        xs, ys = g.exterior.xy
-                    else:
-                        xs, ys = g.geoms[0].exterior.xy
-                    fig.add_trace(
-                        go.Scatter(
-                            x=list(xs),
-                            y=list(ys),
-                            mode="lines",
-                            line=dict(color="black", width=3),
-                        )
-                    )
+                    # Soporte para Polygon y MultiPolygon
+                    geoms = g.geoms if g.geom_type == "MultiPolygon" else [g]
+                    for geom in geoms:
+                        xs, ys = geom.exterior.xy
+                        fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=3), showlegend=False))
+                    
+                    # Dibujar Buffer (Opcional, línea punteada gris)
+                    g_buf = res["gdf_buffer"].geometry.iloc[0]
+                    geoms_b = g_buf.geoms if g_buf.geom_type == "MultiPolygon" else [g_buf]
+                    for geom in geoms_b:
+                        xs, ys = geom.exterior.xy
+                        fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="gray", width=1, dash='dash'), name="Buffer Area"))
                 except:
                     pass
 
-                # --- CAPA USUARIO EN MAPA ISOYETAS ---
                 if user_loc:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[user_loc[1]],
-                            y=[user_loc[0]],
-                            mode="markers+text",
-                            marker=dict(color="black", size=12, symbol="star"),
-                            text=["📍 TÚ"],
-                            textposition="top center",
-                        )
-                    )
+                    fig.add_trace(go.Scatter(
+                        x=[user_loc[1]], y=[user_loc[0]], mode="markers+text",
+                        marker=dict(color="black", size=12, symbol="star"), text=["📍 TÚ"], textposition="top center",
+                    ))
 
                 fig.update_layout(height=500, margin=dict(l=0, r=0, b=0, t=30))
                 st.plotly_chart(fig, use_container_width=True)
