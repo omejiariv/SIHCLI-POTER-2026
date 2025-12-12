@@ -1664,6 +1664,46 @@ def display_spatial_distribution_tab(
 def display_graphs_tab(
     df_monthly_filtered, df_anual_melted, stations_for_analysis, **kwargs
 ):
+
+# ---------------------------------------------------------
+    import geopandas as gpd # Asegúrate de tener esto importado arriba
+
+    # 1. Cargar el Parquet (Datos de Lluvia) si no existe
+    if st.session_state.get('df_long') is None:
+        try:
+            # Usamos cache para que no recargue cada vez
+            @st.cache_data
+            def load_parquet():
+                return pd.read_parquet("datos_precipitacion_largos.parquet")
+            
+            st.session_state['df_long'] = load_parquet()
+        except Exception as e:
+            st.error(f"Error cargando Parquet: {e}")
+
+    # 2. Cargar CSV Estaciones (Metadatos) si no existe
+    if st.session_state.get('gdf_stations') is None:
+        try:
+            @st.cache_data
+            def load_stations():
+                # OJO: Usamos separador punto y coma (;) según tu archivo
+                return pd.read_csv("mapaCVENSO.csv", sep=";")
+            
+            st.session_state['gdf_stations'] = load_stations()
+        except Exception as e:
+            st.error(f"Error cargando CSV Estaciones: {e}")
+
+    # 3. Cargar GeoJSON (Cuencas) si no existe
+    if st.session_state.get('gdf_subcuencas') is None:
+        try:
+            @st.cache_data
+            def load_cuencas():
+                return gpd.read_file("SubcuencasAinfluencia.geojson")
+            
+            st.session_state['gdf_subcuencas'] = load_cuencas()
+        except Exception as e:
+            st.error(f"Error cargando GeoJSON Cuencas: {e}")
+    # ---------------------------------------------------------
+
     st.subheader("📊 Análisis Gráfico Detallado")
 
     # Validación de datos
