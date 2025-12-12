@@ -2246,7 +2246,7 @@ def display_graphs_tab(
                         markers=True
                     )
                     
-                    fig.update_layout(hover_mode="x unified", legend=dict(orientation="h", y=1.1))
+                    fig.update_layout(hovermode="x unified", legend=dict(orientation="h", y=1.1))
                     st.plotly_chart(fig, use_container_width=True)
                     
                 else:
