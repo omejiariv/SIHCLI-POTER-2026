@@ -1688,7 +1688,7 @@ def display_graphs_tab(
         try:
             @st.cache_data
             def load_stations():
-                return pd.read_csv(os.path.join(DATA_PATH, "mapaCVENSO.csv"), sep=";")
+                return pd.read_csv(os.path.join(DATA_PATH, "mapaCVENSO.csv"), sep=";", encoding="latin-1")
             
             st.session_state['gdf_stations'] = load_stations()
         except Exception as e:
