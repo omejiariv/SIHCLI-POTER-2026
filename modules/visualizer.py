@@ -5779,7 +5779,7 @@ def display_bias_correction_tab(df_long, gdf_stations, gdf_filtered, **kwargs):
     with c2:
         st.write("")  # Espaciador para alineación vertical
         calc_btn = st.button(
-            "🚀 Calcular Series", type="primary", use_container_width=True
+            "🚀 Calcular Series", type="primary"
         )
 
     # 3. Lógica de Cálculo (Solo si se presiona el botón)
