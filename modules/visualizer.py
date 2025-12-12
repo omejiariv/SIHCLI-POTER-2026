@@ -1665,49 +1665,45 @@ def display_graphs_tab(
     df_monthly_filtered, df_anual_melted, stations_for_analysis, **kwargs
 ):
 
+    import geopandas as gpd 
     import os
-    st.markdown("### 🕵️ Detector de Archivos")
-    st.write(f"**Estoy ejecutándome en:** `{os.getcwd()}`")
-    st.write("**Archivos que veo aquí:**")
-    st.write(os.listdir()) # Esto imprimirá una lista de todo lo que hay en la carpeta
 
-# ---------------------------------------------------------
-    import geopandas as gpd # Asegúrate de tener esto importado arriba
+    # Ruta base donde están los datos
+    DATA_PATH = "data/" 
 
-    # 1. Cargar el Parquet (Datos de Lluvia) si no existe
+    # 1. Cargar el Parquet (Datos de Lluvia)
     if st.session_state.get('df_long') is None:
         try:
-            # Usamos cache para que no recargue cada vez
             @st.cache_data
             def load_parquet():
-                return pd.read_parquet("datos_precipitacion_largos.parquet")
+                # Buscamos en la carpeta data
+                return pd.read_parquet(os.path.join(DATA_PATH, "datos_precipitacion_largos.parquet"))
             
             st.session_state['df_long'] = load_parquet()
         except Exception as e:
-            st.error(f"Error cargando Parquet: {e}")
+            st.error(f"Error cargando Parquet desde data/: {e}")
 
-    # 2. Cargar CSV Estaciones (Metadatos) si no existe
+    # 2. Cargar CSV Estaciones (Metadatos)
     if st.session_state.get('gdf_stations') is None:
         try:
             @st.cache_data
             def load_stations():
-                # OJO: Usamos separador punto y coma (;) según tu archivo
-                return pd.read_csv("mapaCVENSO.csv", sep=";")
+                return pd.read_csv(os.path.join(DATA_PATH, "mapaCVENSO.csv"), sep=";")
             
             st.session_state['gdf_stations'] = load_stations()
         except Exception as e:
-            st.error(f"Error cargando CSV Estaciones: {e}")
+            st.error(f"Error cargando CSV desde data/: {e}")
 
-    # 3. Cargar GeoJSON (Cuencas) si no existe
+    # 3. Cargar GeoJSON (Cuencas)
     if st.session_state.get('gdf_subcuencas') is None:
         try:
             @st.cache_data
             def load_cuencas():
-                return gpd.read_file("SubcuencasAinfluencia.geojson")
+                return gpd.read_file(os.path.join(DATA_PATH, "SubcuencasAinfluencia.geojson"))
             
             st.session_state['gdf_subcuencas'] = load_cuencas()
         except Exception as e:
-            st.error(f"Error cargando GeoJSON Cuencas: {e}")
+            st.error(f"Error cargando GeoJSON desde data/: {e}")
     # ---------------------------------------------------------
 
     st.subheader("📊 Análisis Gráfico Detallado")
@@ -2107,17 +2103,6 @@ def display_graphs_tab(
     # -------------------------------------------------------------------------
     with tabs[6]:
         st.subheader("📊 Comparativa de Regímenes de Lluvia")
-
-        # --- BLOQUE DE DIAGNÓSTICO (BORRAR AL FINAL) ---
-        c1, c2, c3 = st.columns(3)
-        check_long = st.session_state.get('df_long') is not None
-        check_stations = st.session_state.get('gdf_stations') is not None
-        check_cuencas = st.session_state.get('gdf_subcuencas') is not None
-        
-        c1.metric("Datos Lluvia (df_long)", "OK" if check_long else "FALTA")
-        c2.metric("Estaciones (gdf_stations)", "OK" if check_stations else "FALTA")
-        c3.metric("Cuencas (gdf_subcuencas)", "OK" if check_cuencas else "FALTA")
-        # ------------------------------------------------
 
         # Verificación de carga de datos
         if (st.session_state.get('df_long') is not None and 
