@@ -2726,7 +2726,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
 
 
-    # ==========================================================================
+# ==========================================================================
     # MODO CUENCA (PERSISTENTE Y DESCARGABLE)
     # ==========================================================================
     else:
@@ -2735,6 +2735,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             st.warning("⚠️ No se ha cargado la capa de Cuencas.")
             return
 
+        # Detectar columna de nombre
         col_name = next((c for c in gdf_subcuencas.columns if "nombre" in c.lower() or "cuenca" in c.lower()), gdf_subcuencas.columns[0])
         
         # Recuperar selección previa si existe
@@ -2822,14 +2823,25 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             vol_hm3 = (q_mm * area_km2) / 1000 
                             q_m3s = (vol_hm3 * 1_000_000) / 31536000
                             
+                            # Cálculos opcionales (FDC e Índices) si la librería analysis los soporta
+                            # Se agregan placeholders si no existen en el snippet original para evitar errores de visualización
+                            idx_calc = analysis.calculate_indices(df_raw, df_ppt) if hasattr(analysis, "calculate_indices") else {}
+                            fdc_calc = analysis.calculate_fdc(df_raw) if hasattr(analysis, "calculate_fdc") else None
+
                             # Guardar todo en Session State
                             st.session_state["basin_res"] = {
                                 "ready": True, "gz": gz, "gx": gx, "gy": gy,
                                 "gdf_puntos": gdf_puntos_interp, # Guardamos como GDF
                                 "gdf_cuenca": gdf_union_real, 
+                                "gdf_buffer": gdf_buffer, # Guardamos buffer para mapa
                                 "gdf_isoyetas": gdf_isoyetas, # Guardamos isoyetas vectoriales
+                                "df_raw": df_raw, # IMPORTANTE: Datos crudos para FDC y contexto
+                                "df_interp": df_interp, # IMPORTANTE: Datos interpolados para contexto
                                 "bal": {"P": ppt_med, "ET": etr_mm, "Q_m3s": q_m3s, "Vol": vol_hm3},
                                 "morph": morph,
+                                "idx": idx_calc,
+                                "fdc": fdc_calc,
+                                "bounds": bounds,
                                 "names": ", ".join(sel_cuencas)
                             }
                         else:
