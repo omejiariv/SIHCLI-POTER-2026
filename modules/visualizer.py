@@ -2643,7 +2643,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
 
     # ==========================================================================
-# MODO CUENCA (PERSISTENTE Y DESCARGABLE)
+    # MODO CUENCA (PERSISTENTE Y DESCARGABLE)
     # ==========================================================================
     else:
         gdf_subcuencas = kwargs.get("gdf_subcuencas")
@@ -2756,7 +2756,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         st.session_state["basin_res"] = None
 
             # --- MOSTRAR RESULTADOS ---
---
             res = st.session_state.get("basin_res")
             
             if res and res.get("ready"):
