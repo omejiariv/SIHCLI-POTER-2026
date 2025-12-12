@@ -1,12 +1,8 @@
 import io
-
 import pandas as pd
 import streamlit as st
 
-# from pykrige.ok import OrdinaryKriging  <-- LÍNEA ELIMINADA QUE CAUSABA EL ERROR
-
-
-# --- NUEVA FUNCIÓN PARA CORRECCIÓN NUMÉRICA ---
+# --- FUNCIÓN PARA CORRECCIÓN NUMÉRICA ---
 @st.cache_data
 def standardize_numeric_column(series):
     """
@@ -30,7 +26,6 @@ def display_plotly_download_buttons(fig, file_prefix):
             file_name=f"{file_prefix}.html",
             mime="text/html",
             key=f"dl_html_{file_prefix}",
-            use_container_width=True,
         )
     with col2:
         try:
@@ -41,7 +36,6 @@ def display_plotly_download_buttons(fig, file_prefix):
                 file_name=f"{file_prefix}.png",
                 mime="image/png",
                 key=f"dl_png_{file_prefix}",
-                use_container_width=True,
             )
         except Exception:
             st.warning(
@@ -60,5 +54,4 @@ def add_folium_download_button(map_object, file_name):
         file_name=file_name,
         mime="text/html",
         key=f"dl_map_{file_name.replace('.', '_')}",
-        use_container_width=True,
     )

@@ -1,15 +1,14 @@
-# --- Configuración para Ruff (El Policía) ---
-[tool.ruff]
+# Archivo: ruff.toml
+# Configuración directa para Ruff
+
 line-length = 88
-# Ignorar las carpetas de entorno virtual
 exclude = ["venv", ".git", "__pycache__"]
 
-[tool.ruff.lint]
-# Lista de reglas a ignorar para conseguir el Check Verde
+[lint]
 ignore = [
-    "E722",  # Do not use bare 'except' (Permitir try/except vacíos)
-    "F401",  # Module imported but unused (Permitir imports sobrantes)
-    "F841",  # Local variable assigned but never used (Variables sobrantes)
-    "E731",  # Do not assign a lambda expression (Permitir lambdas)
-    "F821",  # Undefined name (Permitir nombres que ruff no detecta bien)
+    "E722",  # Permitir try/except vacíos
+    "F401",  # Permitir imports sobrantes
+    "F841",  # Variables sobrantes
+    "E731",  # Permitir lambdas
+    "F821",  # Permitir nombres indefinidos
 ]
