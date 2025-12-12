@@ -2201,7 +2201,6 @@ def display_satellite_imagery_tab(gdf_filtered):
             st.image(
                 gif_data,
                 caption="Animación GeoColor (Tiempo Real)",
-                use_container_width=False,
                 width=700,
             )
         else:
