@@ -2584,12 +2584,17 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         with c1:
             st.markdown("###### Periodo 1 (Referencia)")
             r1 = st.slider("Rango P1:", 1980, 2024, (1990, 2000), key="r1")
-            m1 = st.selectbox("Método P1:", ["Kriging (RBF)", "IDW (Lineal)", "Spline"], key="m1")
+            m1 = st.selectbox(
+                "Método P1:", ["Kriging (RBF)", "IDW (Lineal)", "Spline"], key="m1"
+            )
         with c2:
             st.markdown("###### Periodo 2 (Reciente)")
             r2 = st.slider("Rango P2:", 1980, 2024, (2010, 2020), key="r2")
-            m2 = st.selectbox("Método P2:", ["Kriging (RBF)", "IDW (Lineal)", "Spline"], key="m2")
+            m2 = st.selectbox(
+                "Método P2:", ["Kriging (RBF)", "IDW (Lineal)", "Spline"], key="m2"
+            )
 
+        # Botón de cálculo con PERSISTENCIA
         if st.button("🚀 Generar Comparación"):
             st.session_state["regional_done"] = True
             st.session_state["reg_params"] = {"r1": r1, "m1": m1, "r2": r2, "m2": m2}
@@ -2597,8 +2602,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         if st.session_state.get("regional_done"):
             p = st.session_state["reg_params"]
 
+            # Función interna plot_panel corregida (Recibe u_loc)
             def plot_panel(rng, meth, col, tag, u_loc):
-                mask = (df_long[Config.YEAR_COL] >= rng[0]) & (df_long[Config.YEAR_COL] <= rng[1])
+                mask = (df_long[Config.YEAR_COL] >= rng[0]) & (
+                    df_long[Config.YEAR_COL] <= rng[1]
+                )
                 df_sub = df_long[mask]
                 df_avg = calcular_promedios_reales(df_sub)
 
@@ -2606,41 +2614,117 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     col.warning(f"Sin datos válidos para {rng}")
                     return
 
+                # Merge con estaciones (Asegurando índice correcto)
                 if Config.STATION_NAME_COL not in df_avg.columns:
                     df_avg = df_avg.reset_index()
 
-                df_m = pd.merge(df_avg, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
+                df_m = pd.merge(
+                    df_avg, gdf_stations, on=Config.STATION_NAME_COL
+                ).dropna(subset=["latitude", "longitude"])
 
                 if len(df_m) > 2:
                     bounds = [
-                        df_m.longitude.min() - 0.1, df_m.longitude.max() + 0.1,
-                        df_m.latitude.min() - 0.1, df_m.latitude.max() + 0.1,
+                        df_m.longitude.min() - 0.1,
+                        df_m.longitude.max() + 0.1,
+                        df_m.latitude.min() - 0.1,
+                        df_m.latitude.max() + 0.1,
                     ]
                     gx, gy, gz = run_interp(df_m, meth, bounds)
 
                     if gz is not None:
-                        fig = go.Figure(go.Contour(
-                            z=gz.T, x=gx[:, 0], y=gy[0, :],
-                            colorscale="Viridis", colorbar=dict(title="mm/año", len=0.5),
-                            contours=dict(start=0, end=5000, size=200),
-                        ))
-                        fig.add_trace(go.Scatter(
-                            x=df_m.longitude, y=df_m.latitude, mode="markers",
-                            marker=dict(color="black", size=5),
-                            text=df_m[Config.STATION_NAME_COL], hoverinfo="text"
-                        ))
-                        
-                        if u_loc:
-                             fig.add_trace(go.Scatter(
-                                x=[u_loc[1]], y=[u_loc[0]], mode="markers",
-                                marker=dict(color="red", size=10, symbol="star"), name="Tú"
-                            ))
+                        # Mapa Plotly (Isoyetas)
+                        fig = go.Figure(
+                            go.Contour(
+                                z=gz.T,
+                                x=gx[:, 0],
+                                y=gy[0, :],
+                                colorscale="Viridis",
+                                colorbar=dict(title="mm/año", len=0.5),
+                                contours=dict(start=0, end=5000, size=200),
+                            )
+                        )
 
-                        fig.update_layout(title=f"Ppt Media Anual ({rng[0]}-{rng[1]})", margin=dict(l=0, r=0, b=0, t=40), height=350)
+                        # Puntos Estaciones
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_m.longitude,
+                                y=df_m.latitude,
+                                mode="markers",
+                                marker=dict(
+                                    color="black",
+                                    size=7,
+                                    line=dict(width=1, color="white"),
+                                ),
+                                text=df_m.apply(
+                                    lambda x: f"<b>{x[Config.STATION_NAME_COL]}</b><br>Ppt: {x[Config.PRECIPITATION_COL]:.0f} mm",
+                                    axis=1,
+                                ),
+                                hoverinfo="text",
+                                showlegend=False,
+                            )
+                        )
+
+                        # --- CAPA USUARIO (CORREGIDO) ---
+                        if u_loc:
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=[u_loc[1]],
+                                    y=[u_loc[0]],
+                                    mode="markers+text",
+                                    marker=dict(color="red", size=12, symbol="star"),
+                                    text=["📍 TÚ"],
+                                    textposition="top center",
+                                )
+                            )
+
+                        fig.update_layout(
+                            title=f"Ppt Media Anual ({rng[0]}-{rng[1]})",
+                            margin=dict(l=0, r=0, b=0, t=40),
+                            height=400,
+                        )
                         col.plotly_chart(fig, use_container_width=True)
 
+                        # Mapa Interactivo (Folium) con Popups
+                        with col.expander(
+                            f"🔎 Ver Mapa Interactivo Detallado ({tag})", expanded=True
+                        ):
+                            col.write("Mapa navegable con detalles por estación.")
+                            center_lat = (bounds[2] + bounds[3]) / 2
+                            center_lon = (bounds[0] + bounds[1]) / 2
+                            m = folium.Map(
+                                location=[center_lat, center_lon],
+                                zoom_start=8,
+                                tiles="CartoDB positron",
+                            )
+
+                            for _, row in df_m.iterrows():
+                                nombre = row[Config.STATION_NAME_COL]
+                                lluvia = row[Config.PRECIPITATION_COL]
+
+                                html = f"<b>{nombre}</b><br>{lluvia:.0f} mm"
+                                folium.CircleMarker(
+                                    [row["latitude"], row["longitude"]],
+                                    radius=6,
+                                    color="blue",
+                                    fill=True,
+                                    fill_color="cyan",
+                                    fill_opacity=0.9,
+                                    tooltip=html,
+                                ).add_to(m)
+
+                            # Botón GPS en Folium
+                            LocateControl(auto_start=False).add_to(m)
+                            st_folium(
+                                m,
+                                height=350,
+                                use_container_width=True,
+                                key=f"folium_comp_{tag}",
+                            )
+
+            # Llamadas a la función interna pasando user_loc explícitamente
             plot_panel(p["r1"], p["m1"], c1, "A", user_loc)
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
+
 
     # ==========================================================================
     # MODO CUENCA (PERSISTENTE Y DESCARGABLE)
