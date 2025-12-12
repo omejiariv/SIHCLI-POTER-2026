@@ -1665,7 +1665,7 @@ def display_graphs_tab(
     df_monthly_filtered, df_anual_melted, stations_for_analysis, **kwargs
 ):
 
-import os
+    import os
     st.markdown("### 🕵️ Detector de Archivos")
     st.write(f"**Estoy ejecutándome en:** `{os.getcwd()}`")
     st.write("**Archivos que veo aquí:**")
