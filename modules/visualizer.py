@@ -5535,8 +5535,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
     try:
         import modules.land_cover as lc
         
-        # Procesar Raster (Imagen de fondo alta calidad)
-        # Regional: Scale 10 para no explotar memoria. Cuenca: Scale 1 (Full)
+        # Procesar Raster
         scale = 10 if view_mode == "Regional" else 1
         data, transform, crs, nodata = lc.process_land_cover_raster(
             raster_path, gdf_mask=gdf_mask, scale_factor=scale
@@ -5546,7 +5545,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             st.error("Error cargando mapa. Verifica el archivo raster.")
             return
 
-        # Cálculo Estadístico (Área corregida)
+        # Cálculo Estadístico
         df_res, area_total_km2 = lc.calculate_land_cover_stats(
             data, transform, crs, nodata, manual_area_km2=area_cuenca_km2
         )
@@ -5558,11 +5557,9 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
             c_tools, c_map = st.columns([1, 4])
             with c_tools:
                 st.markdown("##### Opciones")
-                # Botón de Hover (Por defecto apagado por rendimiento)
-                use_hover = st.checkbox("🔍 Activar Hover", value=False, help="Muestra nombres al pasar el mouse (Puede ser lento).")
+                use_hover = st.checkbox("🔍 Activar Hover", value=False, help="Muestra nombres al pasar el mouse.")
                 show_legend = st.checkbox("📝 Leyenda", value=True)
                 
-                # Descarga TIFF
                 tiff_bytes = lc.get_tiff_bytes(data, transform, crs, nodata)
                 st.download_button("📥 Bajar Mapa (TIFF)", tiff_bytes, "cobertura.tif", "image/tiff")
 
@@ -5570,9 +5567,10 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                 from rasterio.transform import array_bounds
                 from pyproj import Transformer
                 import folium
+                from folium import plugins # Importante para FullScreen
                 from streamlit_folium import st_folium
 
-                # Bounds para Folium
+                # Bounds
                 h, w = data.shape
                 minx, miny, maxx, maxy = array_bounds(h, w, transform)
                 transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
@@ -5581,33 +5579,68 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                 bounds = [[lat_min, lon_min], [lat_max, lon_max]]
                 center = [(lat_min+lat_max)/2, (lon_min+lon_max)/2]
 
+                # --- CREACIÓN DEL MAPA ---
                 m = folium.Map(location=center, zoom_start=12 if view_mode=="Cuenca" else 8, tiles="CartoDB positron")
                 
-                # CAPA 1: IMAGEN (Base64) - Rápida y siempre visible
+                # --- NUEVO: BOTÓN FULL SCREEN ---
+                plugins.Fullscreen(
+                    position='topright',
+                    title='Pantalla completa',
+                    title_cancel='Salir',
+                    force_separate_button=True
+                ).add_to(m)
+
+                # --- NUEVO: LEYENDA HTML DINÁMICA ---
+                if show_legend and not df_res.empty:
+                    legend_html = """
+                    <div style="
+                        position: fixed; 
+                        bottom: 30px; left: 30px; width: 170px; height: auto; 
+                        z-index:9999; font-size:12px;
+                        background-color: white; opacity: 0.9;
+                        padding: 10px; border: 1px solid grey; border-radius: 5px;
+                        box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+                        ">
+                        <b>Leyenda de Coberturas</b><br>
+                    """
+                    # Iteramos sobre df_res para sacar los colores correctos
+                    for _, row in df_res.iterrows():
+                        color_hex = row.get("Color", "#808080")
+                        nombre = row.get("Cobertura", "Sin Dato")
+                        legend_html += f"""
+                        <div style="margin-top: 4px;">
+                            <i style="background: {color_hex}; width: 12px; height: 12px; float: left; margin-right: 8px; border-radius: 2px;"></i>
+                            {nombre}
+                        </div>
+                        """
+                    legend_html += "</div>"
+                    m.get_root().html.add_child(folium.Element(legend_html))
+
+                # CAPA 1: IMAGEN (Raster)
                 img_url = lc.get_raster_img_b64(data, nodata)
                 folium.raster_layers.ImageOverlay(
                     image=img_url, bounds=bounds, opacity=0.75, name="Cobertura"
                 ).add_to(m)
 
-                # CAPA 2: INTERACTIVA (Vectorial Simplificado)
+                # CAPA 2: INTERACTIVA (Vectorial)
                 if use_hover:
                     with st.spinner("Generando capa interactiva..."):
-                        # Truco de estabilidad: Si es regional, usamos data MUY simplificada para hover
-                        # Si es cuenca, usamos data normal.
                         if view_mode == "Regional":
-                            # Re-leer muy simplificado solo para los polígonos de hover
                             data_hover, trans_hover, _, _ = lc.process_land_cover_raster(
-                                raster_path, gdf_mask=None, scale_factor=50 # Muy bajo detalle para velocidad
+                                raster_path, gdf_mask=None, scale_factor=50
                             )
                             gdf_vec = lc.vectorize_raster_optimized(data_hover, trans_hover, crs, nodata)
                         else:
-                            # Cuenca normal
                             gdf_vec = lc.vectorize_raster_optimized(data, transform, crs, nodata)
                         
                         if not gdf_vec.empty:
+                            # --- NUEVO: OPTIMIZACIÓN DE GEOMETRÍA EXTRA ---
+                            # Simplifica ligeramente para evitar que el navegador se congele
+                            gdf_vec['geometry'] = gdf_vec.geometry.simplify(tolerance=0.0001, preserve_topology=True)
+
                             folium.GeoJson(
                                 gdf_vec,
-                                style_function=lambda x: {'fillColor': '#ffffff', 'color': 'none', 'fillOpacity': 0}, # Invisible
+                                style_function=lambda x: {'fillColor': '#ffffff', 'color': 'none', 'fillOpacity': 0},
                                 tooltip=folium.GeoJsonTooltip(fields=['Cobertura'], aliases=['Tipo:']),
                                 name="Hover Info"
                             ).add_to(m)
@@ -5615,16 +5648,12 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                 if view_mode == "Cuenca" and gdf_mask is not None:
                     folium.GeoJson(gdf_mask, style_function=lambda x: {'color': 'black', 'fill': False, 'weight': 2}).add_to(m)
 
-                if show_legend:
-                    m.get_root().html.add_child(folium.Element(lc.generate_legend_html()))
-
                 folium.LayerControl().add_to(m)
                 st_folium(m, height=600, use_container_width=True, key="map_lc_stable")
 
         with tab_stat:
             c1, c2 = st.columns([1, 1])
             with c1:
-                # Tabla con Areas Correctas
                 st.dataframe(df_res[["ID", "Cobertura", "Área (km²)", "%"]].style.format({"Área (km²)": "{:.2f}", "%": "{:.1f}"}), width="stretch")
                 csv = df_res.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Descargar CSV", csv, "stats_coberturas.csv", "text/csv")
@@ -5664,7 +5693,6 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                         q_act = lc.calculate_scs_runoff(cn_act, ppt_anual)
                         q_fut = lc.calculate_scs_runoff(cn_fut, ppt_anual)
                         
-                        # Corrección Volumen (Usando área real)
                         vol_act = (q_act * area_total_km2) / 1000
                         vol_fut = (q_fut * area_total_km2) / 1000
                         
