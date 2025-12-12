@@ -2174,12 +2174,35 @@ def display_graphs_tab(
                     how='inner'
                 )
                 
-                # 5. Procesamiento Temporal
-                df_full[col_fecha] = pd.to_datetime(df_full[col_fecha])
+                
+                # 5. PROCESAMIENTO TEMPORAL (CORREGIDO PARA ESPAÑOL)
+                # ------------------------------------------------------------
+                # Convertimos la columna a texto y minúsculas para asegurar limpieza
+                fechas_str = df_full[col_fecha].astype(str).str.lower()
+                
+                # Diccionario: Español -> Inglés
+                remplazos = {
+                    'ene': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'abr': 'Apr', 
+                    'may': 'May', 'jun': 'Jun', 'jul': 'Jul', 'ago': 'Aug', 
+                    'sep': 'Sep', 'oct': 'Oct', 'nov': 'Nov', 'dic': 'Dec'
+                }
+                
+                # Hacemos el reemplazo masivo
+                for mes_es, mes_en in remplazos.items():
+                    fechas_str = fechas_str.str.replace(mes_es, mes_en, regex=False)
+                
+                # Ahora sí convertimos (Format: %b-%y significa "MesAbreviado-Año2Digitos")
+                df_full[col_fecha] = pd.to_datetime(fechas_str, format='%b-%y', errors='coerce')
+                
+                # Extraemos el número de mes para ordenar
                 df_full['MES_NUM'] = df_full[col_fecha].dt.month
+                
+                # Mapeo para nombres bonitos en la gráfica
                 mapa_meses = {1:'Ene', 2:'Feb', 3:'Mar', 4:'Abr', 5:'May', 6:'Jun', 
                               7:'Jul', 8:'Ago', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dic'}
                 df_full['Nombre_Mes'] = df_full['MES_NUM'].map(mapa_meses)
+                # ------------------------------------------------------------
+
 
                 # 6. Interfaz
                 col1, col2 = st.columns([1, 2])
