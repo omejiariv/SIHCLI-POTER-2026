@@ -33,6 +33,7 @@ import modules.land_cover as lc
 
 # Módulos Internos
 from modules.config import Config
+from modules import analysis
 
 # Importar funciones de análisis (Manejo de errores por si faltan)
 try:
@@ -1240,7 +1241,7 @@ def display_spatial_distribution_tab(
     user_loc, interpolacion, df_long, df_complete, gdf_stations, gdf_filtered,
     gdf_municipios, gdf_subcuencas, gdf_predios, df_enso, stations_for_analysis,
     df_anual_melted, df_monthly_filtered, analysis_mode, selected_regions,
-    selected_municipios, selected_months, year_range, start_date, end_date
+    selected_municipios, selected_months, year_range, start_date, end_date, **kwargs
 ):
     # Inicializar estado
     if "selected_point" not in st.session_state:
@@ -2276,7 +2277,7 @@ def display_graphs_tab(
             st.warning("⚠️ Faltan datos cargados.")
 
 
-def display_weekly_forecast_tab(stations_for_analysis, gdf_filtered):
+def display_weekly_forecast_tab(stations_for_analysis, gdf_filtered, **kwargs):
     """Muestra el pronóstico semanal para una estación seleccionada."""
     st.subheader("🌦️ Pronóstico a 7 Días (Open-Meteo)")
 
@@ -6578,7 +6579,7 @@ def display_statistics_summary_tab(df_monthly, df_anual, gdf_stations, **kwargs)
         )
 
 # --- FUNCIÓN AUXILIAR: RESUMEN DE FILTROS ---
-def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, interpolacion, df_data, gdf_filtered=None):
+def display_current_filters(stations_sel, regions_sel, munis_sel, year_range, interpolacion, df_data, gdf_filtered=None, **kwargs):
     """
     Muestra resumen de filtros.
     """
