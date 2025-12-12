@@ -2126,25 +2126,42 @@ def display_graphs_tab(
                 col_cuenca = 'SUBC_LBL'
 
                 # 3. Preparación de Metadatos Espaciales
-                # --- CORRECCIÓN DE SEGURIDAD (COMAS POR PUNTOS) ---
-                # Verificamos si las coordenadas son texto y corregimos la coma
+                # ---------------------------------------------------------
+                
+                # A) Limpieza de Coordenadas (Arreglar comas por puntos)
                 for col_coord in ['Longitud_geo', 'Latitud_geo']:
-                    # Si la columna es tipo objeto (texto), intentamos arreglarla
                     if df_meta[col_coord].dtype == 'object':
                         df_meta[col_coord] = (
                             df_meta[col_coord]
                             .astype(str)
                             .str.replace(',', '.', regex=False)
-                            .astype(float)
+                            .apply(pd.to_numeric, errors='coerce') # Convierte a numérico forzado
                         )
-                # --------------------------------------------------
-
+                
+                # B) Convertir Estaciones a GeoDataFrame (Puntos)
+                # Eliminamos filas sin coordenadas válidas para evitar errores
+                df_meta = df_meta.dropna(subset=['Longitud_geo', 'Latitud_geo'])
+                
                 if not isinstance(df_meta, gpd.GeoDataFrame):
                     df_meta = gpd.GeoDataFrame(
                         df_meta,
                         geometry=gpd.points_from_xy(df_meta['Longitud_geo'], df_meta['Latitud_geo']),
                         crs="EPSG:4326"
                     )
+                
+                # C) Alinear Sistema de Coordenadas
+                if df_meta.crs != gdf_poligonos.crs:
+                    gdf_poligonos = gdf_poligonos.to_crs(df_meta.crs)
+
+                # D) CRUCE ESPACIAL (Aquí nace df_meta_espacial)
+                # Esto determina en qué cuenca cae cada estación
+                df_meta_espacial = gpd.sjoin(
+                    df_meta, 
+                    gdf_poligonos[['geometry', col_cuenca]], 
+                    how="left", 
+                    predicate="intersects"
+                )
+
                 # 4. Unión Final
                 df_datos[col_codigo_datos] = df_datos[col_codigo_datos].astype(str)
                 df_meta_espacial[col_codigo_meta] = df_meta_espacial[col_codigo_meta].astype(str)
