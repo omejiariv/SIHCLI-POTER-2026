@@ -2062,6 +2062,17 @@ def display_graphs_tab(
     with tabs[6]:
         st.subheader("📊 Comparativa de Regímenes de Lluvia")
 
+        # --- BLOQUE DE DIAGNÓSTICO (BORRAR AL FINAL) ---
+        c1, c2, c3 = st.columns(3)
+        check_long = st.session_state.get('df_long') is not None
+        check_stations = st.session_state.get('gdf_stations') is not None
+        check_cuencas = st.session_state.get('gdf_subcuencas') is not None
+        
+        c1.metric("Datos Lluvia (df_long)", "OK" if check_long else "FALTA")
+        c2.metric("Estaciones (gdf_stations)", "OK" if check_stations else "FALTA")
+        c3.metric("Cuencas (gdf_subcuencas)", "OK" if check_cuencas else "FALTA")
+        # ------------------------------------------------
+
         # Verificación de carga de datos
         if (st.session_state.get('df_long') is not None and 
             st.session_state.get('gdf_stations') is not None and 
