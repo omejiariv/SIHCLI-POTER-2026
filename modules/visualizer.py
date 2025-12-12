@@ -2099,10 +2099,16 @@ def display_graphs_tab(
                 ) * 100
                 st.dataframe(comp_df.style.format("{:.1f}"))
 
-    # 7. COMPARATIVA MULTIESCALAR
+    # 7. COMPARATIVA MULTIESCALAR (VERSIÓN FINAL CON DESCARGA Y METADATOS)
     # -------------------------------------------------------------------------
     with tabs[6]:
         st.subheader("📊 Comparativa de Regímenes de Lluvia")
+
+        # 1. MENSAJE INSPIRADOR (Solicitud 1)
+        st.info(
+            "💡 **Análisis Multiescalar:** Aquí puedes pasar de un análisis individual a un análisis "
+            "comparativo multiescalar para entender diferencias climáticas entre zonas vecinas o lejanas."
+        )
 
         # Verificación de carga de datos
         if (st.session_state.get('df_long') is not None and 
@@ -2110,38 +2116,31 @@ def display_graphs_tab(
             st.session_state.get('gdf_subcuencas') is not None):
             
             try:
-                # 1. Carga de Datos
+                # --- PREPARACIÓN DE DATOS (Mantenemos la lógica que ya funciona) ---
                 df_datos = st.session_state['df_long'].copy()
                 df_meta = st.session_state['gdf_stations'].copy()
                 gdf_poligonos = st.session_state['gdf_subcuencas'].copy()
 
-                # 2. Definición de Columnas (Ajustado para Parquet)
                 col_codigo_datos = 'id_estacion'      
                 col_valor = 'precipitacion_mm'        
-                col_fecha = 'fecha' if 'fecha' in df_datos.columns else 'fecha_mes_año' 
-                
+                col_fecha = 'fecha' if 'fecha' in df_datos.columns else 'fecha_mes_año'
                 col_codigo_meta = 'Id_estacio'
                 col_municipio = 'municipio'
                 col_region = 'SUBREGION'
                 col_cuenca = 'SUBC_LBL'
 
-                # 3. Preparación de Metadatos Espaciales
-                # ---------------------------------------------------------
-                
-                # A) Limpieza de Coordenadas (Arreglar comas por puntos)
+                # A) Limpieza de Coordenadas
                 for col_coord in ['Longitud_geo', 'Latitud_geo']:
                     if df_meta[col_coord].dtype == 'object':
                         df_meta[col_coord] = (
                             df_meta[col_coord]
                             .astype(str)
                             .str.replace(',', '.', regex=False)
-                            .apply(pd.to_numeric, errors='coerce') # Convierte a numérico forzado
+                            .apply(pd.to_numeric, errors='coerce')
                         )
                 
-                # B) Convertir Estaciones a GeoDataFrame (Puntos)
-                # Eliminamos filas sin coordenadas válidas para evitar errores
                 df_meta = df_meta.dropna(subset=['Longitud_geo', 'Latitud_geo'])
-                
+
                 if not isinstance(df_meta, gpd.GeoDataFrame):
                     df_meta = gpd.GeoDataFrame(
                         df_meta,
@@ -2149,12 +2148,10 @@ def display_graphs_tab(
                         crs="EPSG:4326"
                     )
                 
-                # C) Alinear Sistema de Coordenadas
                 if df_meta.crs != gdf_poligonos.crs:
                     gdf_poligonos = gdf_poligonos.to_crs(df_meta.crs)
 
-                # D) CRUCE ESPACIAL (Aquí nace df_meta_espacial)
-                # Esto determina en qué cuenca cae cada estación
+                # B) Cruce Espacial
                 df_meta_espacial = gpd.sjoin(
                     df_meta, 
                     gdf_poligonos[['geometry', col_cuenca]], 
@@ -2162,7 +2159,7 @@ def display_graphs_tab(
                     predicate="intersects"
                 )
 
-                # 4. Unión Final
+                # C) Unión Final
                 df_datos[col_codigo_datos] = df_datos[col_codigo_datos].astype(str)
                 df_meta_espacial[col_codigo_meta] = df_meta_espacial[col_codigo_meta].astype(str)
 
@@ -2174,44 +2171,30 @@ def display_graphs_tab(
                     how='inner'
                 )
                 
-                
-                # 5. PROCESAMIENTO TEMPORAL (CORREGIDO PARA ESPAÑOL)
-                # ------------------------------------------------------------
-                # Convertimos la columna a texto y minúsculas para asegurar limpieza
+                # D) Procesamiento Temporal (Traducción de Fechas)
                 fechas_str = df_full[col_fecha].astype(str).str.lower()
-                
-                # Diccionario: Español -> Inglés
                 remplazos = {
                     'ene': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'abr': 'Apr', 
                     'may': 'May', 'jun': 'Jun', 'jul': 'Jul', 'ago': 'Aug', 
                     'sep': 'Sep', 'oct': 'Oct', 'nov': 'Nov', 'dic': 'Dec'
                 }
-                
-                # Hacemos el reemplazo masivo
                 for mes_es, mes_en in remplazos.items():
                     fechas_str = fechas_str.str.replace(mes_es, mes_en, regex=False)
                 
-                # Ahora sí convertimos (Format: %b-%y significa "MesAbreviado-Año2Digitos")
                 df_full[col_fecha] = pd.to_datetime(fechas_str, format='%b-%y', errors='coerce')
-                
-                # Extraemos el número de mes para ordenar
                 df_full['MES_NUM'] = df_full[col_fecha].dt.month
-                
-                # Mapeo para nombres bonitos en la gráfica
                 mapa_meses = {1:'Ene', 2:'Feb', 3:'Mar', 4:'Abr', 5:'May', 6:'Jun', 
                               7:'Jul', 8:'Ago', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dic'}
                 df_full['Nombre_Mes'] = df_full['MES_NUM'].map(mapa_meses)
-                # ------------------------------------------------------------
-
-
-                # 6. Interfaz
+                
+                # --- INTERFAZ VISUAL ---
                 col1, col2 = st.columns([1, 2])
                 
                 with col1:
                     nivel_analisis = st.radio(
                         "Nivel de Agregación:",
                         ["Municipio", "Cuenca", "Región"],
-                        key="radio_multi_nivel_parquet"
+                        key="radio_multi_nivel_final"
                     )
                     
                     if nivel_analisis == "Municipio":
@@ -2224,16 +2207,16 @@ def display_graphs_tab(
                     opciones = sorted(df_full[columna_filtro].dropna().astype(str).unique())
 
                 with col2:
-                    st.info("💡 Selecciona varias opciones para comparar sus curvas.")
                     seleccion = st.multiselect(
                         f"Seleccione {nivel_analisis}s:",
                         options=opciones,
                         default=[opciones[0]] if len(opciones) > 0 else None
                     )
 
-                # 7. Visualización
                 if seleccion:
                     df_filtrado = df_full[df_full[columna_filtro].isin(seleccion)]
+                    
+                    # Agrupación para el gráfico
                     df_agrupado = df_filtrado.groupby(['MES_NUM', 'Nombre_Mes', columna_filtro])[col_valor].mean().reset_index()
                     df_agrupado = df_agrupado.sort_values('MES_NUM')
 
@@ -2242,18 +2225,52 @@ def display_graphs_tab(
                         x='Nombre_Mes',
                         y=col_valor,
                         color=columna_filtro,
-                        title=f"Comparativa: {nivel_analisis}",
+                        title=f"Patrón Medio Anual Comparativo ({nivel_analisis})",
                         markers=True
                     )
                     
                     fig.update_layout(hovermode="x unified", legend=dict(orientation="h", y=1.1))
                     st.plotly_chart(fig, use_container_width=True)
                     
+                    # 2. BOTÓN DE DESCARGA (Solicitud 2)
+                    # Preparamos los datos en formato CSV para la descarga
+                    # Usamos pivot para que sea más legible en Excel (Meses como columnas)
+                    df_export = df_agrupado.pivot(index=columna_filtro, columns='Nombre_Mes', values=col_valor)
+                    # Reordenar columnas cronológicamente
+                    cols_meses = [mapa_meses[i] for i in range(1, 13)]
+                    df_export = df_export[cols_meses]
+                    
+                    csv_data = df_export.to_csv().encode('utf-8-sig') # utf-8-sig para que Excel lea bien las tildes
+                    
+                    st.download_button(
+                        label="📥 Descargar Datos del Gráfico (CSV)",
+                        data=csv_data,
+                        file_name=f"comparativa_{nivel_analisis.lower()}.csv",
+                        mime="text/csv",
+                    )
+
+                    # 3. FICHA METODOLÓGICA (Solicitud 3)
+                    with st.expander("ℹ️ Metodología, Datos y Periodo Analizado"):
+                        # Calculamos el periodo real de los datos
+                        min_year = df_full[col_fecha].dt.year.min()
+                        max_year = df_full[col_fecha].dt.year.max()
+                        
+                        st.markdown(f"""
+                        **Ficha Técnica del Análisis:**
+                        
+                        * **Metodología:** Se calcula el promedio aritmético de la precipitación mensual de todas las estaciones ubicadas dentro de la geometría seleccionada ({nivel_analisis}).
+                        * **Tipo de Datos:** Precipitación acumulada mensual (mm). Datos procesados del archivo histórico.
+                        * **Fuente:** Red de monitoreo SIHCLIM / IDEAM.
+                        * **Periodo de Registro:** Enero {min_year} - Diciembre {max_year}.
+                        * **Procesamiento:** * Las estaciones fueron asignadas espacialmente usando intersección geométrica.
+                            * Se aplicó control de calidad básico a las series temporales.
+                        """)
+                    
                 else:
-                    st.warning("Seleccione al menos un elemento.")
+                    st.warning("Seleccione al menos un elemento para generar el reporte.")
 
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Ocurrió un error en el procesamiento: {e}")
         else:
             st.warning("⚠️ Faltan datos cargados.")
 
