@@ -2725,7 +2725,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             plot_panel(p["r1"], p["m1"], c1, "A", user_loc)
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
 
-
 # ==========================================================================
     # MODO CUENCA (PERSISTENTE Y DESCARGABLE)
     # ==========================================================================
@@ -2810,33 +2809,53 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             else:
                                 gz = griddata(pts, vals, (gx, gy), method="linear")
 
-                            # 4. VECTORIZACIÓN (NUEVO)
+                            # 4. VECTORIZACIÓN
                             gdf_isoyetas = generate_isohyets_gdf(gx, gy, gz, levels=15, crs=gdf_stations.crs)
 
-                            # 5. Métricas (Igual que antes)
+                            # 5. Métricas y Cálculos Hidrológicos
                             ppt_med = np.nanmean(gz) if gz is not None else 0
-                            morph = analysis.calculate_morphometry(gdf_union_real)
+                            
+                            # Intentamos calcular morfometría
+                            try:
+                                morph = analysis.calculate_morphometry(gdf_union_real)
+                            except Exception:
+                                morph = {"area_km2": 0, "perimetro_km": 0, "alt_prom_m": 1500, "pendiente_prom": 0}
+                            
                             area_km2 = morph.get("area_km2", 100)
                             temp_media = 28 - (0.006 * morph.get("alt_prom_m", 1500))
                             if temp_media < 0: temp_media = 5
-                            etr_mm, q_mm = analysis.calculate_water_balance_turc(ppt_med, temp_media)
+                            
+                            # Balance Turc
+                            try:
+                                etr_mm, q_mm = analysis.calculate_water_balance_turc(ppt_med, temp_media)
+                            except:
+                                etr_mm, q_mm = 0, 0
+                                
                             vol_hm3 = (q_mm * area_km2) / 1000 
                             q_m3s = (vol_hm3 * 1_000_000) / 31536000
                             
-                            # Cálculos opcionales (FDC e Índices) si la librería analysis los soporta
-                            # Se agregan placeholders si no existen en el snippet original para evitar errores de visualización
-                            idx_calc = analysis.calculate_indices(df_raw, df_ppt) if hasattr(analysis, "calculate_indices") else {}
-                            fdc_calc = analysis.calculate_fdc(df_raw) if hasattr(analysis, "calculate_fdc") else None
+                            # Cálculos opcionales (Indices y FDC)
+                            idx_calc = {}
+                            if hasattr(analysis, "calculate_indices"):
+                                try:
+                                    idx_calc = analysis.calculate_indices(df_raw, df_ppt)
+                                except: pass
+                                
+                            fdc_calc = None
+                            if hasattr(analysis, "calculate_fdc"):
+                                try:
+                                    fdc_calc = analysis.calculate_fdc(df_raw)
+                                except: pass
 
                             # Guardar todo en Session State
                             st.session_state["basin_res"] = {
                                 "ready": True, "gz": gz, "gx": gx, "gy": gy,
-                                "gdf_puntos": gdf_puntos_interp, # Guardamos como GDF
+                                "gdf_puntos": gdf_puntos_interp,
                                 "gdf_cuenca": gdf_union_real, 
-                                "gdf_buffer": gdf_buffer, # Guardamos buffer para mapa
-                                "gdf_isoyetas": gdf_isoyetas, # Guardamos isoyetas vectoriales
-                                "df_raw": df_raw, # IMPORTANTE: Datos crudos para FDC y contexto
-                                "df_interp": df_interp, # IMPORTANTE: Datos interpolados para contexto
+                                "gdf_buffer": gdf_buffer,
+                                "gdf_isoyetas": gdf_isoyetas,
+                                "df_raw": df_raw,
+                                "df_interp": df_interp,
                                 "bal": {"P": ppt_med, "ET": etr_mm, "Q_m3s": q_m3s, "Vol": vol_hm3},
                                 "morph": morph,
                                 "idx": idx_calc,
@@ -2855,7 +2874,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             res = st.session_state.get("basin_res")
             
             if res and res.get("ready"):
-                st.markdown(f"##### 🌧️ Resultados: {res['names']}")
+                st.markdown(f"##### 🌧️ Resultados: {res.get('names', 'Cuenca')}")
                 
                 # Mapa Visual (Plotly)
                 fig = go.Figure(go.Contour(
@@ -2895,11 +2914,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 if gdf_iso is not None:
                     c_gis3.download_button("〰️ Isoyetas (GeoJSON)", data=gdf_iso.to_json(), file_name="isoyetas_generadas.geojson", mime="application/json")
 
-                # Shapefile (ZIP) - PROTEGIDO CON TRY/EXCEPT PARA NO ROMPER LA PÁGINA
+                # Shapefile (ZIP)
                 with st.expander("📦 Descargar como Shapefile (.zip)"):
                     st.caption("Compatible con ArcGIS/QGIS. Incluye .shp, .shx, .dbf, .prj")
                     col_shp1, col_shp2 = st.columns(2)
-                    
                     try:
                         if gdf_iso is not None:
                             zip_iso = create_zipped_shapefile(gdf_iso, "isoyetas")
@@ -2908,7 +2926,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         zip_basin = create_zipped_shapefile(gdf_basin, "cuenca")
                         col_shp2.download_button("Descargar Cuenca (.shp)", zip_basin, "cuenca.zip", "application/zip")
                     except Exception as e:
-                        st.error(f"No se pudieron generar los Shapefiles: {e}")
+                        st.warning(f"No se pudieron generar los Shapefiles (Error temporal): {e}")
 
                 # B. Métricas
                 st.markdown("---")
@@ -2918,7 +2936,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 m = res.get("morph", {})
 
                 c1, c2, c3, c4 = st.columns(4)
-                # Usamos safe getters para evitar errores de visualización
                 c1.metric("Área", f"{m.get('area_km2', 0):.1f} km²")
                 c2.metric("Perímetro", f"{m.get('perimetro_km', 0):.1f} km")
                 c3.metric("Altitud Media", f"{m.get('alt_prom_m', 0):.0f} m")
@@ -2962,22 +2979,23 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         st.caption(f"R²: {res['fdc']['r_squared']:.4f}")
 
                 # E. Curva Hipsométrica
-                # CAMBIO CLAVE: Usamos analysis.calculate... para asegurar que la función exista
                 if hasattr(analysis, "calculate_hypsometric_curve"):
-                    hyp = analysis.calculate_hypsometric_curve(res["gdf_cuenca"])
-                    if hyp:
-                        st.markdown("---")
-                        st.subheader("⛰️ Curva Hipsométrica")
-                        h1, h2 = st.columns([3, 1])
-                        with h1:
-                            fig_h = go.Figure()
-                            fig_h.add_trace(go.Scatter(x=hyp["area_percent"], y=hyp["elevations"], fill="tozeroy", line=dict(color="green"), name="Perfil"))
-                            st.plotly_chart(fig_h, use_container_width=True)
-                        with h2:
-                            if hyp.get("equation"):
-                                st.latex(hyp["equation"].replace("x", "A"))
+                    try:
+                        hyp = analysis.calculate_hypsometric_curve(res["gdf_cuenca"])
+                        if hyp:
+                            st.markdown("---")
+                            st.subheader("⛰️ Curva Hipsométrica")
+                            h1, h2 = st.columns([3, 1])
+                            with h1:
+                                fig_h = go.Figure()
+                                fig_h.add_trace(go.Scatter(x=hyp["area_percent"], y=hyp["elevations"], fill="tozeroy", line=dict(color="green"), name="Perfil"))
+                                st.plotly_chart(fig_h, use_container_width=True)
+                            with h2:
+                                if hyp.get("equation"):
+                                    st.latex(hyp["equation"].replace("x", "A"))
+                    except: pass
 
-                # C. Contexto Espacial (Folium) con GPS
+                # C. Contexto Espacial (Folium)
                 st.markdown("---")
                 st.subheader("📍 Contexto Espacial")
                 
@@ -3010,10 +3028,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     LocateControl(auto_start=False).add_to(m_ctx)
                     st_folium(m_ctx, height=500, width="100%")
 
-                with st.expander("ℹ️ Nota del Mapa de Contexto"):
-                    st.write(
-                        "Muestra la cuenca seleccionada (azul), el área de influencia de búsqueda (gris punteado) y las estaciones utilizadas para el análisis (puntos rojos). Haga clic en los puntos para ver detalles."
-                    )
+                    with st.expander("ℹ️ Nota del Mapa de Contexto"):
+                        st.write("Muestra la cuenca seleccionada (azul), el área de influencia de búsqueda (gris punteado) y las estaciones utilizadas para el análisis (puntos rojos). Haga clic en los puntos para ver detalles.")
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
 # -----------------------------------------------------------------------------
