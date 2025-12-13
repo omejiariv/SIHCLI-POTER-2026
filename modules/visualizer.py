@@ -2915,18 +2915,16 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     c_gis3.download_button("〰️ Isoyetas (GeoJSON)", data=gdf_iso.to_json(), file_name="isoyetas_generadas.geojson", mime="application/json")
 
                 # Shapefile (ZIP)
+# =======================================================
+                # BLOQUE DE EMERGENCIA: SHAPEFILES DESHABILITADOS
+                # =======================================================
                 with st.expander("📦 Descargar como Shapefile (.zip)"):
-                    st.caption("Compatible con ArcGIS/QGIS. Incluye .shp, .shx, .dbf, .prj")
-                    col_shp1, col_shp2 = st.columns(2)
-                    try:
-                        if gdf_iso is not None:
-                            zip_iso = create_zipped_shapefile(gdf_iso, "isoyetas")
-                            col_shp1.download_button("Descargar Isoyetas (.shp)", zip_iso, "isoyetas.zip", "application/zip")
-                        
-                        zip_basin = create_zipped_shapefile(gdf_basin, "cuenca")
-                        col_shp2.download_button("Descargar Cuenca (.shp)", zip_basin, "cuenca.zip", "application/zip")
-                    except Exception as e:
-                        st.warning(f"No se pudieron generar los Shapefiles (Error temporal): {e}")
+                    st.warning("⚠️ La generación de Shapefiles está deshabilitada temporalmente para diagnóstico.")
+                    # El código original del ZIP se ha eliminado aquí para evitar el bloqueo.
+                
+                # =======================================================
+                # A PARTIR DE AQUÍ DEBERÍAS VER TODO LO DEMÁS
+                # =======================================================
 
                 # B. Métricas
                 st.markdown("---")
@@ -2979,8 +2977,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         st.caption(f"R²: {res['fdc']['r_squared']:.4f}")
 
                 # E. Curva Hipsométrica
-                if hasattr(analysis, "calculate_hypsometric_curve"):
-                    try:
+                # Usamos try-except para evitar que un fallo aquí detenga el mapa de abajo
+                try:
+                    if hasattr(analysis, "calculate_hypsometric_curve"):
                         hyp = analysis.calculate_hypsometric_curve(res["gdf_cuenca"])
                         if hyp:
                             st.markdown("---")
@@ -2993,7 +2992,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             with h2:
                                 if hyp.get("equation"):
                                     st.latex(hyp["equation"].replace("x", "A"))
-                    except: pass
+                except Exception as e:
+                    st.error(f"Error calculando Curva Hipsométrica: {e}")
 
                 # C. Contexto Espacial (Folium)
                 st.markdown("---")
@@ -3030,6 +3030,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
                     with st.expander("ℹ️ Nota del Mapa de Contexto"):
                         st.write("Muestra la cuenca seleccionada (azul), el área de influencia de búsqueda (gris punteado) y las estaciones utilizadas para el análisis (puntos rojos). Haga clic en los puntos para ver detalles.")
+
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
 # -----------------------------------------------------------------------------
