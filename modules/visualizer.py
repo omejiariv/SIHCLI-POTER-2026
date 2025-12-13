@@ -2882,57 +2882,43 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 
                 c_gis1, c_gis2, c_gis3 = st.columns(3)
                 
-                # 1. Descarga Estaciones (Puntos)
+                # 1. Descarga Estaciones
                 gdf_pts = res["gdf_puntos"]
-                c_gis1.download_button(
-                    "📍 Estaciones (GeoJSON)", 
-                    data=gdf_pts.to_json(), 
-                    file_name="estaciones_interpoladas.geojson", 
-                    mime="application/json"
-                )
+                c_gis1.download_button("📍 Estaciones (GeoJSON)", data=gdf_pts.to_json(), file_name="estaciones_interpoladas.geojson", mime="application/json")
                 
-                # 2. Descarga Cuenca (Polígono)
+                # 2. Descarga Cuenca
                 gdf_basin = res["gdf_cuenca"]
-                c_gis2.download_button(
-                    "🗺️ Cuenca (GeoJSON)", 
-                    data=gdf_basin.to_json(), 
-                    file_name="cuenca_analisis.geojson", 
-                    mime="application/json"
-                )
+                c_gis2.download_button("🗺️ Cuenca (GeoJSON)", data=gdf_basin.to_json(), file_name="cuenca_analisis.geojson", mime="application/json")
                 
-                # 3. Descarga Isoyetas (Líneas) - LA JOYA DE LA CORONA
-                gdf_iso = res["gdf_isoyetas"]
+                # 3. Descarga Isoyetas
+                gdf_iso = res.get("gdf_isoyetas")
                 if gdf_iso is not None:
-                    c_gis3.download_button(
-                        "〰️ Isoyetas (GeoJSON)", 
-                        data=gdf_iso.to_json(), 
-                        file_name="isoyetas_generadas.geojson", 
-                        mime="application/json"
-                    )
+                    c_gis3.download_button("〰️ Isoyetas (GeoJSON)", data=gdf_iso.to_json(), file_name="isoyetas_generadas.geojson", mime="application/json")
 
-                # Botón extra para Shapefile (ZIP)
+                # Shapefile (ZIP) - PROTEGIDO CON TRY/EXCEPT PARA NO ROMPER LA PÁGINA
                 with st.expander("📦 Descargar como Shapefile (.zip)"):
                     st.caption("Compatible con ArcGIS/QGIS. Incluye .shp, .shx, .dbf, .prj")
                     col_shp1, col_shp2 = st.columns(2)
                     
-                    # SHP Isoyetas
-                    if gdf_iso is not None:
-                        zip_iso = create_zipped_shapefile(gdf_iso, "isoyetas")
-                        col_shp1.download_button("Descargar Isoyetas (.shp)", zip_iso, "isoyetas.zip", "application/zip")
-                    
-                    # SHP Cuenca
-                    zip_basin = create_zipped_shapefile(gdf_basin, "cuenca")
-                    col_shp2.download_button("Descargar Cuenca (.shp)", zip_basin, "cuenca.zip", "application/zip")
+                    try:
+                        if gdf_iso is not None:
+                            zip_iso = create_zipped_shapefile(gdf_iso, "isoyetas")
+                            col_shp1.download_button("Descargar Isoyetas (.shp)", zip_iso, "isoyetas.zip", "application/zip")
+                        
+                        zip_basin = create_zipped_shapefile(gdf_basin, "cuenca")
+                        col_shp2.download_button("Descargar Cuenca (.shp)", zip_basin, "cuenca.zip", "application/zip")
+                    except Exception as e:
+                        st.error(f"No se pudieron generar los Shapefiles: {e}")
 
                 # B. Métricas
                 st.markdown("---")
                 st.subheader("💧 Balance Hídrico y Morfometría")
                 
-                # USAMOS .get() PARA EVITAR EL CRASH SI LOS DATOS SON VIEJOS
                 b = res.get("bal", {}) 
                 m = res.get("morph", {})
 
                 c1, c2, c3, c4 = st.columns(4)
+                # Usamos safe getters para evitar errores de visualización
                 c1.metric("Área", f"{m.get('area_km2', 0):.1f} km²")
                 c2.metric("Perímetro", f"{m.get('perimetro_km', 0):.1f} km")
                 c3.metric("Altitud Media", f"{m.get('alt_prom_m', 0):.0f} m")
@@ -2945,14 +2931,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 k4.metric("Volumen", f"{b.get('Vol',0):.2f} Mm³")
 
                 with st.expander("ℹ️ Metodología: Balance Hídrico de Turc"):
-                    st.markdown(
-                        """
+                    st.markdown("""
                     **Fórmula de Turc:** Estima la escorrentía anual media ($Q$) basándose en la precipitación ($P$) y la temperatura media ($T$).
                     $$ E = \\frac{P}{\\sqrt{0.9 + \\frac{P^2}{L(T)^2}}} $$
-                    Donde $L(T)$ es una función de la temperatura. El caudal $Q = P - E$.
-                    Este método es ampliamente utilizado para balances de largo plazo en cuencas con datos limitados.
-                    """
-                    )
+                    """)
 
                 # C. Índices Climáticos
                 st.markdown("---")
@@ -2960,27 +2942,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 idx = res.get("idx", {})
                 i1, i2 = st.columns(2)
                 with i1:
-                    st.metric(
-                        "Aridez (Martonne)",
-                        f"{idx.get('martonne_val',0):.1f}",
-                        delta=idx.get("martonne_class", ""),
-                    )
+                    st.metric("Aridez (Martonne)", f"{idx.get('martonne_val',0):.1f}", delta=idx.get("martonne_class", ""))
                 with i2:
-                    st.metric(
-                        "Erosividad (Fournier)",
-                        f"{idx.get('fournier_val',0):.1f}",
-                        delta=idx.get("fournier_class", ""),
-                    )
-
-                with st.expander("ℹ️ Interpretación de Índices"):
-                    st.markdown(
-                        """
-                    * **Índice de Martonne:** Clasifica el clima según su grado de aridez.
-                      * $<10$: Desértico | $10-20$: Semiárido | $>20$: Húmedo.
-                    * **Índice de Fournier:** Evalúa la agresividad de la lluvia y el potencial de erosión del suelo.
-                      * Se basa en la relación entre la lluvia del mes más húmedo y la lluvia anual.
-                    """
-                    )
+                    st.metric("Erosividad (Fournier)", f"{idx.get('fournier_val',0):.1f}", delta=idx.get("fournier_class", ""))
 
                 # D. Curvas FDC
                 if res.get("fdc"):
@@ -2989,12 +2953,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     df_fdc = res["fdc"]["data"]
                     f1, f2 = st.columns([3, 1])
                     with f1:
-                        fig_f = px.line(
-                            df_fdc,
-                            x="Probabilidad Excedencia (%)",
-                            y="Caudal (m³/s)",
-                            title="Disponibilidad Hídrica",
-                        )
+                        fig_f = px.line(df_fdc, x="Probabilidad Excedencia (%)", y="Caudal (m³/s)", title="Disponibilidad Hídrica")
                         fig_f.update_traces(fill="tozeroy")
                         st.plotly_chart(fig_f, use_container_width=True)
                     with f2:
@@ -3002,127 +2961,54 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         st.latex(res["fdc"]["equation"].replace("P", "P_{exc}"))
                         st.caption(f"R²: {res['fdc']['r_squared']:.4f}")
 
-                    with st.expander("ℹ️ ¿Qué es la Curva de Duración?"):
-                        st.markdown(
-                            """
-                        La **Curva de Duración de Caudales (FDC)** muestra el porcentaje de tiempo que un caudal determinado es igualado o excedido.
-                        * **Q95 (95%):** Caudal ecológico o mínimo confiable.
-                        * **Q50 (50%):** Caudal mediano.
-                        * Es fundamental para el diseño de bocatomas y concesiones de agua.
-                        """
-                        )
-
                 # E. Curva Hipsométrica
-                hyp = calculate_hypsometric_curve(res["gdf_cuenca"])
-                if hyp:
-                    st.markdown("---")
-                    st.subheader("⛰️ Curva Hipsométrica")
-                    h1, h2 = st.columns([3, 1])
-                    with h1:
-                        fig_h = go.Figure()
-                        fig_h.add_trace(
-                            go.Scatter(
-                                x=hyp["area_percent"],
-                                y=hyp["elevations"],
-                                fill="tozeroy",
-                                line=dict(color="green"),
-                                name="Perfil",
-                            )
-                        )
-                        st.plotly_chart(fig_h, use_container_width=True)
-                    with h2:
-                        if hyp.get("equation"):
-                            st.latex(hyp["equation"].replace("x", "A"))
-
-                    with st.expander("ℹ️ Interpretación Hipsométrica"):
-                        st.markdown(
-                            """
-                        Curva Hipsométrica: Representa la distribución del área de una cuenca en función de su altura.
-                        Para su cálculo, se grafica la altitud (H) contra el porcentaje de área acumulada (A) que queda por encima de cada altura correspondiente.
-                        Importancia: Indica la etapa evolutiva de la cuenca (juventud, madurez o vejez) y su potencial erosivo.
-                        Aplicaciones: Fundamental en hidrología para comparar cuencas, predecir escurrimientos y analizar la estabilidad geomorfológica.
-                        Bibliografía Clave: Strahler, A. N. (1952). Hypsometric (Area-Altitude) Analysis of Erosional Topography. Bulletin of the Geological Society of America.
-
-                        La curvatura indica la "edad" geomorfológica de la cuenca y cuánto material queda por erosionar.
-                        Curva Convexa (Juventud): La línea se abomba hacia arriba. Indica una cuenca inestable con alto potencial erosivo y gran cantidad de material en las partes altas aún por remover. (Integral Hipsométrica > 0.60).
-                        Curva en "S" (Madurez): La línea cruza el centro. Representa una cuenca en equilibrio, donde la erosión y el transporte de sedimentos están balanceados. (Integral Hipsométrica 0.35 - 0.60).
-                        Curva Cóncava (Vejez): La línea se hunde hacia abajo. Indica una cuenca estabilizada, erosionada y con predominio de sedimentación (llanuras aluviales). (Integral Hipsométrica < 0.35).
-                        Nota práctica: Las cuencas con curvas muy convexas suelen responder más rápido a las tormentas (picos de caudal agresivos) debido a sus pendientes pronunciadas.
-                        """
-                        )
+                # CAMBIO CLAVE: Usamos analysis.calculate... para asegurar que la función exista
+                if hasattr(analysis, "calculate_hypsometric_curve"):
+                    hyp = analysis.calculate_hypsometric_curve(res["gdf_cuenca"])
+                    if hyp:
+                        st.markdown("---")
+                        st.subheader("⛰️ Curva Hipsométrica")
+                        h1, h2 = st.columns([3, 1])
+                        with h1:
+                            fig_h = go.Figure()
+                            fig_h.add_trace(go.Scatter(x=hyp["area_percent"], y=hyp["elevations"], fill="tozeroy", line=dict(color="green"), name="Perfil"))
+                            st.plotly_chart(fig_h, use_container_width=True)
+                        with h2:
+                            if hyp.get("equation"):
+                                st.latex(hyp["equation"].replace("x", "A"))
 
                 # C. Contexto Espacial (Folium) con GPS
                 st.markdown("---")
                 st.subheader("📍 Contexto Espacial")
-                bnd = res["bounds"]
-                m_ctx = folium.Map(
-                    [(bnd[2] + bnd[3]) / 2, (bnd[0] + bnd[1]) / 2],
-                    zoom_start=10,
-                    tiles="CartoDB positron",
-                )
-                # Capa Buffer para contexto
-                if "gdf_buffer" in res and res["gdf_buffer"] is not None:
-                    folium.GeoJson(
-                        res["gdf_buffer"],
-                        style_function=lambda x: {
-                            "color": "gray",
-                            "dashArray": "5,5",
-                            "fill": False,
-                        },
-                        name="Área Influencia",
-                    ).add_to(m_ctx)
+                
+                if "bounds" in res:
+                    bnd = res["bounds"]
+                    m_ctx = folium.Map([(bnd[2] + bnd[3]) / 2, (bnd[0] + bnd[1]) / 2], zoom_start=10, tiles="CartoDB positron")
+                    
+                    if res.get("gdf_buffer") is not None:
+                        folium.GeoJson(res["gdf_buffer"], style_function=lambda x: {"color": "gray", "dashArray": "5,5", "fill": False}, name="Área Influencia").add_to(m_ctx)
 
-                folium.GeoJson(
-                    res["gdf_cuenca"],
-                    style_function=lambda x: {
-                        "color": "blue",
-                        "weight": 2,
-                        "fillOpacity": 0.1,
-                    },
-                ).add_to(m_ctx)
+                    folium.GeoJson(res["gdf_cuenca"], style_function=lambda x: {"color": "blue", "weight": 2, "fillOpacity": 0.1}).add_to(m_ctx)
 
-                df_raw_ctx = res["df_raw"]
-                for _, row in res["df_interp"].iterrows():
-                    nm = row[Config.STATION_NAME_COL]
+                    df_interp_ctx = res.get("df_interp")
+                    df_raw_ctx = res.get("df_raw")
+                    
+                    if df_raw_ctx is not None and df_interp_ctx is not None:
+                        for _, row in df_interp_ctx.iterrows():
+                            nm = row[Config.STATION_NAME_COL]
+                            st_d = df_raw_ctx[df_raw_ctx[Config.STATION_NAME_COL] == nm]
+                            val = row[Config.PRECIPITATION_COL]
+                            n_y = st_d[Config.YEAR_COL].nunique()
+                            mun = row.get(Config.MUNICIPALITY_COL, "N/A")
+                            alt = row.get(Config.ALTITUDE_COL, "N/A")
 
-                    st_d = df_raw_ctx[df_raw_ctx[Config.STATION_NAME_COL] == nm]
-                    val = row[Config.PRECIPITATION_COL]
-                    n_y = st_d[Config.YEAR_COL].nunique()
-                    mun = row.get(Config.MUNICIPALITY_COL, "N/A")
-                    alt = row.get(Config.ALTITUDE_COL, "N/A")
+                            html = f"""<div style='font-family:sans-serif;font-size:13px;min-width:180px'><h5 style='margin:0; color:#c0392b; border-bottom:1px solid #ccc; padding-bottom:4px'>{nm}</h5><div style="margin-top:5px;"><b>Mun:</b> {mun}<br><b>Alt:</b> {alt} m</div><div style='background-color:#f8f9fa; padding:5px; margin-top:5px; border-radius:4px'><b>Ppt Media:</b> {val:,.0f} mm<br><b>Años Datos:</b> {n_y}</div></div>"""
+                            iframe = folium.IFrame(html, width=220, height=150)
+                            popup = folium.Popup(iframe, max_width=220)
+                            folium.CircleMarker([row["latitude"], row["longitude"]], radius=6, color="darkred", fill=True, fill_color="red", fill_opacity=0.9, popup=popup, tooltip=f"{nm} ({val:.0f} mm)").add_to(m_ctx)
 
-                    html = f"""
-                    <div style='font-family:sans-serif;font-size:13px;min-width:180px'>
-                        <h5 style='margin:0; color:#c0392b; border-bottom:1px solid #ccc; padding-bottom:4px'>{nm}</h5>
-                        <div style="margin-top:5px;">
-                            <b>Mun:</b> {mun}<br>
-                            <b>Alt:</b> {alt} m
-                        </div>
-                        <div style='background-color:#f8f9fa; padding:5px; margin-top:5px; border-radius:4px'>
-                            <b>Ppt Media:</b> {val:,.0f} mm<br>
-                            <b>Años Datos:</b> {n_y}
-                        </div>
-                    </div>
-                    """
-
-                    # Crear IFrame y Popup
-                    iframe = folium.IFrame(html, width=220, height=150)
-                    popup = folium.Popup(iframe, max_width=220)
-
-                    # Marcador (Rojo para diferenciar del regional)
-                    folium.CircleMarker(
-                        [row["latitude"], row["longitude"]],
-                        radius=6,
-                        color="darkred",
-                        fill=True,
-                        fill_color="red",
-                        fill_opacity=0.9,
-                        popup=popup,
-                        tooltip=f"{nm} ({val:.0f} mm)",
-                    ).add_to(m_ctx)
-
-                LocateControl(auto_start=False).add_to(m_ctx)
-                st_folium(m_ctx, height=500, width="100%")
+                    LocateControl(auto_start=False).add_to(m_ctx)
+                    st_folium(m_ctx, height=500, width="100%")
 
                 with st.expander("ℹ️ Nota del Mapa de Contexto"):
                     st.write(
