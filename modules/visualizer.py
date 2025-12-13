@@ -2927,7 +2927,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 # B. Métricas
                 st.markdown("---")
                 st.subheader("💧 Balance Hídrico y Morfometría")
-                b, m = res["bal"], res["morph"]
+                
+                # USAMOS .get() PARA EVITAR EL CRASH SI LOS DATOS SON VIEJOS
+                b = res.get("bal", {}) 
+                m = res.get("morph", {})
 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Área", f"{m.get('area_km2', 0):.1f} km²")
