@@ -2823,7 +2823,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             temp_media = 28 - (0.006 * morph.get("alt_prom_m", 1500))
                             if temp_media < 0: temp_media = 5
                             
-                            # Balance
+                            # Balance Turc
                             try:
                                 etr_mm, q_mm = analysis.calculate_water_balance_turc(ppt_med, temp_media)
                             except:
@@ -2832,25 +2832,25 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             vol_hm3 = (q_mm * area_km2) / 1000 
                             q_m3s = (vol_hm3 * 1_000_000) / 31536000
                             
-                            # --- CORRECCIÓN DE NOMBRES DE FUNCIONES ---
+                            # --- CORRECCIÓN DE NOMBRES DE FUNCIONES (AQUÍ ESTABA EL ERROR) ---
                             idx_calc = {}
-                            # Intentamos usar el nombre correcto según tus imports: calculate_climatic_indices
+                            # Usamos el nombre exacto que tienes en tus imports: calculate_climatic_indices
                             if hasattr(analysis, "calculate_climatic_indices"):
                                 try:
                                     idx_calc = analysis.calculate_climatic_indices(df_raw, df_ppt)
                                 except: pass
-                            elif hasattr(analysis, "calculate_indices"): # Fallback antiguo
+                            elif hasattr(analysis, "calculate_indices"):
                                 try:
                                     idx_calc = analysis.calculate_indices(df_raw, df_ppt)
                                 except: pass
                                 
                             fdc_calc = None
-                            # Intentamos usar el nombre correcto: calculate_duration_curve
+                            # Usamos el nombre exacto que tienes en tus imports: calculate_duration_curve
                             if hasattr(analysis, "calculate_duration_curve"):
                                 try:
                                     fdc_calc = analysis.calculate_duration_curve(df_raw)
                                 except: pass
-                            elif hasattr(analysis, "calculate_fdc"): # Fallback antiguo
+                            elif hasattr(analysis, "calculate_fdc"):
                                 try:
                                     fdc_calc = analysis.calculate_fdc(df_raw)
                                 except: pass
@@ -2916,7 +2916,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 if gdf_iso is not None:
                     c_gis3.download_button("〰️ Isoyetas (GeoJSON)", data=gdf_iso.to_json(), file_name="isoyetas.geojson", mime="application/json")
 
-                # Shapefile (Bloqueado temporalmente por seguridad)
+                # Shapefile (Mantenemos protegido para evitar cuelgues)
                 with st.expander("📦 Descargar como Shapefile (.zip)"):
                     st.warning("⚠️ La generación de Shapefiles está deshabilitada temporalmente para evitar bloqueos.")
 
@@ -2939,7 +2939,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 k4.metric("Volumen", f"{b.get('Vol',0):.2f} Mm³")
 
                 with st.expander("ℹ️ Metodología: Balance Hídrico de Turc"):
-                    st.markdown("La Fórmula de Turc estima la escorrentía anual media (Q) basándose en la precipitación (P) y la temperatura media (T). Es fundamental para balances de largo plazo.")
+                    st.markdown("""
+                    **Fórmula de Turc:** Estima la escorrentía anual media ($Q$) basándose en la precipitación ($P$) y la temperatura media ($T$).
+                    $$ E = \\frac{P}{\\sqrt{0.9 + \\frac{P^2}{L(T)^2}}} $$
+                    Donde $L(T)$ es una función de la temperatura. El caudal $Q = P - E$.
+                    """)
 
                 # --- ÍNDICES CLIMÁTICOS ---
                 st.markdown("---")
@@ -2958,13 +2962,16 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     st.metric("Erosividad (Fournier)", f"{val_four:.1f}", delta=class_four)
 
                 with st.expander("ℹ️ Interpretación de Índices"):
-                    st.write("- **Índice de Martonne:** Clasifica el clima según su grado de aridez (<10 Desértico, >20 Húmedo).")
-                    st.write("- **Índice de Fournier:** Evalúa la agresividad de la lluvia y el potencial de erosión.")
+                    st.markdown("""
+                    * **Índice de Martonne:** Clasifica el clima según su grado de aridez.
+                      * $<10$: Desértico | $10-20$: Semiárido | $>20$: Húmedo.
+                    * **Índice de Fournier:** Evalúa la agresividad de la lluvia y el potencial de erosión del suelo.
+                    """)
 
-                # --- CURVA FDC ---
-                # Verificamos si existe el cálculo y tiene datos
+                # --- CURVA FDC (Corrección visualización) ---
                 fdc_data = res.get("fdc")
-                if fdc_data and "data" in fdc_data:
+                # Verificamos si existe data real en fdc_data
+                if fdc_data and isinstance(fdc_data, dict) and "data" in fdc_data:
                     st.markdown("---")
                     st.subheader("📉 Curva de Duración de Caudales (FDC)")
                     df_fdc = fdc_data["data"]
@@ -2976,13 +2983,16 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         st.plotly_chart(fig_f, use_container_width=True)
                     with f2:
                         st.markdown("**Ecuación Ajustada:**")
-                        # Protegemos la ecuación por si viene vacía
                         eq = fdc_data.get("equation", "N/A")
                         st.latex(eq.replace("P", "P_{exc}") if isinstance(eq, str) else "N/A")
                         st.caption(f"R²: {fdc_data.get('r_squared', 0):.4f}")
 
                     with st.expander("ℹ️ ¿Qué es la Curva de Duración?"):
-                        st.write("La Curva de Duración de Caudales (FDC) muestra el porcentaje de tiempo que un caudal determinado es igualado o excedido. Q95 suele usarse como caudal ecológico.")
+                        st.markdown("""
+                        La **Curva de Duración de Caudales (FDC)** muestra el porcentaje de tiempo que un caudal determinado es igualado o excedido.
+                        * **Q95 (95%):** Caudal ecológico o mínimo confiable.
+                        * **Q50 (50%):** Caudal mediano.
+                        """)
 
                 # --- CURVA HIPSOMÉTRICA ---
                 if hasattr(analysis, "calculate_hypsometric_curve"):
