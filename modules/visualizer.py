@@ -2726,7 +2726,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
 
 # ==========================================================================
-    # MODO CUENCA (PERSISTENTE Y DESCARGABLE)
+    # MODO CUENCA (PERSISTENTE Y DESCARGABLE) - VERSIÓN CORREGIDA FDC/INDICES
     # ==========================================================================
     else:
         gdf_subcuencas = kwargs.get("gdf_subcuencas")
@@ -2832,28 +2832,35 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             vol_hm3 = (q_mm * area_km2) / 1000 
                             q_m3s = (vol_hm3 * 1_000_000) / 31536000
                             
-                            # --- CORRECCIÓN DE NOMBRES DE FUNCIONES (AQUÍ ESTABA EL ERROR) ---
+                            # --- CÁLCULO DE ÍNDICES (SIN SILENCIADOR) ---
                             idx_calc = {}
-                            # Usamos el nombre exacto que tienes en tus imports: calculate_climatic_indices
-                            if hasattr(analysis, "calculate_climatic_indices"):
+                            idx_error = None
+                            try:
+                                # Intento 1: Nombre estándar del módulo
+                                idx_calc = analysis.calculate_climatic_indices(df_raw, df_ppt)
+                            except AttributeError:
                                 try:
-                                    idx_calc = analysis.calculate_climatic_indices(df_raw, df_ppt)
-                                except: pass
-                            elif hasattr(analysis, "calculate_indices"):
-                                try:
+                                    # Intento 2: Nombre alternativo
                                     idx_calc = analysis.calculate_indices(df_raw, df_ppt)
-                                except: pass
+                                except Exception as e:
+                                    idx_error = str(e)
+                            except Exception as e:
+                                idx_error = str(e)
                                 
+                            # --- CÁLCULO FDC (SIN SILENCIADOR) ---
                             fdc_calc = None
-                            # Usamos el nombre exacto que tienes en tus imports: calculate_duration_curve
-                            if hasattr(analysis, "calculate_duration_curve"):
+                            fdc_error = None
+                            try:
+                                # Intento 1: Nombre estándar
+                                fdc_calc = analysis.calculate_duration_curve(df_raw)
+                            except AttributeError:
                                 try:
-                                    fdc_calc = analysis.calculate_duration_curve(df_raw)
-                                except: pass
-                            elif hasattr(analysis, "calculate_fdc"):
-                                try:
+                                    # Intento 2: Nombre alternativo
                                     fdc_calc = analysis.calculate_fdc(df_raw)
-                                except: pass
+                                except Exception as e:
+                                    fdc_error = str(e)
+                            except Exception as e:
+                                fdc_error = str(e)
 
                             # Guardar en Session State
                             st.session_state["basin_res"] = {
@@ -2867,7 +2874,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                 "bal": {"P": ppt_med, "ET": etr_mm, "Q_m3s": q_m3s, "Vol": vol_hm3},
                                 "morph": morph,
                                 "idx": idx_calc,
+                                "idx_error": idx_error, # Guardamos el error para mostrarlo
                                 "fdc": fdc_calc,
+                                "fdc_error": fdc_error, # Guardamos el error para mostrarlo
                                 "bounds": bounds,
                                 "names": ", ".join(sel_cuencas)
                             }
@@ -2948,11 +2957,15 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 # --- ÍNDICES CLIMÁTICOS ---
                 st.markdown("---")
                 st.subheader("🌡️ Índices Climáticos")
+                
+                # Si hubo error en el cálculo, lo mostramos
+                if res.get("idx_error"):
+                    st.error(f"Error calculando índices: {res['idx_error']}")
+                
                 idx = res.get("idx", {})
                 
                 i1, i2 = st.columns(2)
                 with i1:
-                    # Usamos .get() con 0 por defecto si falla el cálculo
                     val_mart = idx.get('martonne_val', 0)
                     class_mart = idx.get('martonne_class', 'Sin Datos')
                     st.metric("Aridez (Martonne)", f"{val_mart:.1f}", delta=class_mart)
@@ -2968,9 +2981,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     * **Índice de Fournier:** Evalúa la agresividad de la lluvia y el potencial de erosión del suelo.
                     """)
 
-                # --- CURVA FDC (Corrección visualización) ---
+                # --- CURVA FDC ---
+                if res.get("fdc_error"):
+                    st.error(f"Error calculando Curva FDC: {res['fdc_error']}")
+
                 fdc_data = res.get("fdc")
-                # Verificamos si existe data real en fdc_data
                 if fdc_data and isinstance(fdc_data, dict) and "data" in fdc_data:
                     st.markdown("---")
                     st.subheader("📉 Curva de Duración de Caudales (FDC)")
