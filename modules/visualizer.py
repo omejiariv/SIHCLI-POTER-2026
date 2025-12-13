@@ -2737,9 +2737,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         # Detectar columna de nombre
         col_name = next((c for c in gdf_subcuencas.columns if "nombre" in c.lower() or "cuenca" in c.lower()), gdf_subcuencas.columns[0])
         
-        # Recuperar selección previa si existe
+        # Recuperar selección previa
         default_cuencas = st.session_state.get("last_sel_cuencas", [])
-        # Filtrar para asegurar que existen en la lista actual
         avail_opts = sorted(gdf_subcuencas[col_name].unique().astype(str))
         valid_defaults = [x for x in default_cuencas if x in avail_opts]
         
@@ -2753,10 +2752,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             rng_c = c_p1.slider("Periodo:", 1980, 2025, (2000, 2020))
             meth_c = c_p2.selectbox("Método Interpolación:", ["Kriging (RBF)", "IDW"])
 
-            # --- LÓGICA DE CÁLCULO (SOLO SI SE PRESIONA EL BOTÓN) ---
+            # --- LÓGICA DE CÁLCULO ---
             if st.button("⚡ Analizar Cuenca"):
-                st.session_state["last_sel_cuencas"] = sel_cuencas # Guardar selección
-                with st.spinner("Interpolando y Vectorizando..."):
+                st.session_state["last_sel_cuencas"] = sel_cuencas
+                with st.spinner("Procesando hidrología..."):
                     # 1. Geometría
                     sub = gdf_subcuencas[gdf_subcuencas[col_name].isin(sel_cuencas)]
                     try:
@@ -2769,7 +2768,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     buf_shape = geom_union_shape.buffer(buffer_km / 111.32)
                     gdf_buffer = gpd.GeoDataFrame({"geometry": [buf_shape], "tipo": "Buffer"}, crs=gdf_stations.crs)
 
-                    # 2. Datos
+                    # 2. Datos Espaciales
                     stns_zone = gpd.sjoin(gdf_stations, gdf_buffer, predicate="intersects")
                     
                     if not stns_zone.empty:
@@ -2798,7 +2797,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             minx, miny, maxx, maxy = gdf_buffer.total_bounds
                             bounds = [minx, maxx, miny, maxy]
                             
-                            # Helper interno para interpolar
                             gx, gy = np.mgrid[bounds[0]:bounds[1]:75j, bounds[2]:bounds[3]:75j]
                             pts = df_interp[["longitude", "latitude"]].values
                             vals = df_interp[Config.PRECIPITATION_COL].values
@@ -2809,23 +2807,23 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             else:
                                 gz = griddata(pts, vals, (gx, gy), method="linear")
 
-                            # 4. VECTORIZACIÓN
+                            # 4. Vectorización
                             gdf_isoyetas = generate_isohyets_gdf(gx, gy, gz, levels=15, crs=gdf_stations.crs)
 
-                            # 5. Métricas y Cálculos Hidrológicos
+                            # 5. Cálculos Hidrológicos
                             ppt_med = np.nanmean(gz) if gz is not None else 0
                             
-                            # Intentamos calcular morfometría
+                            # Morfometría
                             try:
                                 morph = analysis.calculate_morphometry(gdf_union_real)
-                            except Exception:
+                            except:
                                 morph = {"area_km2": 0, "perimetro_km": 0, "alt_prom_m": 1500, "pendiente_prom": 0}
                             
                             area_km2 = morph.get("area_km2", 100)
                             temp_media = 28 - (0.006 * morph.get("alt_prom_m", 1500))
                             if temp_media < 0: temp_media = 5
                             
-                            # Balance Turc
+                            # Balance
                             try:
                                 etr_mm, q_mm = analysis.calculate_water_balance_turc(ppt_med, temp_media)
                             except:
@@ -2834,20 +2832,30 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             vol_hm3 = (q_mm * area_km2) / 1000 
                             q_m3s = (vol_hm3 * 1_000_000) / 31536000
                             
-                            # Cálculos opcionales (Indices y FDC)
+                            # --- CORRECCIÓN DE NOMBRES DE FUNCIONES ---
                             idx_calc = {}
-                            if hasattr(analysis, "calculate_indices"):
+                            # Intentamos usar el nombre correcto según tus imports: calculate_climatic_indices
+                            if hasattr(analysis, "calculate_climatic_indices"):
+                                try:
+                                    idx_calc = analysis.calculate_climatic_indices(df_raw, df_ppt)
+                                except: pass
+                            elif hasattr(analysis, "calculate_indices"): # Fallback antiguo
                                 try:
                                     idx_calc = analysis.calculate_indices(df_raw, df_ppt)
                                 except: pass
                                 
                             fdc_calc = None
-                            if hasattr(analysis, "calculate_fdc"):
+                            # Intentamos usar el nombre correcto: calculate_duration_curve
+                            if hasattr(analysis, "calculate_duration_curve"):
+                                try:
+                                    fdc_calc = analysis.calculate_duration_curve(df_raw)
+                                except: pass
+                            elif hasattr(analysis, "calculate_fdc"): # Fallback antiguo
                                 try:
                                     fdc_calc = analysis.calculate_fdc(df_raw)
                                 except: pass
 
-                            # Guardar todo en Session State
+                            # Guardar en Session State
                             st.session_state["basin_res"] = {
                                 "ready": True, "gz": gz, "gx": gx, "gy": gy,
                                 "gdf_puntos": gdf_puntos_interp,
@@ -2876,12 +2884,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             if res and res.get("ready"):
                 st.markdown(f"##### 🌧️ Resultados: {res.get('names', 'Cuenca')}")
                 
-                # Mapa Visual (Plotly)
+                # Mapa Visual
                 fig = go.Figure(go.Contour(
                     z=res["gz"].T, x=res["gx"][:, 0], y=res["gy"][0, :],
                     colorscale="Blues", colorbar=dict(title="mm"), contours=dict(start=0, end=5000, size=200)
                 ))
-                # Cuenca
                 try:
                     g = res["gdf_cuenca"].geometry.iloc[0]
                     geoms = g.geoms if g.geom_type == "MultiPolygon" else [g]
@@ -2889,47 +2896,33 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         xs, ys = geom.exterior.xy
                         fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=2), name="Cuenca"))
                 except: pass
-                # Puntos
+                
                 df_p = res["gdf_puntos"]
                 fig.add_trace(go.Scatter(x=df_p.geometry.x, y=df_p.geometry.y, mode="markers", marker=dict(color="red"), name="Estaciones"))
-                
                 st.plotly_chart(fig, use_container_width=True)
 
-                # --- ZONA DE DESCARGAS GIS ---
+                # --- DESCARGAS ---
                 st.markdown("---")
-                st.subheader("💾 Descarga de Capas GIS (Vectores)")
-                
+                st.subheader("💾 Descarga de Capas GIS")
                 c_gis1, c_gis2, c_gis3 = st.columns(3)
                 
-                # 1. Descarga Estaciones
                 gdf_pts = res["gdf_puntos"]
-                c_gis1.download_button("📍 Estaciones (GeoJSON)", data=gdf_pts.to_json(), file_name="estaciones_interpoladas.geojson", mime="application/json")
+                c_gis1.download_button("📍 Estaciones (GeoJSON)", data=gdf_pts.to_json(), file_name="estaciones.geojson", mime="application/json")
                 
-                # 2. Descarga Cuenca
                 gdf_basin = res["gdf_cuenca"]
-                c_gis2.download_button("🗺️ Cuenca (GeoJSON)", data=gdf_basin.to_json(), file_name="cuenca_analisis.geojson", mime="application/json")
+                c_gis2.download_button("🗺️ Cuenca (GeoJSON)", data=gdf_basin.to_json(), file_name="cuenca.geojson", mime="application/json")
                 
-                # 3. Descarga Isoyetas
                 gdf_iso = res.get("gdf_isoyetas")
                 if gdf_iso is not None:
-                    c_gis3.download_button("〰️ Isoyetas (GeoJSON)", data=gdf_iso.to_json(), file_name="isoyetas_generadas.geojson", mime="application/json")
+                    c_gis3.download_button("〰️ Isoyetas (GeoJSON)", data=gdf_iso.to_json(), file_name="isoyetas.geojson", mime="application/json")
 
-                # Shapefile (ZIP)
-# =======================================================
-                # BLOQUE DE EMERGENCIA: SHAPEFILES DESHABILITADOS
-                # =======================================================
+                # Shapefile (Bloqueado temporalmente por seguridad)
                 with st.expander("📦 Descargar como Shapefile (.zip)"):
-                    st.warning("⚠️ La generación de Shapefiles está deshabilitada temporalmente para diagnóstico.")
-                    # El código original del ZIP se ha eliminado aquí para evitar el bloqueo.
-                
-                # =======================================================
-                # A PARTIR DE AQUÍ DEBERÍAS VER TODO LO DEMÁS
-                # =======================================================
+                    st.warning("⚠️ La generación de Shapefiles está deshabilitada temporalmente para evitar bloqueos.")
 
-                # B. Métricas
+                # --- MÉTRICAS ---
                 st.markdown("---")
                 st.subheader("💧 Balance Hídrico y Morfometría")
-                
                 b = res.get("bal", {}) 
                 m = res.get("morph", {})
 
@@ -2946,40 +2939,54 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 k4.metric("Volumen", f"{b.get('Vol',0):.2f} Mm³")
 
                 with st.expander("ℹ️ Metodología: Balance Hídrico de Turc"):
-                    st.markdown("""
-                    **Fórmula de Turc:** Estima la escorrentía anual media ($Q$) basándose en la precipitación ($P$) y la temperatura media ($T$).
-                    $$ E = \\frac{P}{\\sqrt{0.9 + \\frac{P^2}{L(T)^2}}} $$
-                    """)
+                    st.markdown("La Fórmula de Turc estima la escorrentía anual media (Q) basándose en la precipitación (P) y la temperatura media (T). Es fundamental para balances de largo plazo.")
 
-                # C. Índices Climáticos
+                # --- ÍNDICES CLIMÁTICOS ---
                 st.markdown("---")
                 st.subheader("🌡️ Índices Climáticos")
                 idx = res.get("idx", {})
+                
                 i1, i2 = st.columns(2)
                 with i1:
-                    st.metric("Aridez (Martonne)", f"{idx.get('martonne_val',0):.1f}", delta=idx.get("martonne_class", ""))
+                    # Usamos .get() con 0 por defecto si falla el cálculo
+                    val_mart = idx.get('martonne_val', 0)
+                    class_mart = idx.get('martonne_class', 'Sin Datos')
+                    st.metric("Aridez (Martonne)", f"{val_mart:.1f}", delta=class_mart)
                 with i2:
-                    st.metric("Erosividad (Fournier)", f"{idx.get('fournier_val',0):.1f}", delta=idx.get("fournier_class", ""))
+                    val_four = idx.get('fournier_val', 0)
+                    class_four = idx.get('fournier_class', 'Sin Datos')
+                    st.metric("Erosividad (Fournier)", f"{val_four:.1f}", delta=class_four)
 
-                # D. Curvas FDC
-                if res.get("fdc"):
+                with st.expander("ℹ️ Interpretación de Índices"):
+                    st.write("- **Índice de Martonne:** Clasifica el clima según su grado de aridez (<10 Desértico, >20 Húmedo).")
+                    st.write("- **Índice de Fournier:** Evalúa la agresividad de la lluvia y el potencial de erosión.")
+
+                # --- CURVA FDC ---
+                # Verificamos si existe el cálculo y tiene datos
+                fdc_data = res.get("fdc")
+                if fdc_data and "data" in fdc_data:
                     st.markdown("---")
                     st.subheader("📉 Curva de Duración de Caudales (FDC)")
-                    df_fdc = res["fdc"]["data"]
+                    df_fdc = fdc_data["data"]
+                    
                     f1, f2 = st.columns([3, 1])
                     with f1:
                         fig_f = px.line(df_fdc, x="Probabilidad Excedencia (%)", y="Caudal (m³/s)", title="Disponibilidad Hídrica")
                         fig_f.update_traces(fill="tozeroy")
                         st.plotly_chart(fig_f, use_container_width=True)
                     with f2:
-                        st.markdown("**Ecuación:**")
-                        st.latex(res["fdc"]["equation"].replace("P", "P_{exc}"))
-                        st.caption(f"R²: {res['fdc']['r_squared']:.4f}")
+                        st.markdown("**Ecuación Ajustada:**")
+                        # Protegemos la ecuación por si viene vacía
+                        eq = fdc_data.get("equation", "N/A")
+                        st.latex(eq.replace("P", "P_{exc}") if isinstance(eq, str) else "N/A")
+                        st.caption(f"R²: {fdc_data.get('r_squared', 0):.4f}")
 
-                # E. Curva Hipsométrica
-                # Usamos try-except para evitar que un fallo aquí detenga el mapa de abajo
-                try:
-                    if hasattr(analysis, "calculate_hypsometric_curve"):
+                    with st.expander("ℹ️ ¿Qué es la Curva de Duración?"):
+                        st.write("La Curva de Duración de Caudales (FDC) muestra el porcentaje de tiempo que un caudal determinado es igualado o excedido. Q95 suele usarse como caudal ecológico.")
+
+                # --- CURVA HIPSOMÉTRICA ---
+                if hasattr(analysis, "calculate_hypsometric_curve"):
+                    try:
                         hyp = analysis.calculate_hypsometric_curve(res["gdf_cuenca"])
                         if hyp:
                             st.markdown("---")
@@ -2992,10 +2999,12 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             with h2:
                                 if hyp.get("equation"):
                                     st.latex(hyp["equation"].replace("x", "A"))
-                except Exception as e:
-                    st.error(f"Error calculando Curva Hipsométrica: {e}")
+                            
+                            with st.expander("ℹ️ Interpretación Hipsométrica"):
+                                st.write("Representa la distribución del área de una cuenca en función de su altura. Indica si la cuenca es joven (convexa), madura (S) o vieja (cóncava).")
+                    except: pass
 
-                # C. Contexto Espacial (Folium)
+                # --- CONTEXTO ESPACIAL ---
                 st.markdown("---")
                 st.subheader("📍 Contexto Espacial")
                 
@@ -3004,7 +3013,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     m_ctx = folium.Map([(bnd[2] + bnd[3]) / 2, (bnd[0] + bnd[1]) / 2], zoom_start=10, tiles="CartoDB positron")
                     
                     if res.get("gdf_buffer") is not None:
-                        folium.GeoJson(res["gdf_buffer"], style_function=lambda x: {"color": "gray", "dashArray": "5,5", "fill": False}, name="Área Influencia").add_to(m_ctx)
+                        folium.GeoJson(res["gdf_buffer"], style_function=lambda x: {"color": "gray", "dashArray": "5,5", "fill": False}).add_to(m_ctx)
 
                     folium.GeoJson(res["gdf_cuenca"], style_function=lambda x: {"color": "blue", "weight": 2, "fillOpacity": 0.1}).add_to(m_ctx)
 
@@ -3017,20 +3026,15 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             st_d = df_raw_ctx[df_raw_ctx[Config.STATION_NAME_COL] == nm]
                             val = row[Config.PRECIPITATION_COL]
                             n_y = st_d[Config.YEAR_COL].nunique()
-                            mun = row.get(Config.MUNICIPALITY_COL, "N/A")
-                            alt = row.get(Config.ALTITUDE_COL, "N/A")
-
-                            html = f"""<div style='font-family:sans-serif;font-size:13px;min-width:180px'><h5 style='margin:0; color:#c0392b; border-bottom:1px solid #ccc; padding-bottom:4px'>{nm}</h5><div style="margin-top:5px;"><b>Mun:</b> {mun}<br><b>Alt:</b> {alt} m</div><div style='background-color:#f8f9fa; padding:5px; margin-top:5px; border-radius:4px'><b>Ppt Media:</b> {val:,.0f} mm<br><b>Años Datos:</b> {n_y}</div></div>"""
-                            iframe = folium.IFrame(html, width=220, height=150)
-                            popup = folium.Popup(iframe, max_width=220)
-                            folium.CircleMarker([row["latitude"], row["longitude"]], radius=6, color="darkred", fill=True, fill_color="red", fill_opacity=0.9, popup=popup, tooltip=f"{nm} ({val:.0f} mm)").add_to(m_ctx)
+                            
+                            html = f"""<div style='font-family:sans-serif;font-size:12px'><b>{nm}</b><br>Ppt: {val:,.0f} mm<br>Datos: {n_y} años</div>"""
+                            iframe = folium.IFrame(html, width=150, height=80)
+                            popup = folium.Popup(iframe, max_width=150)
+                            folium.CircleMarker([row["latitude"], row["longitude"]], radius=5, color="darkred", fill=True, fill_color="red", fill_opacity=0.8, popup=popup).add_to(m_ctx)
 
                     LocateControl(auto_start=False).add_to(m_ctx)
                     st_folium(m_ctx, height=500, width="100%")
-
-                    with st.expander("ℹ️ Nota del Mapa de Contexto"):
-                        st.write("Muestra la cuenca seleccionada (azul), el área de influencia de búsqueda (gris punteado) y las estaciones utilizadas para el análisis (puntos rojos). Haga clic en los puntos para ver detalles.")
-
+                    
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
 # -----------------------------------------------------------------------------
