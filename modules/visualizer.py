@@ -2726,7 +2726,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
 
 # ==========================================================================
-    # MODO CUENCA (PERSISTENTE Y DESCARGABLE) - VERSIÓN CORREGIDA FDC/INDICES
+    # MODO CUENCA (PERSISTENTE Y DESCARGABLE) - LÓGICA RESTAURADA DEL BASE
     # ==========================================================================
     else:
         gdf_subcuencas = kwargs.get("gdf_subcuencas")
@@ -2760,11 +2760,12 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     sub = gdf_subcuencas[gdf_subcuencas[col_name].isin(sel_cuencas)]
                     try:
                         geom_union_shape = sub.geometry.simplify(0.01).unary_union
+                        # Convertimos a GDF para cálculos morfológicos
+                        gdf_union_real = gpd.GeoDataFrame({"geometry": [sub.unary_union]}, crs=gdf_subcuencas.crs)
                     except:
                         geom_union_shape = sub.unary_union
+                        gdf_union_real = gpd.GeoDataFrame({"geometry": [sub.unary_union]}, crs=gdf_subcuencas.crs)
                     
-                    # GeoDataFrames Base
-                    gdf_union_real = gpd.GeoDataFrame({"geometry": [sub.unary_union], "tipo": "Cuenca"}, crs=gdf_subcuencas.crs)
                     buf_shape = geom_union_shape.buffer(buffer_km / 111.32)
                     gdf_buffer = gpd.GeoDataFrame({"geometry": [buf_shape], "tipo": "Buffer"}, crs=gdf_stations.crs)
 
@@ -2820,8 +2821,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                 morph = {"area_km2": 0, "perimetro_km": 0, "alt_prom_m": 1500, "pendiente_prom": 0}
                             
                             area_km2 = morph.get("area_km2", 100)
-                            temp_media = 28 - (0.006 * morph.get("alt_prom_m", 1500))
-                            if temp_media < 0: temp_media = 5
+                            alt_media = morph.get("alt_prom_m", 1500) # Necesario para índices
+                            
+                            # Temperatura Media (Estimación)
+                            temp_media = 28 - (0.006 * alt_media)
+                            if temp_media < 0: temp_media = 0
                             
                             # Balance Turc
                             try:
@@ -2832,33 +2836,28 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             vol_hm3 = (q_mm * area_km2) / 1000 
                             q_m3s = (vol_hm3 * 1_000_000) / 31536000
                             
-                            # --- CÁLCULO DE ÍNDICES (SIN SILENCIADOR) ---
+                            # --- PREPARACIÓN DE SERIES DE TIEMPO (CLAVE DEL CÓDIGO BASE) ---
+                            # Esto soluciona el error 'DatetimeArray reduction'
+                            bs_ts = df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean()
+                            
+                            # Coeficiente de escorrentía (Necesario para FDC)
+                            c_run = q_mm / ppt_med if ppt_med > 0 else 0.4
+
+                            # --- CÁLCULO DE ÍNDICES (LÓGICA BASE) ---
                             idx_calc = {}
                             idx_error = None
                             try:
-                                # Intento 1: Nombre estándar del módulo
-                                idx_calc = analysis.calculate_climatic_indices(df_raw, df_ppt)
-                            except AttributeError:
-                                try:
-                                    # Intento 2: Nombre alternativo
-                                    idx_calc = analysis.calculate_indices(df_raw, df_ppt)
-                                except Exception as e:
-                                    idx_error = str(e)
+                                # Usamos bs_ts y alt_media como en el código base
+                                idx_calc = analysis.calculate_climatic_indices(bs_ts, alt_media)
                             except Exception as e:
                                 idx_error = str(e)
                                 
-                            # --- CÁLCULO FDC (SIN SILENCIADOR) ---
+                            # --- CÁLCULO FDC (LÓGICA BASE) ---
                             fdc_calc = None
                             fdc_error = None
                             try:
-                                # Intento 1: Nombre estándar
-                                fdc_calc = analysis.calculate_duration_curve(df_raw)
-                            except AttributeError:
-                                try:
-                                    # Intento 2: Nombre alternativo
-                                    fdc_calc = analysis.calculate_fdc(df_raw)
-                                except Exception as e:
-                                    fdc_error = str(e)
+                                # Pasamos los 3 argumentos requeridos: serie, coef_esc, area
+                                fdc_calc = analysis.calculate_duration_curve(bs_ts, c_run, area_km2)
                             except Exception as e:
                                 fdc_error = str(e)
 
@@ -2869,14 +2868,14 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                 "gdf_cuenca": gdf_union_real, 
                                 "gdf_buffer": gdf_buffer,
                                 "gdf_isoyetas": gdf_isoyetas,
-                                "df_raw": df_raw,
-                                "df_interp": df_interp,
+                                "df_interp": df_interp, # Para mapa contexto
+                                "df_raw": df_raw,       # Para mapa contexto
                                 "bal": {"P": ppt_med, "ET": etr_mm, "Q_m3s": q_m3s, "Vol": vol_hm3},
                                 "morph": morph,
                                 "idx": idx_calc,
-                                "idx_error": idx_error, # Guardamos el error para mostrarlo
+                                "idx_error": idx_error,
                                 "fdc": fdc_calc,
-                                "fdc_error": fdc_error, # Guardamos el error para mostrarlo
+                                "fdc_error": fdc_error,
                                 "bounds": bounds,
                                 "names": ", ".join(sel_cuencas)
                             }
@@ -2927,7 +2926,15 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
                 # Shapefile (Mantenemos protegido para evitar cuelgues)
                 with st.expander("📦 Descargar como Shapefile (.zip)"):
-                    st.warning("⚠️ La generación de Shapefiles está deshabilitada temporalmente para evitar bloqueos.")
+                    try:
+                        if gdf_iso is not None:
+                            zip_iso = create_zipped_shapefile(gdf_iso, "isoyetas")
+                            st.download_button("Descargar Isoyetas (.shp)", zip_iso, "isoyetas.zip", "application/zip")
+                        
+                        zip_basin = create_zipped_shapefile(gdf_basin, "cuenca")
+                        st.download_button("Descargar Cuenca (.shp)", zip_basin, "cuenca.zip", "application/zip")
+                    except Exception as e:
+                        st.warning(f"No se pudieron generar los Shapefiles (Error temporal).")
 
                 # --- MÉTRICAS ---
                 st.markdown("---")
@@ -2952,33 +2959,29 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     **Fórmula de Turc:** Estima la escorrentía anual media ($Q$) basándose en la precipitación ($P$) y la temperatura media ($T$).
                     $$ E = \\frac{P}{\\sqrt{0.9 + \\frac{P^2}{L(T)^2}}} $$
                     Donde $L(T)$ es una función de la temperatura. El caudal $Q = P - E$.
+                    Este método es ampliamente utilizado para balances de largo plazo en cuencas con datos limitados.
                     """)
 
                 # --- ÍNDICES CLIMÁTICOS ---
                 st.markdown("---")
                 st.subheader("🌡️ Índices Climáticos")
                 
-                # Si hubo error en el cálculo, lo mostramos
                 if res.get("idx_error"):
                     st.error(f"Error calculando índices: {res['idx_error']}")
                 
                 idx = res.get("idx", {})
-                
                 i1, i2 = st.columns(2)
                 with i1:
-                    val_mart = idx.get('martonne_val', 0)
-                    class_mart = idx.get('martonne_class', 'Sin Datos')
-                    st.metric("Aridez (Martonne)", f"{val_mart:.1f}", delta=class_mart)
+                    st.metric("Aridez (Martonne)", f"{idx.get('martonne_val',0):.1f}", delta=idx.get("martonne_class", ""))
                 with i2:
-                    val_four = idx.get('fournier_val', 0)
-                    class_four = idx.get('fournier_class', 'Sin Datos')
-                    st.metric("Erosividad (Fournier)", f"{val_four:.1f}", delta=class_four)
+                    st.metric("Erosividad (Fournier)", f"{idx.get('fournier_val',0):.1f}", delta=idx.get("fournier_class", ""))
 
                 with st.expander("ℹ️ Interpretación de Índices"):
                     st.markdown("""
                     * **Índice de Martonne:** Clasifica el clima según su grado de aridez.
                       * $<10$: Desértico | $10-20$: Semiárido | $>20$: Húmedo.
                     * **Índice de Fournier:** Evalúa la agresividad de la lluvia y el potencial de erosión del suelo.
+                      * Se basa en la relación entre la lluvia del mes más húmedo y la lluvia anual.
                     """)
 
                 # --- CURVA FDC ---
@@ -2986,28 +2989,32 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     st.error(f"Error calculando Curva FDC: {res['fdc_error']}")
 
                 fdc_data = res.get("fdc")
-                if fdc_data and isinstance(fdc_data, dict) and "data" in fdc_data:
+                if fdc_data:
                     st.markdown("---")
                     st.subheader("📉 Curva de Duración de Caudales (FDC)")
-                    df_fdc = fdc_data["data"]
+                    # Ajuste para soportar el formato que devuelva tu función (dict o df)
+                    df_fdc = fdc_data["data"] if isinstance(fdc_data, dict) and "data" in fdc_data else fdc_data
                     
-                    f1, f2 = st.columns([3, 1])
-                    with f1:
-                        fig_f = px.line(df_fdc, x="Probabilidad Excedencia (%)", y="Caudal (m³/s)", title="Disponibilidad Hídrica")
-                        fig_f.update_traces(fill="tozeroy")
-                        st.plotly_chart(fig_f, use_container_width=True)
-                    with f2:
-                        st.markdown("**Ecuación Ajustada:**")
-                        eq = fdc_data.get("equation", "N/A")
-                        st.latex(eq.replace("P", "P_{exc}") if isinstance(eq, str) else "N/A")
-                        st.caption(f"R²: {fdc_data.get('r_squared', 0):.4f}")
+                    if isinstance(df_fdc, pd.DataFrame):
+                        f1, f2 = st.columns([3, 1])
+                        with f1:
+                            fig_f = px.line(df_fdc, x="Probabilidad Excedencia (%)", y="Caudal (m³/s)", title="Disponibilidad Hídrica")
+                            fig_f.update_traces(fill="tozeroy")
+                            st.plotly_chart(fig_f, use_container_width=True)
+                        with f2:
+                            st.markdown("**Ecuación Ajustada:**")
+                            if isinstance(fdc_data, dict):
+                                eq = fdc_data.get("equation", "N/A")
+                                st.latex(eq.replace("P", "P_{exc}") if isinstance(eq, str) else "N/A")
+                                st.caption(f"R²: {fdc_data.get('r_squared', 0):.4f}")
 
-                    with st.expander("ℹ️ ¿Qué es la Curva de Duración?"):
-                        st.markdown("""
-                        La **Curva de Duración de Caudales (FDC)** muestra el porcentaje de tiempo que un caudal determinado es igualado o excedido.
-                        * **Q95 (95%):** Caudal ecológico o mínimo confiable.
-                        * **Q50 (50%):** Caudal mediano.
-                        """)
+                        with st.expander("ℹ️ ¿Qué es la Curva de Duración?"):
+                            st.markdown("""
+                            La **Curva de Duración de Caudales (FDC)** muestra el porcentaje de tiempo que un caudal determinado es igualado o excedido.
+                            * **Q95 (95%):** Caudal ecológico o mínimo confiable.
+                            * **Q50 (50%):** Caudal mediano.
+                            * Es fundamental para el diseño de bocatomas y concesiones de agua.
+                            """)
 
                 # --- CURVA HIPSOMÉTRICA ---
                 if hasattr(analysis, "calculate_hypsometric_curve"):
@@ -3026,7 +3033,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                     st.latex(hyp["equation"].replace("x", "A"))
                             
                             with st.expander("ℹ️ Interpretación Hipsométrica"):
-                                st.write("Representa la distribución del área de una cuenca en función de su altura. Indica si la cuenca es joven (convexa), madura (S) o vieja (cóncava).")
+                                st.markdown("""
+                                Curva Hipsométrica: Representa la distribución del área de una cuenca en función de su altura.
+                                Para su cálculo, se grafica la altitud (H) contra el porcentaje de área acumulada (A).
+                                Importancia: Indica la etapa evolutiva de la cuenca (juventud, madurez o vejez).
+                                """)
                     except: pass
 
                 # --- CONTEXTO ESPACIAL ---
@@ -3038,7 +3049,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     m_ctx = folium.Map([(bnd[2] + bnd[3]) / 2, (bnd[0] + bnd[1]) / 2], zoom_start=10, tiles="CartoDB positron")
                     
                     if res.get("gdf_buffer") is not None:
-                        folium.GeoJson(res["gdf_buffer"], style_function=lambda x: {"color": "gray", "dashArray": "5,5", "fill": False}).add_to(m_ctx)
+                        folium.GeoJson(res["gdf_buffer"], style_function=lambda x: {"color": "gray", "dashArray": "5,5", "fill": False}, name="Área Influencia").add_to(m_ctx)
 
                     folium.GeoJson(res["gdf_cuenca"], style_function=lambda x: {"color": "blue", "weight": 2, "fillOpacity": 0.1}).add_to(m_ctx)
 
@@ -3051,14 +3062,19 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             st_d = df_raw_ctx[df_raw_ctx[Config.STATION_NAME_COL] == nm]
                             val = row[Config.PRECIPITATION_COL]
                             n_y = st_d[Config.YEAR_COL].nunique()
-                            
-                            html = f"""<div style='font-family:sans-serif;font-size:12px'><b>{nm}</b><br>Ppt: {val:,.0f} mm<br>Datos: {n_y} años</div>"""
-                            iframe = folium.IFrame(html, width=150, height=80)
-                            popup = folium.Popup(iframe, max_width=150)
-                            folium.CircleMarker([row["latitude"], row["longitude"]], radius=5, color="darkred", fill=True, fill_color="red", fill_opacity=0.8, popup=popup).add_to(m_ctx)
+                            mun = row.get(Config.MUNICIPALITY_COL, "N/A")
+                            alt = row.get(Config.ALTITUDE_COL, "N/A")
+
+                            html = f"""<div style='font-family:sans-serif;font-size:13px;min-width:180px'><h5 style='margin:0; color:#c0392b; border-bottom:1px solid #ccc; padding-bottom:4px'>{nm}</h5><div style="margin-top:5px;"><b>Mun:</b> {mun}<br><b>Alt:</b> {alt} m</div><div style='background-color:#f8f9fa; padding:5px; margin-top:5px; border-radius:4px'><b>Ppt Media:</b> {val:,.0f} mm<br><b>Años Datos:</b> {n_y}</div></div>"""
+                            iframe = folium.IFrame(html, width=220, height=150)
+                            popup = folium.Popup(iframe, max_width=220)
+                            folium.CircleMarker([row["latitude"], row["longitude"]], radius=6, color="darkred", fill=True, fill_color="red", fill_opacity=0.9, popup=popup, tooltip=f"{nm} ({val:.0f} mm)").add_to(m_ctx)
 
                     LocateControl(auto_start=False).add_to(m_ctx)
                     st_folium(m_ctx, height=500, width="100%")
+
+                    with st.expander("ℹ️ Nota del Mapa de Contexto"):
+                        st.write("Muestra la cuenca seleccionada (azul), el área de influencia de búsqueda (gris punteado) y las estaciones utilizadas para el análisis (puntos rojos). Haga clic en los puntos para ver detalles.")
                     
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
