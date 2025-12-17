@@ -5147,6 +5147,174 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
         fig.update_layout(title=f"Umbrales Mensuales - {selected_station}", height=450)
         st.plotly_chart(fig)
 
+# --- TAB 2: ÍNDICE DE VULNERABILIDAD CLIMÁTICA (NUEVO) ---
+    with tabs[1]:
+        st.markdown("#### 🗺️ Índice de Vulnerabilidad a la Variabilidad Climática (IVC)")
+        st.markdown("""
+        Esta herramienta identifica zonas críticas aplicando álgebra de mapas sobre variables hidroclimatológicas.
+        
+        **Metodología:**
+        1.  **$IT$ (Índice de Temperatura):** Zonas más cálidas son más vulnerables.
+        2.  **$IESD$ (Índice de Escorrentía):** Zonas con menor oferta hídrica (P - ETR) son más vulnerables.
+        3.  **$IVC$:** Promedio ponderado que clasifica el territorio de 0 (Seguro) a 100 (Crítico).
+        """)
+
+        # Configuración
+        c1, c2 = st.columns(2)
+        year_range = c1.slider("Periodo de Análisis:", 1980, 2025, (2000, 2020), key="ivc_range")
+        res_grid = c2.select_slider("Resolución del Mapa:", options=["Baja (Rápida)", "Media", "Alta (Lenta)"], value="Media")
+        
+        grid_density = 50j if res_grid == "Baja (Rápida)" else 80j if res_grid == "Media" else 120j
+
+        if st.button("⚡ Calcular Mapa de Vulnerabilidad"):
+            with st.spinner("Generando superficies de Temperatura y Escorrentía..."):
+                # A. PREPARACIÓN DE DATOS
+                # Filtramos por fecha
+                mask = (df_long[Config.YEAR_COL] >= year_range[0]) & (df_long[Config.YEAR_COL] <= year_range[1])
+                df_filtered = df_long[mask]
+                
+                # Calculamos P promedio por estación
+                df_p = df_filtered.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index()
+                
+                # Unimos con geometría para tener lat/lon/alt
+                df_map = pd.merge(df_p, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude", "altitude"])
+
+                if len(df_map) < 4:
+                    st.error("No hay suficientes estaciones con datos de altitud para interpolar.")
+                    return
+
+                # B. INTERPOLACIÓN ESPACIAL (ÁLGEBRA DE MAPAS)
+                # 1. Crear Malla
+                minx, miny = df_map.longitude.min(), df_map.latitude.min()
+                maxx, maxy = df_map.longitude.max(), df_map.latitude.max()
+                gx, gy = np.mgrid[minx:maxx:grid_density, miny:maxy:grid_density]
+
+                points = df_map[["longitude", "latitude"]].values
+                
+                # 2. Interpolación de PRECIPITACIÓN (P)
+                values_p = df_map[Config.PRECIPITATION_COL].values
+                grid_p = griddata(points, values_p, (gx, gy), method='linear')
+
+                # 3. Interpolación de ALTITUD (para derivar Temperatura)
+                values_alt = df_map["altitude"].values
+                grid_alt = griddata(points, values_alt, (gx, gy), method='linear')
+
+                # C. CÁLCULO DE VARIABLES CLIMÁTICAS (MATRICIAL)
+                # Temperatura (T) = 28 - 0.006 * Altura
+                grid_t = 28 - (0.006 * grid_alt)
+                grid_t = np.maximum(grid_t, 0) # Evitar temperaturas negativas ilógicas en este contexto
+
+                # Evapotranspiración (ETR) y Escorrentía (ESD) usando Turc
+                # Vectorizamos la fórmula de Turc para que funcione con matrices numpy
+                def turc_matrix(p_grid, t_grid):
+                    # L(t) = 300 + 25*t + 0.05*t^3
+                    l_t = 300 + (25 * t_grid) + (0.05 * t_grid**3)
+                    # E = P / sqrt(0.9 + (P/L)^2)
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        et_grid = p_grid / np.sqrt(0.9 + (p_grid / l_t)**2)
+                    
+                    # Corrección: ETR no puede ser mayor que P
+                    et_grid = np.minimum(et_grid, p_grid)
+                    return et_grid
+
+                grid_etr = turc_matrix(grid_p, grid_t)
+                grid_esd = grid_p - grid_etr  # Escorrentía Superficial Directa
+                grid_esd = np.maximum(grid_esd, 0) # Evitar negativos
+
+                # D. CÁLCULO DE ÍNDICES DE VULNERABILIDAD
+                # 1. Índice de Temperatura (IT): Mayor T = Mayor Vulnerabilidad (0-100)
+                # IT = 100 * (T / Tmax)
+                t_max = np.nanmax(grid_t)
+                grid_it = 100 * (grid_t / t_max)
+
+                # 2. Índice de Escorrentía (IESD): Menor ESD = Mayor Vulnerabilidad (0-100)
+                # IESD = 100 * (1 - ESD/ESDmax) -> O fórmula del usuario: 100*(ESDmax - ESD)/ESDmax
+                esd_max = np.nanmax(grid_esd)
+                # Evitar división por cero
+                if esd_max == 0: esd_max = 1 
+                grid_iesd = 100 * ((esd_max - grid_esd) / esd_max)
+
+                # 3. Índice de Vulnerabilidad Climática (IVC)
+                # IVC = Promedio(IT + IESD)
+                grid_ivc = (grid_it + grid_iesd) / 2
+
+                # E. VISUALIZACIÓN
+                st.success("✅ Modelación completada. Visualizando resultados.")
+
+                # Selector de Capa a Visualizar
+                layer_opt = st.radio("Seleccionar Variable:", ["IVC (Vulnerabilidad Final)", "Índice Temperatura (IT)", "Índice Escorrentía (IESD)", "Escorrentía Pura (mm)"], horizontal=True)
+
+                if layer_opt == "IVC (Vulnerabilidad Final)":
+                    z_data = grid_ivc
+                    title = "Índice de Vulnerabilidad Climática (IVC)"
+                    # Escala: Verde (Bajo) -> Amarillo -> Rojo (Crítico)
+                    colors = "RdYlGn_r" # Reversed: Red is High (100), Green is Low (0)
+                    z_min, z_max = 0, 100
+                elif layer_opt == "Índice Temperatura (IT)":
+                    z_data = grid_it
+                    title = "Índice de Temperatura (IT)"
+                    colors = "OrRd"
+                    z_min, z_max = 0, 100
+                elif layer_opt == "Índice Escorrentía (IESD)":
+                    z_data = grid_iesd
+                    title = "Índice de Déficit de Escorrentía (IESD)"
+                    colors = "YlOrRd"
+                    z_min, z_max = 0, 100
+                else:
+                    z_data = grid_esd
+                    title = "Oferta Hídrica Superficial (ESD mm/año)"
+                    colors = "Blues" # Aquí Azul es bueno (alto)
+                    z_min, z_max = 0, np.nanmax(grid_esd)
+
+                # Mapa Plotly
+                fig = go.Figure(data=go.Contour(
+                    z=z_data.T,
+                    x=gx[:, 0],
+                    y=gy[0, :],
+                    colorscale=colors,
+                    colorbar=dict(title="Valor"),
+                    zmin=z_min, zmax=z_max,
+                    contours=dict(start=z_min, end=z_max, size=(z_max-z_min)/20)
+                ))
+
+                # Añadir puntos de referencia (Bocatomas simuladas con estaciones)
+                fig.add_trace(go.Scatter(
+                    x=df_map.longitude,
+                    y=df_map.latitude,
+                    mode='markers',
+                    marker=dict(color='black', size=5, opacity=0.5),
+                    name='Estaciones / Puntos Control'
+                ))
+
+                fig.update_layout(
+                    title=f"Mapa de {title}",
+                    xaxis_title="Longitud",
+                    yaxis_title="Latitud",
+                    height=600
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+                # F. INTERPRETACIÓN Y RIESGO
+                with st.expander("ℹ️ Interpretación del Riesgo (IRD)", expanded=True):
+                    c_info1, c_info2 = st.columns(2)
+                    with c_info1:
+                        st.markdown("**Clasificación IVC:**")
+                        st.markdown("""
+                        - 🟢 **0 - 40:** Vulnerabilidad Baja
+                        - 🟡 **40 - 70:** Vulnerabilidad Media
+                        - 🟠 **70 - 90:** Vulnerabilidad Alta
+                        - 🔴 **90 - 100:** Vulnerabilidad Crítica (Déficit Hídrico Severo)
+                        """)
+                    with c_info2:
+                        st.markdown("**Índice de Riesgo (IRD):**")
+                        st.write("El riesgo se materializa donde un **IVC Alto** coincide con una **Bocatoma (BC)**.")
+                        st.latex(r"IRD \approx IVC \cap BC_{x,y}")
+                        st.caption("Si tiene cargada la capa de Bocatomas, los puntos negros sobre zonas rojas representan Riesgo Crítico de Desabastecimiento.")
+
+                # G. DESCARGA
+                # (Opcional: Reusar tu función create_zipped_shapefile si quieres descargar esto como raster/vector)
+
 
 # FUNCIÓN CLIMA FUTURO (MAPA RIESGO MEJORADO + SIMULADOR)
 # ==============================================================================
