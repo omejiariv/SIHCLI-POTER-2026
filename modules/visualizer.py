@@ -1249,6 +1249,9 @@ def display_spatial_distribution_tab(
     df_anual_melted, df_monthly_filtered, analysis_mode, selected_regions,
     selected_municipios, selected_months, year_range, start_date, end_date, **kwargs
 ):
+    # Importación necesaria para evitar el bloqueo del mapa
+    from folium.plugins import MarkerCluster
+
     # Inicializar estado
     if "selected_point" not in st.session_state:
         st.session_state.selected_point = None
@@ -1299,67 +1302,60 @@ def display_spatial_distribution_tab(
         plugins.Fullscreen(position='topright').add_to(m)
         plugins.Geocoder(position='topright').add_to(m)
 
-        # Capas Vectoriales
+        # Capas Vectoriales (Optimizadas)
         if gdf_municipios is not None and not gdf_municipios.empty:
-            fg_munis = folium.FeatureGroup(name="Municipios", show=False)
             folium.GeoJson(
                 gdf_municipios,
+                name="Municipios",
                 style_function=lambda x: {'fillColor': '#ffff00', 'color': 'gray', 'weight': 1, 'fillOpacity': 0.1},
                 tooltip="Municipio"
-            ).add_to(fg_munis)
-            fg_munis.add_to(m)
+            ).add_to(m)
 
         if gdf_subcuencas is not None and not gdf_subcuencas.empty:
-            fg_cuencas = folium.FeatureGroup(name="Subcuencas", show=False)
             folium.GeoJson(
                 gdf_subcuencas,
+                name="Subcuencas",
                 style_function=lambda x: {'color': 'blue', 'weight': 2, 'fillOpacity': 0},
                 tooltip="Subcuenca"
-            ).add_to(fg_cuencas)
-            fg_cuencas.add_to(m)
+            ).add_to(m)
             
         if gdf_predios is not None and not gdf_predios.empty:
-            fg_predios = folium.FeatureGroup(name="Predios", show=False)
             folium.GeoJson(
                 gdf_predios,
+                name="Predios",
                 style_function=lambda x: {'color': 'red', 'weight': 2, 'fillOpacity': 0.2},
                 tooltip="Predio"
-            ).add_to(fg_predios)
-            fg_predios.add_to(m)
+            ).add_to(m)
 
-        # Estaciones con POPUPS HTML INTEGRADOS
-        # --- BLOQUE CORREGIDO: CÁLCULO DE ESTADÍSTICAS REALES ---
-        
-        fg_estaciones = folium.FeatureGroup(name="Estaciones", show=True)
+        # -----------------------------------------------------------
+        # SOLUCIÓN AL BLOQUEO: MARKER CLUSTER
+        # Agrupamos los marcadores para no saturar el navegador
+        # -----------------------------------------------------------
+        marker_cluster = MarkerCluster(name="Estaciones (Agrupadas)").add_to(m)
 
-        # 1. PRE-CÁLCULO DE ESTADÍSTICAS (La solución a los N/A)
-        # En lugar de buscar columnas que no existen, calculamos los datos usando el historial.
+        # 1. PRE-CÁLCULO DE ESTADÍSTICAS
         stats_cache = {}
         if not df_long.empty:
             try:
-                # Detectar columna de código en df_long (usualmente 'Codigo' o 'id_estacion')
+                # Detectar columna de código
                 col_cod_long = next((c for c in ['Codigo', 'CODIGO', 'id_estacion', 'station_code'] if c in df_long.columns), df_long.columns[0])
                 
-                # Agrupamos por estación
+                # Agrupamos por estación (Optimizado)
                 grp = df_long.groupby(col_cod_long)[Config.PRECIPITATION_COL]
-                
-                # Calculamos media y conteo de registros
                 medias = grp.mean()
                 conteos = grp.count()
                 
-                # Guardamos en un diccionario para acceso rápido
                 for cod_stat, val_media in medias.items():
-                    anios = conteos[cod_stat] / 12  # Aprox meses a años
+                    anios = conteos[cod_stat] / 12
                     stats_cache[str(cod_stat)] = {
                         'media': f"{val_media:.1f} mm/mes",
                         'hist': f"{anios:.1f} años"
                     }
             except Exception as e:
-                print(f"No se pudieron calcular estadísticas: {e}")
+                print(f"Nota: Estadísticas básicas no calculadas: {e}")
 
-        # 2. FUNCIÓN DE BÚSQUEDA FLEXIBLE (Para encontrar la Subcuenca)
+        # 2. FUNCIÓN DE BÚSQUEDA FLEXIBLE
         def get_fuzzy_col(row, aliases, default="N/A"):
-            # Busca columnas que contengan partes de los alias (ej: 'SZH' encuentra 'COD_SZH')
             row_cols_lower = {c.lower(): c for c in row.index}
             for alias in aliases:
                 for col_lower, col_real in row_cols_lower.items():
@@ -1368,28 +1364,21 @@ def display_spatial_distribution_tab(
                         return str(val) if pd.notna(val) else default
             return default
 
+        # BUCLE DE ESTACIONES (Ahora añadiendo al Cluster)
         if not gdf_filtered.empty:
             for _, row in gdf_filtered.iterrows():
                 try:
-                    # --- A. DATOS DE IDENTIFICACIÓN ---
-                    # Usamos Config para lo seguro
+                    # Datos básicos
                     nom = str(row[Config.STATION_NAME_COL])
                     mun = str(row.get(Config.MUNICIPALITY_COL, 'Desconocido'))
                     alt = str(row.get(Config.ALTITUDE_COL, 0))
                     
-                    # Identificar ID (Buscamos 'codigo', 'id', etc.)
+                    # ID y Subcuenca
                     cod = get_fuzzy_col(row, ['codigo', 'id', 'serial', 'cod'], 'Sin ID')
-                    
-                    # --- B. DATOS FALTANTES (SOLUCIÓN) ---
-                    
-                    # 1. Subcuenca: Buscamos variaciones comunes en shapefiles
                     cue = get_fuzzy_col(row, ['subcuenca', 'cuenca', 'szh', 'vertiente', 'micro', 'zona'], 'N/A')
                     
-                    # 2. Estadísticas: Sacadas del cálculo real, no de columnas vacías
-                    # Buscamos el código en nuestro diccionario calculado arriba
+                    # Estadísticas desde cache
                     stat_data = stats_cache.get(cod, {'media': 'N/A', 'hist': 'N/A'})
-                    
-                    # Si falló por formato (int vs str), intentamos convertir
                     if stat_data['media'] == 'N/A':
                         try: stat_data = stats_cache.get(str(int(float(cod))), {'media': 'N/A', 'hist': 'N/A'})
                         except: pass
@@ -1397,10 +1386,7 @@ def display_spatial_distribution_tab(
                     precip = stat_data['media']
                     anios = stat_data['hist']
 
-                    lat_est = row.geometry.y
-                    lon_est = row.geometry.x
-
-                    # --- C. POPUP HTML (Estilo Conservado) ---
+                    # HTML Popup
                     html_content = f"""
                     <div style="font-family: Arial, sans-serif; width: 260px; font-size: 12px;">
                         <h4 style="margin: 0; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 4px;">{nom}</h4>
@@ -1422,32 +1408,31 @@ def display_spatial_distribution_tab(
                     iframe = folium.IFrame(html_content, width=280, height=240)
                     popup = folium.Popup(iframe, max_width=280)
 
+                    # AÑADIR AL CLUSTER EN VEZ DE AL MAPA DIRECTO
                     folium.Marker(
-                        [lat_est, lon_est],
+                        [row.geometry.y, row.geometry.x],
                         tooltip=f"{nom}",
                         popup=popup,
                         icon=folium.Icon(color="blue", icon="cloud", prefix='fa')
-                    ).add_to(fg_estaciones)
+                    ).add_to(marker_cluster)
                 
-                except Exception as e:
-                    # print(f"Error procesando estación: {e}") 
+                except Exception:
                     continue
-                
-        fg_estaciones.add_to(m)
-
+        
+        # Control de capas
+        folium.LayerControl().add_to(m)
 
         st.markdown("👆 **Haz clic en un marcador para ver detalles o en cualquier punto del mapa para ver el pronóstico.**")
         
-        # Renderizar mapa con st_folium
+        # Renderizar mapa
         map_output = st_folium(m, width=None, height=600, returned_objects=["last_clicked"])
 
-        # Lógica de Clic (Solo si se hizo clic en el mapa, no en un marcador)
+        # Lógica de Clic
         if map_output and map_output.get("last_clicked"):
             coords = map_output["last_clicked"]
-            # Actualizamos el punto seleccionado para análisis puntual
             st.session_state.selected_point = {"lat": coords["lat"], "lng": coords["lng"]}
 
-        # 3. DASHBOARD DE PRONÓSTICO (AQUÍ ESTÁ LA MAGIA RECUPERADA)
+        # 3. DASHBOARD DE PRONÓSTICO
         if st.session_state.selected_point:
             lat = float(st.session_state.selected_point["lat"])
             lng = float(st.session_state.selected_point["lng"])
@@ -1455,12 +1440,18 @@ def display_spatial_distribution_tab(
             st.markdown("---")
             st.subheader(f"📍 Análisis Puntual: {lat:.4f}, {lng:.4f}")
             
-            if get_weather_forecast_detailed:
+            # Verificación segura de la función externa
+            if 'get_weather_forecast_detailed' in globals() or callable(kwargs.get('get_weather_forecast_detailed')):
+                func_forecast = kwargs.get('get_weather_forecast_detailed') or globals().get('get_weather_forecast_detailed')
+                
                 with st.spinner("Conectando con satélites meteorológicos..."):
-                    fc = get_weather_forecast_detailed(lat, lng)
+                    try:
+                        fc = func_forecast(lat, lng)
+                    except:
+                        fc = None
                     
                     if fc is not None and not fc.empty:
-                        # A. MÉTRICAS COMPLETAS (Inc. Radiación)
+                        # A. MÉTRICAS
                         hoy = fc.iloc[0]
                         m1, m2, m3, m4, m5 = st.columns(5)
                         m1.metric("🌡️ Temp", f"{(hoy['T. Máx (°C)']+hoy['T. Mín (°C)'])/2:.1f}°C")
@@ -1469,7 +1460,7 @@ def display_spatial_distribution_tab(
                         m4.metric("💨 Viento", f"{hoy['Viento Máx (km/h)']} km/h")
                         m5.metric("☀️ Radiación", f"{hoy['Radiación SW (MJ/m²)']} MJ/m²")
                         
-                        # B. GRÁFICOS DETALLADOS
+                        # B. GRÁFICOS
                         with st.expander("📈 Ver Gráficos Detallados (7 Días)", expanded=True):
                             # 1. Temperatura y Lluvia
                             fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -1477,49 +1468,41 @@ def display_spatial_distribution_tab(
                             fig.add_trace(go.Scatter(x=fc['Fecha'], y=fc['T. Máx (°C)'], name="Máx", line=dict(color='red')), secondary_y=False)
                             fig.add_trace(go.Scatter(x=fc['Fecha'], y=fc['T. Mín (°C)'], name="Mín", line=dict(color='cyan'), fill='tonexty'), secondary_y=False)
                             fig.update_layout(title="Temperatura y Precipitación", height=350, hovermode="x unified")
-                            st.plotly_chart(fig)
+                            st.plotly_chart(fig, use_container_width=True)
 
-                            # 2. Atmósfera y Energía (Columnas)
+                            # 2. Atmósfera y Energía
                             c_g1, c_g2 = st.columns(2)
                             
                             with c_g1: # Atmósfera
                                 fig_atm = make_subplots(specs=[[{"secondary_y": True}]])
                                 fig_atm.add_trace(go.Scatter(x=fc["Fecha"], y=fc["HR Media (%)"], name="Humedad %", line=dict(color="teal")), secondary_y=False)
                                 fig_atm.add_trace(go.Scatter(x=fc["Fecha"], y=fc["Presión (hPa)"], name="Presión", line=dict(color="purple", dash="dot")), secondary_y=True)
-                                fig_atm.update_layout(title="Atmósfera (Humedad/Presión)", height=300, hovermode="x unified")
+                                fig_atm.update_layout(title="Atmósfera", height=300, hovermode="x unified")
                                 st.plotly_chart(fig_atm, use_container_width=True)
 
-                            with c_g2: # Energía y Agua
+                            with c_g2: # Energía
                                 fig_nrg = make_subplots(specs=[[{"secondary_y": True}]])
                                 fig_nrg.add_trace(go.Bar(x=fc["Fecha"], y=fc["Radiación SW (MJ/m²)"], name="Radiación", marker_color="orange"), secondary_y=False)
                                 fig_nrg.add_trace(go.Scatter(x=fc["Fecha"], y=fc["ET₀ (mm)"], name="ET₀", line=dict(color="green")), secondary_y=True)
-                                fig_nrg.update_layout(title="Energía y Evapotranspiración", height=300, hovermode="x unified")
+                                fig_nrg.update_layout(title="Energía", height=300, hovermode="x unified")
                                 st.plotly_chart(fig_nrg, use_container_width=True)
 
-                            # 3. Viento
-                            fig_w = px.line(fc, x="Fecha", y="Viento Máx (km/h)", title="Velocidad del Viento (km/h)", markers=True)
-                            fig_w.update_traces(line_color="grey")
-                            fig_w.update_layout(height=250)
-                            st.plotly_chart(fig_w, use_container_width=True)
-
-                        # C. TABLA DE DATOS (RECUPERADA)
-                        with st.expander("📋 Ver Tabla de Datos del Pronóstico", expanded=False):
+                        # C. TABLA
+                        with st.expander("📋 Ver Tabla de Datos", expanded=False):
                             st.dataframe(fc)
-
                     else:
-                        st.warning("⚠️ No se pudo obtener el pronóstico. Verifica tu conexión.")
+                        st.warning("⚠️ No se pudo obtener el pronóstico.")
             else:
-                st.error("❌ Módulo API no disponible.")
+                st.info("El módulo de pronóstico no está vinculado en este contexto.")
 
     # ==========================================
-    # PESTAÑA 2: DISPONIBILIDAD (ACTUALIZADA CON SELECTOR)
+    # PESTAÑA 2: DISPONIBILIDAD
     # ==========================================
     with tab_avail:
         c_title, c_sel = st.columns([2, 1])
         with c_title:
             st.markdown("#### 📊 Inventario y Continuidad de Datos")
         with c_sel:
-            # SELECTOR NUEVO
             data_view_mode = st.radio(
                 "Vista de Datos:",
                 ["Observados (Con huecos)", "Interpolados (Simulación)"],
@@ -1528,67 +1511,36 @@ def display_spatial_distribution_tab(
             )
 
         if df_long is not None and not df_long.empty:
-            # Lógica de Datos según selección
             df_to_plot = df_long.copy()
 
             if data_view_mode == "Interpolados (Simulación)":
-                # Verificamos si ya venían interpolados globalmente o si debemos hacerlo aquí
-                # Si interpolacion global es "Si", df_long ya está lleno. Si es "No", lo llenamos para la vista.
                 if interpolacion == "No":
-                    with st.spinner(
-                        "Simulando relleno de datos (Interpolación IDW/Tiempo)..."
-                    ):
+                    with st.spinner("Simulando relleno de datos..."):
                         try:
                             from modules.data_processor import complete_series
-
                             df_to_plot = complete_series(df_to_plot)
                         except ImportError:
                             st.warning("Módulo de interpolación no disponible.")
                 else:
-                    st.info(
-                        "Los datos ya están interpolados globalmente (Ver panel lateral)."
-                    )
+                    st.info("Los datos ya están interpolados globalmente.")
 
-            # 1. Preparar datos para el Heatmap
             avail = (
                 df_to_plot[df_to_plot[Config.PRECIPITATION_COL].notna()]
-                .groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[
-                    Config.PRECIPITATION_COL
-                ]
+                .groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[Config.PRECIPITATION_COL]
                 .count()
                 .reset_index()
             )
+            avail.rename(columns={Config.PRECIPITATION_COL: "Meses con Datos"}, inplace=True)
 
-            avail.rename(
-                columns={Config.PRECIPITATION_COL: "Meses con Datos"}, inplace=True
-            )
-
-            # Asegurar rango completo
-            all_years = list(
-                range(
-                    int(avail[Config.YEAR_COL].min()),
-                    int(avail[Config.YEAR_COL].max()) + 1,
-                )
-            )
+            all_years = list(range(int(avail[Config.YEAR_COL].min()), int(avail[Config.YEAR_COL].max()) + 1))
             all_stations = avail[Config.STATION_NAME_COL].unique()
 
-            full_idx = pd.MultiIndex.from_product(
-                [all_stations, all_years],
-                names=[Config.STATION_NAME_COL, Config.YEAR_COL],
-            )
-            avail_full = (
-                avail.set_index([Config.STATION_NAME_COL, Config.YEAR_COL])
-                .reindex(full_idx, fill_value=0)
-                .reset_index()
-            )
+            full_idx = pd.MultiIndex.from_product([all_stations, all_years], names=[Config.STATION_NAME_COL, Config.YEAR_COL])
+            avail_full = avail.set_index([Config.STATION_NAME_COL, Config.YEAR_COL]).reindex(full_idx, fill_value=0).reset_index()
 
-            # 2. Gráfico Heatmap
-            title_chart = (
-                "Continuidad de Información (Observada)"
-                if "Observados" in data_view_mode
-                else "Continuidad de Información (Con Relleno)"
-            )
-
+            title_chart = "Continuidad de Información"
+            
+            # FIX: use_container_width deprecation fix
             fig_avail = px.density_heatmap(
                 avail_full,
                 x=Config.YEAR_COL,
@@ -1596,56 +1548,31 @@ def display_spatial_distribution_tab(
                 z="Meses con Datos",
                 nbinsx=len(all_years),
                 nbinsy=len(all_stations),
-                color_continuous_scale=[
-                    (0, "white"),
-                    (0.01, "#ffcccc"),
-                    (0.5, "#ffaa00"),
-                    (1.0, "#006400"),
-                ],
+                color_continuous_scale=[(0, "white"), (0.01, "#ffcccc"), (0.5, "#ffaa00"), (1.0, "#006400")],
                 range_color=[0, 12],
                 title=title_chart,
                 height=max(400, len(all_stations) * 20),
             )
-            fig_avail.update_layout(
-                xaxis_title="Año",
-                yaxis_title="Estación",
-                coloraxis_colorbar=dict(title="Meses"),
-                xaxis=dict(dtick=1),
-                yaxis=dict(dtick=1),
-            )
-            fig_avail.update_traces(ygap=1, xgap=1)
+            fig_avail.update_layout(xaxis_title="Año", yaxis_title="Estación", coloraxis_colorbar=dict(title="Meses"), xaxis=dict(dtick=1), yaxis=dict(dtick=1))
             st.plotly_chart(fig_avail, use_container_width=True)
 
-            # 3. Métricas
+            # Métricas
             c1, c2, c3 = st.columns(3)
             total_months = len(all_years) * 12
             actual_months = avail["Meses con Datos"].sum()
-            completeness = (
-                (actual_months / (len(all_stations) * total_months)) * 100
-                if len(all_stations) > 0
-                else 0
-            )
+            completeness = (actual_months / (len(all_stations) * total_months)) * 100 if len(all_stations) > 0 else 0
 
             c1.metric("Total Estaciones", len(all_stations))
             c2.metric("Rango de Años", f"{min(all_years)} - {max(all_years)}")
             c3.metric("Completitud Global", f"{completeness:.1f}%")
 
-            # 4. Tabla
             with st.expander("Ver Tabla de Disponibilidad", expanded=False):
-                pivot_avail = avail_full.pivot(
-                    index=Config.STATION_NAME_COL,
-                    columns=Config.YEAR_COL,
-                    values="Meses con Datos",
-                )
-                st.dataframe(
-                    pivot_avail.style.background_gradient(
-                        cmap="Greens", vmin=0, vmax=12
-                    ).format("{:.0f}"),
-                )
+                pivot_avail = avail_full.pivot(index=Config.STATION_NAME_COL, columns=Config.YEAR_COL, values="Meses con Datos")
+                st.dataframe(pivot_avail.style.background_gradient(cmap="Greens", vmin=0, vmax=12).format("{:.0f}"))
         else:
             st.warning("No hay datos cargados.")
 
-# --- PESTAÑA 3: SERIES ANUALES ---
+    # --- PESTAÑA 3: SERIES ANUALES ---
     with tab_series:
         st.markdown("##### 📈 Series Históricas")
         if df_anual_melted is not None and not df_anual_melted.empty:
@@ -1656,7 +1583,7 @@ def display_spatial_distribution_tab(
                 color=Config.STATION_NAME_COL,
                 title="Precipitación Anual por Estación"
             )
-            st.plotly_chart(fig)
+            st.plotly_chart(fig, use_container_width=True)
             
             with st.expander("Ver Datos en Tabla"):
                 pivot_anual = df_anual_melted.pivot(
@@ -1666,7 +1593,7 @@ def display_spatial_distribution_tab(
                 )
                 st.dataframe(pivot_anual)
         else:
-            st.warning("No hay datos suficientes para graficar series.")
+            st.warning("No hay datos suficientes para graficar.")
 
 
 def display_graphs_tab(
