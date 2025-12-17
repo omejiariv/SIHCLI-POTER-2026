@@ -1,7 +1,6 @@
 import os
 from math import cos, radians
 
-
 import tempfile
 import zipfile
 import shutil
@@ -12,6 +11,7 @@ import pandas as pd
 import base64
 import plotly.express as px
 import plotly.graph_objects as go
+import matplotlib
 import matplotlib.pyplot as plt
 import branca.colormap as cm
 from rasterio.transform import array_bounds
@@ -2366,16 +2366,12 @@ def display_satellite_imagery_tab(gdf_filtered):
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
     Versión Optimizada: Interpolación Regional + Análisis de Cuenca.
-    Incluye simplificación geométrica para mejorar velocidad de carga.
+    Incluye simplificación geométrica y backend 'Agg' para estabilidad.
     """
-    import plotly.graph_objects as go
-    from scipy.interpolate import Rbf, griddata
-    import numpy as np
-    from streamlit_folium import st_folium
-    import folium
-    from folium.plugins import LocateControl
-    import geopandas as gpd
     
+    # Configuración de Matplotlib para servidores web (Crucial para estabilidad)
+    matplotlib.use('Agg')
+
     # 1. Configuración de Meses y Título
     selected_months = kwargs.get("selected_months", [])
     titulo_meses = ""
@@ -2394,16 +2390,15 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     )
 
     # 3. Obtener ubicación del usuario
-    # Intentamos obtenerla de kwargs o usar un default para evitar errores
     user_loc = kwargs.get("user_loc", None)
 
-    # --- HELPER INTERPOLACIÓN ---
+    # --- HELPER INTERPOLACIÓN (OPTIMIZADO) ---
     def run_interp(df_puntos, metodo, bounds_box):
         try:
-            # Reducimos resolución de malla a 75j para ganar velocidad (antes 100j)
+            # OPTIMIZACIÓN: 60j es suficiente para web y mucho más rápido que 75j o 100j
             gx, gy = np.mgrid[
-                bounds_box[0] : bounds_box[1] : 75j,
-                bounds_box[2] : bounds_box[3] : 75j,
+                bounds_box[0] : bounds_box[1] : 60j,
+                bounds_box[2] : bounds_box[3] : 60j,
             ]
             df_unique = df_puntos.drop_duplicates(subset=["longitude", "latitude"])
             pts = df_unique[["longitude", "latitude"]].values
@@ -2426,48 +2421,48 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     def calcular_promedios_reales(df_datos):
         if df_datos.empty:
             return pd.DataFrame()
-        conteo = (
-            df_datos[df_datos[Config.PRECIPITATION_COL] >= 0]
-            .groupby([Config.STATION_NAME_COL, Config.YEAR_COL])
-            .size()
-        )
-        # Filtro suave: al menos 5 años para que no sea tan estricto en zonas con pocos datos
+        
+        # Agrupación optimizada
+        df_valid = df_datos[df_datos[Config.PRECIPITATION_COL] >= 0]
+        conteo = df_valid.groupby([Config.STATION_NAME_COL, Config.YEAR_COL]).size()
+        
+        # Filtro: Al menos 5 años de datos para considerar la estación
         anos_validos = conteo[conteo >= 5].index
+        
         df_filtrado = (
             df_datos.set_index([Config.STATION_NAME_COL, Config.YEAR_COL])
             .loc[anos_validos]
             .reset_index()
         )
+        
+        # Suma anual y luego promedio multianual
         suma_anual = (
-            df_filtrado.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[
-                Config.PRECIPITATION_COL
-            ]
+            df_filtrado.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[Config.PRECIPITATION_COL]
             .sum()
             .reset_index()
         )
+        
         return (
             suma_anual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL]
             .mean()
             .reset_index()
         )
 
-    # --- HELPER: VECTORIZAR ISOYETAS ---
+    # --- HELPER: VECTORIZAR ISOYETAS (ROBUSTO) ---
     def generate_isohyets_gdf(gx, gy, gz, levels=10, crs="EPSG:4326"):
         """Convierte la matriz numpy en líneas vectoriales (GeoDataFrame)."""
         try:
-            # Usamos matplotlib para calcular los contornos matemáticos
+            # Crear figura sin mostrarla (backend Agg)
             fig, ax = plt.subplots()
             contour = ax.contour(gx, gy, gz, levels=levels)
-            plt.close(fig) # Cerramos para no mostrar en streamlit
+            plt.close(fig) # Liberar memoria inmediatamente
 
             lines = []
             values = []
 
             for collection in contour.collections:
                 paths = collection.get_paths()
-                level_val = collection.get_label() # O obtenemos el valor del nivel
-                # Hack para obtener el valor z del nivel (matplotlib a veces lo esconde)
-                # Iteramos por niveles conocidos si es necesario, pero intentemos extraerlo:
+                # Intentar obtener valor Z de forma segura
                 try:
                     z_val = collection.level
                 except:
@@ -2484,7 +2479,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             gdf_iso = gpd.GeoDataFrame({"precip_mm": values, "geometry": lines}, crs=crs)
             return gdf_iso
         except Exception as e:
-            print(f"Error vectorizando: {e}")
+            # print(f"Error vectorizando: {e}") 
             return None
 
     # --- HELPER: ZIP SHAPEFILE ---
@@ -2494,7 +2489,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             path = os.path.join(tmpdir, f"{filename_base}.shp")
             gdf.to_file(path, driver="ESRI Shapefile")
             
-            # Comprimir
             base_zip = os.path.join(tmpdir, filename_base)
             shutil.make_archive(base_zip, 'zip', tmpdir)
             
@@ -2512,15 +2506,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         with c1:
             st.markdown("###### Periodo 1 (Referencia)")
             r1 = st.slider("Rango P1:", 1980, 2024, (1990, 2000), key="r1")
-            m1 = st.selectbox(
-                "Método P1:", ["Kriging (RBF)", "IDW (Lineal)", "Spline"], key="m1"
-            )
+            m1 = st.selectbox("Método P1:", ["Kriging (RBF)", "IDW (Lineal)", "Spline"], key="m1")
         with c2:
             st.markdown("###### Periodo 2 (Reciente)")
             r2 = st.slider("Rango P2:", 1980, 2024, (2010, 2020), key="r2")
-            m2 = st.selectbox(
-                "Método P2:", ["Kriging (RBF)", "IDW (Lineal)", "Spline"], key="m2"
-            )
+            m2 = st.selectbox("Método P2:", ["Kriging (RBF)", "IDW (Lineal)", "Spline"], key="m2")
 
         # Botón de cálculo con PERSISTENCIA
         if st.button("🚀 Generar Comparación"):
@@ -2530,11 +2520,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         if st.session_state.get("regional_done"):
             p = st.session_state["reg_params"]
 
-            # Función interna plot_panel corregida (Recibe u_loc)
+            # Función interna plot_panel corregida
             def plot_panel(rng, meth, col, tag, u_loc):
-                mask = (df_long[Config.YEAR_COL] >= rng[0]) & (
-                    df_long[Config.YEAR_COL] <= rng[1]
-                )
+                mask = (df_long[Config.YEAR_COL] >= rng[0]) & (df_long[Config.YEAR_COL] <= rng[1])
                 df_sub = df_long[mask]
                 df_avg = calcular_promedios_reales(df_sub)
 
@@ -2542,13 +2530,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     col.warning(f"Sin datos válidos para {rng}")
                     return
 
-                # Merge con estaciones (Asegurando índice correcto)
                 if Config.STATION_NAME_COL not in df_avg.columns:
                     df_avg = df_avg.reset_index()
 
-                df_m = pd.merge(
-                    df_avg, gdf_stations, on=Config.STATION_NAME_COL
-                ).dropna(subset=["latitude", "longitude"])
+                df_m = pd.merge(df_avg, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
 
                 if len(df_m) > 2:
                     bounds = [
@@ -2578,21 +2563,14 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                 x=df_m.longitude,
                                 y=df_m.latitude,
                                 mode="markers",
-                                marker=dict(
-                                    color="black",
-                                    size=7,
-                                    line=dict(width=1, color="white"),
-                                ),
-                                text=df_m.apply(
-                                    lambda x: f"<b>{x[Config.STATION_NAME_COL]}</b><br>Ppt: {x[Config.PRECIPITATION_COL]:.0f} mm",
-                                    axis=1,
-                                ),
+                                marker=dict(color="black", size=7, line=dict(width=1, color="white")),
+                                text=df_m.apply(lambda x: f"<b>{x[Config.STATION_NAME_COL]}</b><br>Ppt: {x[Config.PRECIPITATION_COL]:.0f} mm", axis=1),
                                 hoverinfo="text",
                                 showlegend=False,
                             )
                         )
 
-                        # --- CAPA USUARIO (CORREGIDO) ---
+                        # Capa Usuario
                         if u_loc:
                             fig.add_trace(
                                 go.Scatter(
@@ -2613,9 +2591,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         col.plotly_chart(fig, use_container_width=True)
 
                         # Mapa Interactivo (Folium) con Popups
-                        with col.expander(
-                            f"🔎 Ver Mapa Interactivo Detallado ({tag})", expanded=True
-                        ):
+                        with col.expander(f"🔎 Ver Mapa Interactivo Detallado ({tag})", expanded=True):
                             col.write("Mapa navegable con detalles por estación.")
                             center_lat = (bounds[2] + bounds[3]) / 2
                             center_lon = (bounds[0] + bounds[1]) / 2
@@ -2628,7 +2604,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             for _, row in df_m.iterrows():
                                 nombre = row[Config.STATION_NAME_COL]
                                 lluvia = row[Config.PRECIPITATION_COL]
-
                                 html = f"<b>{nombre}</b><br>{lluvia:.0f} mm"
                                 folium.CircleMarker(
                                     [row["latitude"], row["longitude"]],
@@ -2640,7 +2615,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                     tooltip=html,
                                 ).add_to(m)
 
-                            # Botón GPS en Folium
                             LocateControl(auto_start=False).add_to(m)
                             st_folium(
                                 m,
@@ -2649,7 +2623,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                 key=f"folium_comp_{tag}",
                             )
 
-            # Llamadas a la función interna pasando user_loc explícitamente
+            # Renderizar paneles
             plot_panel(p["r1"], p["m1"], c1, "A", user_loc)
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
             
