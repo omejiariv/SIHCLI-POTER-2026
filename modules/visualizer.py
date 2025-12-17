@@ -4948,11 +4948,12 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
     ts_ppt = df_station[Config.PRECIPITATION_COL].resample("MS").sum()
 
     # 3. PESTAÑAS DE ANÁLISIS
-    tab1, tab2, tab3 = st.tabs(
+    tab1, tab2, tab3, tab4 = st.tabs(
         [
-            "Índices Estandarizados (SPI/SPEI)",
-            "Frecuencia de Máximos (Gumbel)",
-            "Umbrales Percentiles",
+            "📉 Índices (SPI/SPEI)",
+            "📊 Frecuencia (Gumbel)",
+            "📏 Umbrales",
+            "🔥 Vulnerabilidad (IVC)",
         ]
     )
 
