@@ -4896,9 +4896,19 @@ def display_life_zones_tab(
 
 
 def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
-    st.subheader("🌊 Análisis de Extremos Hidrológicos")
+    """
+    Módulo de Extremos: Incluye Análisis Temporal (Gumbel/SPI) y Espacial (Vulnerabilidad IVC).
+    """
+    import plotly.graph_objects as go
+    import pandas as pd
+    import numpy as np
+    from scipy import stats
+    from scipy.interpolate import griddata
+    from modules.config import Config
+    
+    st.subheader("🌊 Análisis de Extremos y Vulnerabilidad Climática")
     st.info(
-        "Evaluación de eventos extremos: Sequías (Déficit), Inundaciones (Exceso) y Frecuencia (Períodos de Retorno)."
+        "Evaluación integral: Series temporales de extremos (Sequías/Inundaciones) y Mapas de Vulnerabilidad Climática (IVC)."
     )
 
     # Recuperar estaciones filtradas del sidebar
@@ -4908,46 +4918,11 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
         st.warning("No hay datos o estaciones seleccionadas en el panel lateral.")
         return
 
-    # 1. SELECCIÓN DE ESTACIÓN (Sincronizada + Opción Regional)
-    # Creamos la lista de opciones incluyendo la Serie Regional
+    # 1. PREPARACIÓN COMÚN
+    # Lista de opciones incluyendo la Serie Regional
     options = ["Serie Regional (Promedio)"] + sorted(stations_filtered)
 
-    selected_station = st.selectbox(
-        "Seleccionar Estación para Análisis:", options, key="extremes_station_sel"
-    )
-
-    # 2. PREPARACIÓN DE DATOS (Corregido el error de sort_values)
-    if selected_station == "Serie Regional (Promedio)":
-        # Filtrar df_long solo para las estaciones seleccionadas
-        df_subset = df_long[df_long[Config.STATION_NAME_COL].isin(stations_filtered)]
-        # Calcular promedio regional por fecha
-        df_station = (
-            df_subset.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL]
-            .mean()
-            .reset_index()
-        )
-        alt = 1500  # Altura promedio genérica para regional
-    else:
-        # Filtrar por estación específica
-        df_station = df_long[
-            df_long[Config.STATION_NAME_COL] == selected_station
-        ].copy()
-        # Obtener altitud
-        try:
-            alt = gdf_stations[
-                gdf_stations[Config.STATION_NAME_COL] == selected_station
-            ].iloc[0][Config.ALTITUDE_COL]
-        except:
-            alt = 1500
-
-    # Asegurar orden cronológico (CORRECCIÓN DEL ERROR)
-    # En lugar de sort_values(Config.DATE_COL), usamos sort_values(by=...) para ser explícitos
-    df_station = df_station.sort_values(by=Config.DATE_COL).set_index(Config.DATE_COL)
-
-    # Resamplear a mensual
-    ts_ppt = df_station[Config.PRECIPITATION_COL].resample("MS").sum()
-
-    # 3. PESTAÑAS DE ANÁLISIS
+    # Tabs Principales
     tab1, tab2, tab3, tab4 = st.tabs(
         [
             "📉 Índices (SPI/SPEI)",
@@ -4957,7 +4932,42 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
         ]
     )
 
-    # --- SUB-PESTAÑA 1: SPI / SPEI ---
+    # ==============================================================================
+    # LÓGICA TEMPORAL (TABS 1, 2, 3) - Requiere selección de estación única
+    # ==============================================================================
+    
+    # Selector de estación (Solo visible/útil para las primeras 3 pestañas)
+    with st.expander("📍 Configuración de Estación (Para SPI, Gumbel y Umbrales)", expanded=True):
+        selected_station = st.selectbox(
+            "Seleccionar Estación:", options, key="extremes_station_sel"
+        )
+
+    # Preparación de datos para la estación seleccionada
+    if selected_station == "Serie Regional (Promedio)":
+        df_subset = df_long[df_long[Config.STATION_NAME_COL].isin(stations_filtered)]
+        df_station = (
+            df_subset.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL]
+            .mean()
+            .reset_index()
+        )
+        alt = 1500  # Altura promedio genérica
+    else:
+        df_station = df_long[
+            df_long[Config.STATION_NAME_COL] == selected_station
+        ].copy()
+        try:
+            alt = gdf_stations[
+                gdf_stations[Config.STATION_NAME_COL] == selected_station
+            ].iloc[0][Config.ALTITUDE_COL]
+        except:
+            alt = 1500
+
+    # Asegurar orden cronológico
+    df_station = df_station.sort_values(by=Config.DATE_COL).set_index(Config.DATE_COL)
+    # Resamplear a mensual para SPI/SPEI
+    ts_ppt = df_station[Config.PRECIPITATION_COL].resample("MS").sum()
+
+    # --- TAB 1: SPI / SPEI ---
     with tab1:
         c1, c2 = st.columns(2)
         idx_type = c1.radio(
@@ -4969,14 +4979,12 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
             series_idx = None
             if "SPI" in idx_type:
                 from modules.analysis import calculate_spi
-
                 series_idx = calculate_spi(ts_ppt, window=scale)
             else:
                 from modules.analysis import calculate_spei
-
                 # Estimar temperatura base si no hay datos reales
                 t_series = pd.Series(
-                    [25 - (0.006 * float(alt))] * len(ts_ppt), index=ts_ppt.index
+                    [28 - (0.006 * float(alt))] * len(ts_ppt), index=ts_ppt.index
                 )
                 series_idx = calculate_spei(ts_ppt, t_series, window=scale)
 
@@ -4993,49 +5001,21 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
                         name=idx_type,
                     )
                 )
-                fig.add_hline(
-                    y=-1.5,
-                    line_dash="dash",
-                    line_color="red",
-                    annotation_text="Sequía Severa",
-                )
-                fig.add_hline(
-                    y=1.5,
-                    line_dash="dash",
-                    line_color="blue",
-                    annotation_text="Humedad Severa",
-                )
-                fig.update_layout(
-                    title=f"Evolución {idx_type}-{scale} ({selected_station})",
-                    height=400,
-                )
-                st.plotly_chart(fig)
-
-                last_val = df_vis["Val"].iloc[-1]
-                lbl = "Normal"
-                if last_val <= -1.5:
-                    lbl = "SEQUÍA"
-                elif last_val >= 1.5:
-                    lbl = "HUMEDAD"
-                st.metric(
-                    f"Estado último mes ({df_vis.index[-1].strftime('%Y-%m')})",
-                    lbl,
-                    f"{last_val:.2f}",
-                )
+                fig.add_hline(y=-1.5, line_dash="dash", line_color="red", annotation_text="Sequía Severa")
+                fig.add_hline(y=1.5, line_dash="dash", line_color="blue", annotation_text="Humedad Severa")
+                fig.update_layout(title=f"Evolución {idx_type}-{scale} ({selected_station})", height=400)
+                st.plotly_chart(fig, use_container_width=True)
             else:
                 st.warning("Datos insuficientes para calcular el índice.")
         except Exception as e:
             st.error(f"Error calculando índice: {e}")
 
-    # --- SUB-PESTAÑA 2: FRECUENCIA (GUMBEL) ---
+    # --- TAB 2: FRECUENCIA (GUMBEL) ---
     with tab2:
         st.markdown("#### Análisis de Frecuencia (Máximos Anuales)")
-
         from modules.analysis import calculate_return_periods
 
-        # Para regional, necesitamos un DF con estructura estándar, ya lo tenemos en df_station (reseteado)
         df_for_gumbel = df_station.reset_index()
-        # Añadir columna dummy de nombre para que la función interna funcione
         df_for_gumbel[Config.STATION_NAME_COL] = selected_station
         df_for_gumbel[Config.YEAR_COL] = df_for_gumbel[Config.DATE_COL].dt.year
 
@@ -5044,9 +5024,7 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
         if res_df is not None:
             c1, c2 = st.columns([1, 2])
             with c1:
-                st.dataframe(
-                    res_df.style.format({"Ppt Máxima Esperada (mm)": "{:.1f}"}),
-                )
+                st.dataframe(res_df.style.format({"Ppt Máxima Esperada (mm)": "{:.1f}"}))
             with c2:
                 annual_max = debug_data["data"]
                 params = debug_data["params"]
@@ -5055,46 +5033,23 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
                 ppt_plot = stats.gumbel_r.ppf(prob_plot, *params)
 
                 fig_freq = go.Figure()
-                fig_freq.add_trace(
-                    go.Scatter(
-                        x=tr_plot,
-                        y=ppt_plot,
-                        mode="lines",
-                        name="Curva Gumbel",
-                        line=dict(color="red"),
-                    )
-                )
-
-                # Puntos observados
+                fig_freq.add_trace(go.Scatter(x=tr_plot, y=ppt_plot, mode="lines", name="Curva Gumbel", line=dict(color="red")))
+                
+                # Puntos observados (Weibull plotting position)
                 sorted_max = np.sort(annual_max.values)
                 n = len(sorted_max)
                 rank = np.arange(1, n + 1)
-                tr_obs = (n + 0.12) / (n + 1 - rank - 0.44)
+                tr_obs = (n + 1) / (n + 1 - rank) # Weibull simple approximation
 
-                fig_freq.add_trace(
-                    go.Scatter(
-                        x=tr_obs,
-                        y=sorted_max,
-                        mode="markers",
-                        name="Observados",
-                        marker=dict(color="black"),
-                    )
-                )
-                fig_freq.update_layout(
-                    xaxis_title="Período de Retorno (Años)",
-                    yaxis_title="Precipitación Máxima (mm)",
-                    xaxis_type="log",
-                    height=400,
-                )
+                fig_freq.add_trace(go.Scatter(x=tr_obs, y=sorted_max, mode="markers", name="Observados", marker=dict(color="black")))
+                fig_freq.update_layout(xaxis_title="Período de Retorno (Años)", yaxis_title="Precipitación Máxima (mm)", xaxis_type="log", height=400)
                 st.plotly_chart(fig_freq, use_container_width=True)
         else:
-            st.warning(
-                "Datos insuficientes para Gumbel (se requieren min. 10 años completos)."
-            )
+            st.warning("Datos insuficientes para Gumbel (min. 10 años).")
 
-    # --- SUB-PESTAÑA 3: PERCENTILES ---
+    # --- TAB 3: PERCENTILES ---
     with tab3:
-        st.markdown("#### Umbrales Climatológicos")
+        st.markdown("#### Umbrales Climatológicos Mensuales")
         c_p1, c_p2 = st.columns(2)
         p_low = c_p1.slider("Percentil Bajo:", 1, 20, 10, key="pl")
         p_high = c_p2.slider("Percentil Alto:", 80, 99, 90, key="ph")
@@ -5106,215 +5061,139 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
             .unstack()
         )
         climatology.columns = ["low", "median", "high"]
-
-        months = [
-            "Ene",
-            "Feb",
-            "Mar",
-            "Abr",
-            "May",
-            "Jun",
-            "Jul",
-            "Ago",
-            "Sep",
-            "Oct",
-            "Nov",
-            "Dic",
-        ]
+        months = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
         fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=months,
-                y=climatology["high"],
-                name=f"P{p_high}",
-                line=dict(color="blue"),
-            )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=months,
-                y=climatology["median"],
-                name="Mediana",
-                line=dict(color="green", dash="dot"),
-            )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=months, y=climatology["low"], name=f"P{p_low}", line=dict(color="red")
-            )
-        )
-
+        fig.add_trace(go.Scatter(x=months, y=climatology["high"], name=f"P{p_high}", line=dict(color="blue")))
+        fig.add_trace(go.Scatter(x=months, y=climatology["median"], name="Mediana", line=dict(color="green", dash="dot")))
+        fig.add_trace(go.Scatter(x=months, y=climatology["low"], name=f"P{p_low}", line=dict(color="red")))
         fig.update_layout(title=f"Umbrales Mensuales - {selected_station}", height=450)
-        st.plotly_chart(fig)
+        st.plotly_chart(fig, use_container_width=True)
 
-# --- TAB 2: ÍNDICE DE VULNERABILIDAD CLIMÁTICA (NUEVO) ---
-    with tabs[1]:
+    # ==============================================================================
+    # TAB 4: VULNERABILIDAD CLIMÁTICA (IVC) - ANÁLISIS ESPACIAL
+    # ==============================================================================
+    with tab4:
         st.markdown("#### 🗺️ Índice de Vulnerabilidad a la Variabilidad Climática (IVC)")
         st.markdown("""
-        Esta herramienta identifica zonas críticas aplicando álgebra de mapas sobre variables hidroclimatológicas.
+        Metodología basada en álgebra de mapas para identificar zonas críticas por déficit hídrico.
         
-        **Metodología:**
-        1.  **$IT$ (Índice de Temperatura):** Zonas más cálidas son más vulnerables.
-        2.  **$IESD$ (Índice de Escorrentía):** Zonas con menor oferta hídrica (P - ETR) son más vulnerables.
-        3.  **$IVC$:** Promedio ponderado que clasifica el territorio de 0 (Seguro) a 100 (Crítico).
+        $$ IVC = \\frac{IT + IESD}{2} $$
+        Donde:
+        * **$IT$ (Temp):** Zonas más cálidas = Más vulnerables.
+        * **$IESD$ (Escorrentía):** Menor oferta hídrica = Más vulnerables.
         """)
 
-        # Configuración
-        c1, c2 = st.columns(2)
-        year_range = c1.slider("Periodo de Análisis:", 1980, 2025, (2000, 2020), key="ivc_range")
-        res_grid = c2.select_slider("Resolución del Mapa:", options=["Baja (Rápida)", "Media", "Alta (Lenta)"], value="Media")
-        
-        grid_density = 50j if res_grid == "Baja (Rápida)" else 80j if res_grid == "Media" else 120j
+        col_ivc1, col_ivc2 = st.columns(2)
+        year_range_ivc = col_ivc1.slider("Periodo Climático:", 1980, 2025, (2000, 2020), key="ivc_slider")
+        res_grid = col_ivc2.select_slider("Resolución:", options=["Baja", "Media", "Alta"], value="Media")
+        grid_density = 50j if res_grid == "Baja" else 80j if res_grid == "Media" else 100j
 
-        if st.button("⚡ Calcular Mapa de Vulnerabilidad"):
-            with st.spinner("Generando superficies de Temperatura y Escorrentía..."):
-                # A. PREPARACIÓN DE DATOS
-                # Filtramos por fecha
-                mask = (df_long[Config.YEAR_COL] >= year_range[0]) & (df_long[Config.YEAR_COL] <= year_range[1])
+        if st.button("⚡ Calcular Mapa de Vulnerabilidad (IVC)"):
+            with st.spinner("Realizando álgebra de mapas (Temperatura vs Escorrentía)..."):
+                # 1. Preparar Datos (Promedios del periodo seleccionado)
+                mask = (df_long[Config.YEAR_COL] >= year_range_ivc[0]) & (df_long[Config.YEAR_COL] <= year_range_ivc[1])
                 df_filtered = df_long[mask]
                 
-                # Calculamos P promedio por estación
+                # Promedio P por estación
                 df_p = df_filtered.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index()
                 
-                # Unimos con geometría para tener lat/lon/alt
-                df_map = pd.merge(df_p, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude", "altitude"])
+                # Unir con geo para tener lat/lon/alt
+                df_map = pd.merge(df_p, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
+                
+                # Asegurar que tenemos altitud (si no está, usar default o interpolar sería ideal, aquí usamos la col del gdf)
+                if Config.ALTITUDE_COL not in df_map.columns:
+                    df_map[Config.ALTITUDE_COL] = 1500 # Fallback si no hay altitud
 
                 if len(df_map) < 4:
-                    st.error("No hay suficientes estaciones con datos de altitud para interpolar.")
-                    return
+                    st.error("Se requieren al menos 4 estaciones con datos para la interpolación espacial.")
+                else:
+                    # 2. Interpolación Espacial
+                    points = df_map[["longitude", "latitude"]].values
+                    values_p = df_map[Config.PRECIPITATION_COL].values
+                    values_alt = df_map[Config.ALTITUDE_COL].values
 
-                # B. INTERPOLACIÓN ESPACIAL (ÁLGEBRA DE MAPAS)
-                # 1. Crear Malla
-                minx, miny = df_map.longitude.min(), df_map.latitude.min()
-                maxx, maxy = df_map.longitude.max(), df_map.latitude.max()
-                gx, gy = np.mgrid[minx:maxx:grid_density, miny:maxy:grid_density]
+                    # Crear Malla
+                    minx, miny = df_map.longitude.min(), df_map.latitude.min()
+                    maxx, maxy = df_map.longitude.max(), df_map.latitude.max()
+                    gx, gy = np.mgrid[minx:maxx:grid_density, miny:maxy:grid_density]
 
-                points = df_map[["longitude", "latitude"]].values
-                
-                # 2. Interpolación de PRECIPITACIÓN (P)
-                values_p = df_map[Config.PRECIPITATION_COL].values
-                grid_p = griddata(points, values_p, (gx, gy), method='linear')
+                    # Interpolar P y Altitud
+                    grid_p = griddata(points, values_p, (gx, gy), method='linear')
+                    grid_alt = griddata(points, values_alt, (gx, gy), method='linear')
 
-                # 3. Interpolación de ALTITUD (para derivar Temperatura)
-                values_alt = df_map["altitude"].values
-                grid_alt = griddata(points, values_alt, (gx, gy), method='linear')
+                    # 3. Álgebra de Mapas (Cálculo de Índices)
+                    
+                    # T = 28 - 0.006 * H (Aprox temperatura media)
+                    grid_t = 28 - (0.006 * grid_alt)
+                    grid_t = np.maximum(grid_t, 0) # No temps negativas para este modelo
 
-                # C. CÁLCULO DE VARIABLES CLIMÁTICAS (MATRICIAL)
-                # Temperatura (T) = 28 - 0.006 * Altura
-                grid_t = 28 - (0.006 * grid_alt)
-                grid_t = np.maximum(grid_t, 0) # Evitar temperaturas negativas ilógicas en este contexto
-
-                # Evapotranspiración (ETR) y Escorrentía (ESD) usando Turc
-                # Vectorizamos la fórmula de Turc para que funcione con matrices numpy
-                def turc_matrix(p_grid, t_grid):
-                    # L(t) = 300 + 25*t + 0.05*t^3
-                    l_t = 300 + (25 * t_grid) + (0.05 * t_grid**3)
+                    # ETR (Turc)
+                    # L(t) = 300 + 25t + 0.05t^3
+                    l_t = 300 + (25 * grid_t) + (0.05 * grid_t**3)
                     # E = P / sqrt(0.9 + (P/L)^2)
                     with np.errstate(divide='ignore', invalid='ignore'):
-                        et_grid = p_grid / np.sqrt(0.9 + (p_grid / l_t)**2)
+                        grid_etr = grid_p / np.sqrt(0.9 + (grid_p / l_t)**2)
+                    grid_etr = np.minimum(grid_etr, grid_p) # ETR no puede superar P
                     
-                    # Corrección: ETR no puede ser mayor que P
-                    et_grid = np.minimum(et_grid, p_grid)
-                    return et_grid
+                    # ESD (Escorrentía) = P - ETR
+                    grid_esd = grid_p - grid_etr
+                    
+                    # --- NORMALIZACIÓN (ÍNDICES 0-100) ---
+                    
+                    # IT (Índice Temperatura): Mayor T = Mayor Riesgo (100)
+                    t_max = np.nanmax(grid_t)
+                    grid_it = 100 * (grid_t / t_max)
+                    
+                    # IESD (Índice Escorrentía): Menor ESD = Mayor Riesgo (100)
+                    esd_max = np.nanmax(grid_esd)
+                    if esd_max == 0: esd_max = 1
+                    # IESD = 100 * (1 - ESD/ESDmax) -> Invierte la escala
+                    grid_iesd = 100 * ((esd_max - grid_esd) / esd_max)
+                    
+                    # IVC (Índice Vulnerabilidad Climática)
+                    grid_ivc = (grid_it + grid_iesd) / 2
 
-                grid_etr = turc_matrix(grid_p, grid_t)
-                grid_esd = grid_p - grid_etr  # Escorrentía Superficial Directa
-                grid_esd = np.maximum(grid_esd, 0) # Evitar negativos
+                    # 4. Visualización
+                    # Selector de capa
+                    layer = st.radio("Capa a visualizar:", 
+                                     ["IVC (Vulnerabilidad Final)", "IT (Temperatura)", "IESD (Déficit Hídrico)"],
+                                     horizontal=True)
+                    
+                    if "IVC" in layer:
+                        z_data, title, colors = grid_ivc, "Índice de Vulnerabilidad (IVC)", "RdYlGn_r" # Rojo=Alto(Malo)
+                    elif "IT" in layer:
+                        z_data, title, colors = grid_it, "Índice de Temperatura (IT)", "OrRd"
+                    else:
+                        z_data, title, colors = grid_iesd, "Índice de Déficit de Escorrentía (IESD)", "YlOrRd"
 
-                # D. CÁLCULO DE ÍNDICES DE VULNERABILIDAD
-                # 1. Índice de Temperatura (IT): Mayor T = Mayor Vulnerabilidad (0-100)
-                # IT = 100 * (T / Tmax)
-                t_max = np.nanmax(grid_t)
-                grid_it = 100 * (grid_t / t_max)
+                    fig_map = go.Figure(data=go.Contour(
+                        z=z_data.T,
+                        x=gx[:, 0],
+                        y=gy[0, :],
+                        colorscale=colors,
+                        colorbar=dict(title="Índice (0-100)"),
+                        contours=dict(start=0, end=100, size=5),
+                        zmin=0, zmax=100
+                    ))
+                    
+                    # Estaciones como referencia
+                    fig_map.add_trace(go.Scatter(
+                        x=df_map.longitude, y=df_map.latitude, mode='markers',
+                        marker=dict(color='black', size=5), name='Estaciones'
+                    ))
+                    
+                    fig_map.update_layout(title=title, height=550)
+                    st.plotly_chart(fig_map, use_container_width=True)
 
-                # 2. Índice de Escorrentía (IESD): Menor ESD = Mayor Vulnerabilidad (0-100)
-                # IESD = 100 * (1 - ESD/ESDmax) -> O fórmula del usuario: 100*(ESDmax - ESD)/ESDmax
-                esd_max = np.nanmax(grid_esd)
-                # Evitar división por cero
-                if esd_max == 0: esd_max = 1 
-                grid_iesd = 100 * ((esd_max - grid_esd) / esd_max)
-
-                # 3. Índice de Vulnerabilidad Climática (IVC)
-                # IVC = Promedio(IT + IESD)
-                grid_ivc = (grid_it + grid_iesd) / 2
-
-                # E. VISUALIZACIÓN
-                st.success("✅ Modelación completada. Visualizando resultados.")
-
-                # Selector de Capa a Visualizar
-                layer_opt = st.radio("Seleccionar Variable:", ["IVC (Vulnerabilidad Final)", "Índice Temperatura (IT)", "Índice Escorrentía (IESD)", "Escorrentía Pura (mm)"], horizontal=True)
-
-                if layer_opt == "IVC (Vulnerabilidad Final)":
-                    z_data = grid_ivc
-                    title = "Índice de Vulnerabilidad Climática (IVC)"
-                    # Escala: Verde (Bajo) -> Amarillo -> Rojo (Crítico)
-                    colors = "RdYlGn_r" # Reversed: Red is High (100), Green is Low (0)
-                    z_min, z_max = 0, 100
-                elif layer_opt == "Índice Temperatura (IT)":
-                    z_data = grid_it
-                    title = "Índice de Temperatura (IT)"
-                    colors = "OrRd"
-                    z_min, z_max = 0, 100
-                elif layer_opt == "Índice Escorrentía (IESD)":
-                    z_data = grid_iesd
-                    title = "Índice de Déficit de Escorrentía (IESD)"
-                    colors = "YlOrRd"
-                    z_min, z_max = 0, 100
-                else:
-                    z_data = grid_esd
-                    title = "Oferta Hídrica Superficial (ESD mm/año)"
-                    colors = "Blues" # Aquí Azul es bueno (alto)
-                    z_min, z_max = 0, np.nanmax(grid_esd)
-
-                # Mapa Plotly
-                fig = go.Figure(data=go.Contour(
-                    z=z_data.T,
-                    x=gx[:, 0],
-                    y=gy[0, :],
-                    colorscale=colors,
-                    colorbar=dict(title="Valor"),
-                    zmin=z_min, zmax=z_max,
-                    contours=dict(start=z_min, end=z_max, size=(z_max-z_min)/20)
-                ))
-
-                # Añadir puntos de referencia (Bocatomas simuladas con estaciones)
-                fig.add_trace(go.Scatter(
-                    x=df_map.longitude,
-                    y=df_map.latitude,
-                    mode='markers',
-                    marker=dict(color='black', size=5, opacity=0.5),
-                    name='Estaciones / Puntos Control'
-                ))
-
-                fig.update_layout(
-                    title=f"Mapa de {title}",
-                    xaxis_title="Longitud",
-                    yaxis_title="Latitud",
-                    height=600
-                )
-
-                st.plotly_chart(fig, use_container_width=True)
-
-                # F. INTERPRETACIÓN Y RIESGO
-                with st.expander("ℹ️ Interpretación del Riesgo (IRD)", expanded=True):
-                    c_info1, c_info2 = st.columns(2)
-                    with c_info1:
-                        st.markdown("**Clasificación IVC:**")
-                        st.markdown("""
-                        - 🟢 **0 - 40:** Vulnerabilidad Baja
-                        - 🟡 **40 - 70:** Vulnerabilidad Media
-                        - 🟠 **70 - 90:** Vulnerabilidad Alta
-                        - 🔴 **90 - 100:** Vulnerabilidad Crítica (Déficit Hídrico Severo)
-                        """)
-                    with c_info2:
-                        st.markdown("**Índice de Riesgo (IRD):**")
-                        st.write("El riesgo se materializa donde un **IVC Alto** coincide con una **Bocatoma (BC)**.")
-                        st.latex(r"IRD \approx IVC \cap BC_{x,y}")
-                        st.caption("Si tiene cargada la capa de Bocatomas, los puntos negros sobre zonas rojas representan Riesgo Crítico de Desabastecimiento.")
-
-                # G. DESCARGA
-                # (Opcional: Reusar tu función create_zipped_shapefile si quieres descargar esto como raster/vector)
+                    # Explicación Semáforo
+                    st.info("""
+                    **Interpretación del Mapa (Semáforo de Riesgo):**
+                    * 🔴 **Rojo (80-100):** Vulnerabilidad Crítica. Alta temperatura y baja oferta hídrica.
+                    * 🟠 **Naranja (60-80):** Vulnerabilidad Alta.
+                    * 🟡 **Amarillo (40-60):** Vulnerabilidad Media.
+                    * 🟢 **Verde (0-40):** Vulnerabilidad Baja (Zona segura o superávit hídrico).
+                    """)
 
 
 # FUNCIÓN CLIMA FUTURO (MAPA RIESGO MEJORADO + SIMULADOR)
