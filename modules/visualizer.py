@@ -2495,8 +2495,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             with open(f"{base_zip}.zip", "rb") as f:
                 return f.read()
 
-    # ==========================================================================
-    # MODO 1: REGIONAL (COMPARACIÓN)
+# ==========================================================================
+    # MODO 1: REGIONAL (COMPARACIÓN) - CON DESCARGAS
     # ==========================================================================
     if mode == "Regional (Comparación)":
         st.markdown("#### 🆚 Comparación de Periodos Climáticos")
@@ -2520,7 +2520,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         if st.session_state.get("regional_done"):
             p = st.session_state["reg_params"]
 
-            # Función interna plot_panel corregida
+            # Función interna plot_panel corregida y con descargas
             def plot_panel(rng, meth, col, tag, u_loc):
                 mask = (df_long[Config.YEAR_COL] >= rng[0]) & (df_long[Config.YEAR_COL] <= rng[1])
                 df_sub = df_long[mask]
@@ -2545,7 +2545,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     gx, gy, gz = run_interp(df_m, meth, bounds)
 
                     if gz is not None:
-                        # Mapa Plotly (Isoyetas)
+                        # 1. Mapa Plotly (Isoyetas Visuales)
                         fig = go.Figure(
                             go.Contour(
                                 z=gz.T,
@@ -2590,7 +2590,34 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         )
                         col.plotly_chart(fig, use_container_width=True)
 
-                        # Mapa Interactivo (Folium) con Popups
+                        # 2. Generación de Vectores para Descarga
+                        gdf_iso = generate_isohyets_gdf(gx, gy, gz, levels=12, crs=gdf_stations.crs)
+
+                        # 3. Zona de Descargas
+                        if gdf_iso is not None:
+                            with col.expander("💾 Descargar Capas (GIS)"):
+                                # GeoJSON (Rápido)
+                                col.download_button(
+                                    label="🗺️ Descargar GeoJSON",
+                                    data=gdf_iso.to_json(),
+                                    file_name=f"isoyetas_{tag}_{rng[0]}_{rng[1]}.geojson",
+                                    mime="application/json"
+                                )
+                                
+                                # Shapefile (Manual para evitar bloqueos)
+                                if col.button(f"📦 Generar Shapefile ({tag})", key=f"btn_shp_{tag}"):
+                                    try:
+                                        zip_shp = create_zipped_shapefile(gdf_iso, f"isoyetas_{tag}")
+                                        col.download_button(
+                                            label="📥 Descargar ZIP (.shp)",
+                                            data=zip_shp,
+                                            file_name=f"isoyetas_{tag}_{rng[0]}_{rng[1]}.zip",
+                                            mime="application/zip"
+                                        )
+                                    except Exception as e:
+                                        col.error(f"Error generando ZIP: {e}")
+
+                        # 4. Mapa Interactivo (Folium) con Popups
                         with col.expander(f"🔎 Ver Mapa Interactivo Detallado ({tag})", expanded=True):
                             col.write("Mapa navegable con detalles por estación.")
                             center_lat = (bounds[2] + bounds[3]) / 2
@@ -2600,6 +2627,14 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                 zoom_start=8,
                                 tiles="CartoDB positron",
                             )
+
+                            # Añadimos isoyetas al folium también para referencia
+                            if gdf_iso is not None:
+                                folium.GeoJson(
+                                    gdf_iso, 
+                                    name="Isoyetas",
+                                    style_function=lambda x: {'color': '#2c3e50', 'weight': 1, 'dashArray': '5, 5'}
+                                ).add_to(m)
 
                             for _, row in df_m.iterrows():
                                 nombre = row[Config.STATION_NAME_COL]
