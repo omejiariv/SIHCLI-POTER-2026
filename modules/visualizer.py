@@ -905,7 +905,7 @@ def display_iri_forecast_tab():
             ),
             margin=dict(r=150),  # Margen derecho para que quepa la leyenda
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig)
         st.caption(
             "🔴 Umbral El Niño (+0.5°C) | 🔵 Umbral La Niña (-0.5°C). Líneas grises: Modelos Dinámicos. Líneas verdes: Estadísticos."
         )
@@ -1067,7 +1067,7 @@ def display_realtime_dashboard(df_long, gdf_stations, gdf_filtered, **kwargs):
                     range=[0, max(df_forecast["Ppt. (mm)"].max() * 3, 10)],
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
 
                 # 3. GRÁFICOS SECUNDARIOS
                 st.markdown("#### 🍃 Condiciones Atmosféricas")
@@ -1477,7 +1477,7 @@ def display_spatial_distribution_tab(
                             fig.add_trace(go.Scatter(x=fc['Fecha'], y=fc['T. Máx (°C)'], name="Máx", line=dict(color='red')), secondary_y=False)
                             fig.add_trace(go.Scatter(x=fc['Fecha'], y=fc['T. Mín (°C)'], name="Mín", line=dict(color='cyan'), fill='tonexty'), secondary_y=False)
                             fig.update_layout(title="Temperatura y Precipitación", height=350, hovermode="x unified")
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig)
 
                             # 2. Atmósfera y Energía (Columnas)
                             c_g1, c_g2 = st.columns(2)
@@ -1656,7 +1656,7 @@ def display_spatial_distribution_tab(
                 color=Config.STATION_NAME_COL,
                 title="Precipitación Anual por Estación"
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig)
             
             with st.expander("Ver Datos en Tabla"):
                 pivot_anual = df_anual_melted.pivot(
@@ -2238,7 +2238,7 @@ def display_graphs_tab(
                     )
                     
                     fig.update_layout(hovermode="x unified", legend=dict(orientation="h", y=1.1))
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig)
                     
                     # 2. BOTÓN DE DESCARGA (Solicitud 2)
                     # Preparamos los datos en formato CSV para la descarga
@@ -2329,7 +2329,7 @@ def display_weekly_forecast_tab(stations_for_analysis, gdf_filtered, **kwargs):
                         line=dict(color="blue"),
                     )
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
             else:
                 st.error("No se pudo obtener el pronóstico.")
 
@@ -2906,7 +2906,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 
                 df_p = res["gdf_puntos"]
                 fig.add_trace(go.Scatter(x=df_p.geometry.x, y=df_p.geometry.y, mode="markers", marker=dict(color="red"), name="Estaciones"))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
 
                 # --- DESCARGAS (SHAPEFILES SOLO BAJO DEMANDA) ---
                 st.markdown("---")
@@ -4012,7 +4012,7 @@ def display_anomalies_tab(
             showlegend=False,
         )
         fig.add_hline(y=0, line_color="black", line_width=1)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig)
 
         csv = df_anom.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -4376,7 +4376,7 @@ def display_correlation_tab(**kwargs):
                                 },
                                 opacity=0.6,
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig)
                         else:
                             st.warning(
                                 f"No se encontró la columna '{Config.ENSO_ONI_COL}' en los datos ENSO."
@@ -4820,7 +4820,7 @@ def display_life_zones_tab(
                                     margin={"r": 0, "t": 0, "l": 0, "b": 0},
                                     showlegend=False,
                                 )
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig)
 
                                 # Tabla
                                 unique, counts = np.unique(z_clean, return_counts=True)
@@ -5080,7 +5080,7 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
                     title=f"Evolución {idx_type}-{scale} ({selected_station})",
                     height=400,
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
 
                 last_val = df_vis["Val"].iloc[-1]
                 lbl = "Normal"
@@ -5217,7 +5217,7 @@ def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
         )
 
         fig.update_layout(title=f"Umbrales Mensuales - {selected_station}", height=450)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig)
 
 
 # FUNCIÓN CLIMA FUTURO (MAPA RIESGO MEJORADO + SIMULADOR)
@@ -5461,7 +5461,7 @@ def display_climate_scenarios_tab(**kwargs):
                             l=20, r=20, t=60, b=80
                         ),  # Más margen abajo para la leyenda
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig)
 
                     c_d1, c_d2 = st.columns(2)
                     with c_d1:
@@ -5870,7 +5870,7 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                 import plotly.express as px
                 fig = px.pie(df_res, values="Área (km²)", names="Cobertura", color="Cobertura", 
                              color_discrete_map={r["Cobertura"]: r["Color"] for _, r in df_res.iterrows()}, hole=0.4)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
 
         with tab_sim:
             if view_mode == "Cuenca":
@@ -6192,7 +6192,7 @@ def display_bias_correction_tab(df_long, gdf_stations, gdf_filtered, **kwargs):
                     )
                 )
                 fig.update_layout(title=title_plot, hovermode="x unified")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
 
             # TAB 2: MAPA
             with tab_mapa:
