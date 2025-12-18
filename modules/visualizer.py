@@ -2890,104 +2890,127 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         st.error("Sin estaciones cercanas.")
                         st.session_state["basin_res"] = None
 
-            # --- MOSTRAR RESULTADOS (ACTUALIZADO PARA CAPAS NUEVAS) ---
+# --- MOSTRAR RESULTADOS (VISUALIZACIÓN CORREGIDA) ---
             res = st.session_state.get("basin_res")
             
             if res and res.get("ready"):
                 st.markdown(f"##### 📊 Resultados del Análisis: {res.get('names', 'Cuenca')}")
                 
-                # A. SELECTOR DE CAPA (EL PODER DEL ANÁLISIS)
+                # 1. SELECTOR DE CAPA
+                # Definimos las opciones disponibles
                 map_options = [
                     "Precipitación (Isoyetas)", 
                     "IVC (Vulnerabilidad Climática)",
-                    "Vulnerabilidad Cultivos (IVC + Agric)",
-                    "Vulnerabilidad Incendios (IVC + Bosque)",
                     "Vulnerabilidad Variación Clima (ESD + Tendencias)"
                 ]
                 
+                # Agregamos opciones condicionales si existen las capas extras
+                if kwargs.get("gdf_coberturas") is not None:
+                    map_options.insert(2, "Vulnerabilidad Cultivos (IVC + Agric)")
+                    map_options.insert(3, "Vulnerabilidad Incendios (IVC + Bosque)")
+
                 layer_sel = st.selectbox("Seleccionar Mapa Temático:", map_options)
                 
-                # Configuración por defecto
-                z_map = res["gz"]
+                # 2. CONFIGURACIÓN DE VISUALIZACIÓN
+                # Por defecto cargamos Precipitación ('gz')
+                z_map = res.get("gz")
                 colors = "Blues"
                 title_map = "Precipitación Media (mm)"
-                zmin, zmax = 0, np.nanmax(res["gz"])
+                zmin, zmax = 0, np.nanmax(z_map)
                 
-                # Lógica de capas nuevas
+                # Lógica de cambio de capas
                 if layer_sel == "IVC (Vulnerabilidad Climática)":
                     if "gz_ivc" in res:
                         z_map = res["gz_ivc"]
-                        colors = "RdYlGn_r"
-                        title_map = "Índice de Vulnerabilidad Climática (0-100)"
+                        colors = "RdYlGn_r" # Rojo=Alto Riesgo
+                        title_map = "Índice de Vulnerabilidad Climática (IVC)"
                         zmin, zmax = 0, 100
-                        st.caption("🔴 Rojo: Alta Vulnerabilidad. 🟢 Verde: Baja Vulnerabilidad.")
+                        st.info("🔴 Rojo: Alta Vulnerabilidad (Calor + Déficit). 🟢 Verde: Baja Vulnerabilidad.")
+                    else:
+                        st.warning("⚠️ Capa IVC no disponible. Recalcule la cuenca.")
 
                 elif layer_sel == "Vulnerabilidad Variación Clima (ESD + Tendencias)":
                     if res.get("gz_iv_var") is not None:
                         z_map = res["gz_iv_var"]
                         colors = "RdYlGn_r"
-                        title_map = "Vulnerabilidad a la Variación (Déficit + Tendencia Secado)"
+                        title_map = "Vulnerabilidad: Déficit Actual + Tendencia Secado"
                         zmin, zmax = 0, 100
-                        st.caption("Cruza el déficit de escorrentía actual con la tendencia histórica.")
+                        st.caption("Zonas secas que históricamente se están volviendo más secas.")
                     else:
-                        st.warning("Sin datos de tendencias para este cálculo.")
+                        st.warning("⚠️ No hay datos de tendencias para calcular esta capa.")
 
-                # MAPA BASE
-                fig = go.Figure(go.Contour(
-                    z=z_map.T, x=res["gx"][:, 0], y=res["gy"][0, :],
-                    colorscale=colors, colorbar=dict(title="Valor"),
-                    contours=dict(start=zmin, end=zmax, size=(zmax-zmin)/15 if zmax>zmin else 1),
-                    zmin=zmin, zmax=zmax
-                ))
-                
-                # Geometría Cuenca
-                try:
-                    g = res["gdf_vis"].geometry.iloc[0]
-                    geoms = g.geoms if g.geom_type == "MultiPolygon" else [g]
-                    for geom in geoms:
-                        xs, ys = geom.exterior.xy
-                        fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=2), name="Cuenca"))
-                except: pass
-                
-                # Estaciones
-                df_p = res["gdf_puntos"]
-                fig.add_trace(go.Scatter(x=df_p.geometry.x, y=df_p.geometry.y, mode="markers", marker=dict(color="black", size=5), name="Estaciones"))
-                
-                # Intersección Visual para Coberturas
-                if gdf_coberturas is not None:
-                    if layer_sel == "Vulnerabilidad Cultivos (IVC + Agric)":
-                        z_map = res.get("gz_ivc", res["gz"])
-                        fig.update_traces(z=z_map.T, colorscale="RdYlGn_r", zmin=0, zmax=100)
-                        title_map = "Amenaza Climática sobre Cultivos"
-                        st.caption("ℹ️ Visualizando IVC. La vulnerabilidad es crítica donde hay coincidencia con zonas de cultivo.")
-                        
-                    elif layer_sel == "Vulnerabilidad Incendios (IVC + Bosque)":
-                        z_map = res.get("gz_ivc", res["gz"])
-                        fig.update_traces(z=z_map.T, colorscale="RdYlGn_r", zmin=0, zmax=100)
-                        title_map = "Amenaza de Incendios Forestales"
-                        st.caption("ℹ️ Zonas ROJAS indican alta temperatura y sequedad.")
+                elif layer_sel == "Vulnerabilidad Cultivos (IVC + Agric)":
+                    if "gz_ivc" in res:
+                        z_map = res["gz_ivc"]
+                        colors = "RdYlGn_r"
+                        title_map = "Amenaza Climática sobre Cultivos (IVC)"
+                        zmin, zmax = 0, 100
+                        st.caption("ℹ️ Visualizando la amenaza climática (IVC) en zonas agrícolas.")
 
-                fig.update_layout(title=title_map, height=500, margin=dict(l=20, r=20, t=40, b=20))
-                st.plotly_chart(fig, use_container_width=True)
+                elif layer_sel == "Vulnerabilidad Incendios (IVC + Bosque)":
+                    if "gz_ivc" in res:
+                        z_map = res["gz_ivc"]
+                        colors = "RdYlGn_r"
+                        title_map = "Amenaza de Incendios (IVC)"
+                        zmin, zmax = 0, 100
+                        st.caption("ℹ️ Zonas ROJAS indican condiciones propicias para incendios.")
 
-                # --- DESCARGAS ---
+                # 3. RENDERIZADO DEL MAPA (PLOTLY)
+                # Validamos que z_map exista antes de graficar
+                if z_map is not None:
+                    fig = go.Figure(go.Contour(
+                        z=z_map.T, 
+                        x=res["gx"][:, 0], 
+                        y=res["gy"][0, :],
+                        colorscale=colors, 
+                        colorbar=dict(title="Valor"),
+                        contours=dict(start=zmin, end=zmax, size=(zmax-zmin)/15 if zmax > zmin else 1),
+                        zmin=zmin, zmax=zmax
+                    ))
+                    
+                    # Agregar contorno de cuenca
+                    try:
+                        g = res["gdf_vis"].geometry.iloc[0]
+                        geoms = g.geoms if g.geom_type == "MultiPolygon" else [g]
+                        for geom in geoms:
+                            xs, ys = geom.exterior.xy
+                            fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=2), name="Cuenca"))
+                    except: pass
+                    
+                    # Agregar estaciones
+                    df_p = res["gdf_puntos"]
+                    fig.add_trace(go.Scatter(x=df_p.geometry.x, y=df_p.geometry.y, mode="markers", marker=dict(color="black", size=4), name="Estaciones"))
+
+                    fig.update_layout(title=title_map, height=500, margin=dict(l=20, r=20, t=40, b=20))
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                # --- DESCARGAS Y EXPORTACIÓN ---
                 st.markdown("---")
                 c_d1, c_d2 = st.columns(2)
+                
+                # Función auxiliar local para vectorizar solo al descargar (ahorra memoria)
+                def vectorizar_para_descarga(grid_z):
+                    return generate_isohyets_gdf(res["gx"], res["gy"], grid_z, levels=15, crs=res["gdf_puntos"].crs)
+
                 with c_d1:
-                    if st.button("📥 Generar GeoJSON (Capa Actual)"):
-                        gdf_out = generate_isohyets_gdf(res["gx"], res["gy"], z_map, levels=15)
-                        if gdf_out is not None:
-                            st.download_button("Descargar GeoJSON", gdf_out.to_json(), f"mapa_{layer_sel[:3]}.geojson", "application/json")
+                    if st.button("📥 Preparar GeoJSON (Capa Actual)"):
+                        with st.spinner("Vectorizando capa..."):
+                            gdf_out = vectorizar_para_descarga(z_map)
+                            if gdf_out is not None:
+                                st.download_button("Descargar GeoJSON", gdf_out.to_json(), f"mapa_{layer_sel[:3]}.geojson", "application/json")
+                            else:
+                                st.error("No se pudo generar el vector.")
                 
                 with c_d2:
-                    if st.button("📦 Generar Shapefile (.zip)"):
-                        try:
-                            gdf_out = generate_isohyets_gdf(res["gx"], res["gy"], z_map, levels=15)
-                            if gdf_out is not None:
-                                zip_shp = create_zipped_shapefile(gdf_out, f"mapa_{layer_sel[:3]}")
-                                st.download_button("Descargar ZIP", zip_shp, f"mapa_{layer_sel[:3]}.zip", "application/zip")
-                        except Exception as e: st.error(f"Error ZIP: {e}")
-
+                    if st.button("📦 Preparar Shapefile (.zip)"):
+                        with st.spinner("Generando Shapefile..."):
+                            try:
+                                gdf_out = vectorizar_para_descarga(z_map)
+                                if gdf_out is not None:
+                                    zip_shp = create_zipped_shapefile(gdf_out, f"mapa_{layer_sel[:3]}")
+                                    st.download_button("Descargar ZIP", zip_shp, f"mapa_{layer_sel[:3]}.zip", "application/zip")
+                            except Exception as e: st.error(f"Error ZIP: {e}")
+                                
                 # B. Métricas
                 st.markdown("---")
                 st.subheader("💧 Balance Hídrico y Morfometría")
