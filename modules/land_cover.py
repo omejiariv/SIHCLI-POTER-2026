@@ -14,17 +14,17 @@ import matplotlib.pyplot as plt
 # --- 1. LEYENDA Y COLORES ---
 LAND_COVER_LEGEND = {
     1: "Zonas Urbanas", 
-    2: "Cultivos Transitorios", 
-    3: "Pastos", 
-    4: "Áreas Agrícolas Heterogéneas",
-    5: "Bosque Denso / Natural", 
-    6: "Vegetación Herbácea / Arbustiva", 
-    7: "Áreas Abiertas", 
-    8: "Bosques Plantados",
-    9: "Bosque Fragmentado", 
-    10: "Vegetación Secundaria", 
-    11: "Zonas Degradadas",
-    12: "Humedales", 
+    2: "Zonas industriales o comerciales",
+    3: "Zonas degradadas -canteras, escombreras, minas",
+    4: "Zonas Verdes artificializadas No Agrícolas",
+    5: "Cultivos transitorios",
+    6: "Cultivos permanentes",
+    7: "Pastos",
+    8: "Areas Agrícolas Heterogéneas",
+    9: "Bosque",
+    10: "Vegetación Herbácea / Arbustiva",
+    11: "Areas abiertas sin o con poca cobertura vegetal",
+    12: "Humedales",
     13: "Agua / Cuerpos de Agua"
 }
 
