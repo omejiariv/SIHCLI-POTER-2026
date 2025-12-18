@@ -219,6 +219,8 @@ def main():
         "selected_regions": sel_regions, "selected_municipios": sel_munis,
         "selected_months": list(range(1, 13)), "year_range": year_range,
         "start_date": start_date, "end_date": end_date,
+        "gdf_coberturas": gdf_coberturas,  # <--- Crucial para Cultivos e Incendios
+        "df_trends": df_trends
     }
 
     # --- E. RENDERIZADO ---
