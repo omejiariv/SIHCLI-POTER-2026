@@ -1,5 +1,3 @@
-# modules/app.py
-
 import warnings
 import pandas as pd
 import streamlit as st
@@ -14,6 +12,12 @@ try:
     from modules.data_processor import complete_series, load_and_process_all_data
     from modules.reporter import generate_pdf_report
     
+    # Importamos función de tendencias para el mapa de vulnerabilidad
+    try:
+        from modules.analysis import calculate_trends_mann_kendall
+    except ImportError:
+        calculate_trends_mann_kendall = None
+
     try:
         import modules.db_manager as db_manager
         DB_AVAILABLE = True
@@ -35,6 +39,7 @@ except Exception as e:
 # --- FUNCIÓN AUXILIAR PARA DETECTAR COLUMNAS ---
 def get_fuzzy_col(df, keywords):
     """Busca si alguna columna contiene alguna de las palabras clave."""
+    if df is None: return None
     for col in df.columns:
         for kw in keywords:
             if kw.lower() in col.lower():
@@ -99,8 +104,6 @@ def main():
                 sel_regions = st.multiselect(f"📍 Región ({col_region}):", list_regions, default=[])
             else:
                 st.warning("⚠️ No se detectó columna de Región.")
-                # Descomenta esto si quieres ver los nombres reales para depurar:
-                # st.caption(f"Cols: {list(gdf_stations.columns)}")
 
             # B. Municipios (Cascada)
             list_munis = []
@@ -209,6 +212,23 @@ def main():
     start_date = pd.to_datetime(f"{year_range[0]}-01-01")
     end_date = pd.to_datetime(f"{year_range[1]}-12-31")
 
+    # --- CALCULAR TENDENCIAS (NUEVO: Para Mapas Avanzados) ---
+    df_trends = None
+    if calculate_trends_mann_kendall is not None and not df_anual_melted.empty:
+        try:
+            # Calculamos tendencias silenciosamente para pasarlas a los mapas
+            trends_res = calculate_trends_mann_kendall(df_anual_melted)
+            if trends_res is not None:
+                df_trends = trends_res['trend_data']
+        except:
+            pass
+
+    # --- DEFINIR CAPAS DE COBERTURA ---
+    # Si tienes una capa específica de coberturas, cárgala aquí. 
+    # Por ahora usamos gdf_predios como proxy si el usuario no ha subido otra.
+    gdf_coberturas = gdf_predios if gdf_predios is not None else None
+
+    # --- EMPAQUETAR ARGUMENTOS ---
     display_args = {
         "df_long": df_monthly_filtered, "df_complete": df_monthly_filtered,
         "gdf_stations": gdf_stations, "gdf_filtered": gdf_filtered,
@@ -219,7 +239,8 @@ def main():
         "selected_regions": sel_regions, "selected_municipios": sel_munis,
         "selected_months": list(range(1, 13)), "year_range": year_range,
         "start_date": start_date, "end_date": end_date,
-        "gdf_coberturas": gdf_coberturas,  # <--- Crucial para Cultivos e Incendios
+        # Nuevos argumentos críticos para Mapas Avanzados
+        "gdf_coberturas": gdf_coberturas,
         "df_trends": df_trends
     }
 
@@ -232,11 +253,9 @@ def main():
             year_range=year_range,
             interpolacion="Si" if apply_interp else "No",
             df_data=df_monthly_filtered,
-            gdf_filtered=gdf_filtered  # <--- ¡ESTA LÍNEA ES OBLIGATORIA!
+            gdf_filtered=gdf_filtered
         )
-    except Exception as e:
-        # Si algo falla, que no rompa la app, pero intenta mostrarlo
-        # st.error(f"Error filtro: {e}") 
+    except Exception:
         pass
 
     tab_titles = [
