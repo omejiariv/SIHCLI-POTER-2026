@@ -2365,12 +2365,16 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión Optimizada: Interpolación Regional + Análisis de Cuenca.
-    Incluye simplificación geométrica y backend 'Agg' para estabilidad.
+    Versión Master: Interpolación Regional + Análisis de Cuenca + Vulnerabilidad Sectorial.
+    Integra IVC, IV-Cultivos, IV-Incendios y Vulnerabilidad por Variación Climática.
     """
     
     # Configuración de Matplotlib para servidores web (Crucial para estabilidad)
     matplotlib.use('Agg')
+
+    # Recuperar capas adicionales de los argumentos (NUEVO)
+    gdf_coberturas = kwargs.get("gdf_coberturas", None) # Capa de usos del suelo
+    df_trends = kwargs.get("df_trends", None)           # DataFrame con tendencias (sen slope)    
 
     # 1. Configuración de Meses y Título
     selected_months = kwargs.get("selected_months", [])
@@ -2662,8 +2666,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             plot_panel(p["r1"], p["m1"], c1, "A", user_loc)
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
             
-# ==========================================================================
-    # MODO CUENCA (OPTIMIZADO: VELOCIDAD + ESTABILIDAD)
+    # ==========================================================================
+    # MODO 2: CUENCA (INTEGRACIÓN TOTAL: HIDROLOGÍA + VULNERABILIDAD)
     # ==========================================================================
     else:
         gdf_subcuencas = kwargs.get("gdf_subcuencas")
@@ -2688,7 +2692,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             rng_c = c_p1.slider("Periodo:", 1980, 2025, (2000, 2020))
             meth_c = c_p2.selectbox("Método Interpolación:", ["Kriging (RBF)", "IDW"])
 
-            # --- LÓGICA DE CÁLCULO ---
+            # --- LÓGICA DE CÁLCULO (TU CÓDIGO BASE INTEGRADO) ---
             if st.button("⚡ Analizar Cuenca"):
                 st.session_state["last_sel_cuencas"] = sel_cuencas
                 
@@ -2696,11 +2700,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 if "basin_res" in st.session_state:
                     del st.session_state["basin_res"]
                 
-                with st.spinner("Procesando hidrología (Optimizado)..."):
+                with st.spinner("Procesando hidrología y vulnerabilidad..."):
                     # 1. Geometría
                     sub = gdf_subcuencas[gdf_subcuencas[col_name].isin(sel_cuencas)]
                     
-                    # Geometría Real (Para cálculos)
+                    # Geometría Real (Para cálculos precisos de morfometría)
                     try:
                         geom_union_shape = sub.geometry.unary_union
                         gdf_union_real = gpd.GeoDataFrame({"geometry": [geom_union_shape]}, crs=gdf_subcuencas.crs)
@@ -2740,13 +2744,20 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         df_ppt = suma_anual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index()
                         
                         if Config.STATION_NAME_COL not in df_ppt.columns: df_ppt = df_ppt.reset_index()
+                        
+                        # Merge con Estaciones (Asegurando Altitud para IVC)
                         df_interp = pd.merge(df_ppt, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
+                        
+                        # Fallback de Altitud si no existe
+                        if Config.ALTITUDE_COL not in df_interp.columns:
+                            df_interp[Config.ALTITUDE_COL] = 1500
+
                         gdf_puntos_interp = gpd.GeoDataFrame(
                             df_interp, geometry=gpd.points_from_xy(df_interp.longitude, df_interp.latitude), crs=gdf_stations.crs
                         )
 
                         if len(df_interp) >= 3:
-                            # 3. Interpolación (OPTIMIZADA: 70j es más rápido que 100j y suficiente para web)
+                            # 3. Interpolación (OPTIMIZADA: 70j)
                             minx, miny, maxx, maxy = gdf_buffer.total_bounds
                             bounds = [minx, maxx, miny, maxy]
                             
@@ -2754,11 +2765,53 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             pts = df_interp[["longitude", "latitude"]].values
                             vals = df_interp[Config.PRECIPITATION_COL].values
                             
+                            # A. Interpolación Precipitación (gz)
                             if "Kriging" in meth_c:
                                 rbf = Rbf(pts[:, 0], pts[:, 1], vals, function="thin_plate")
                                 gz = rbf(gx, gy)
                             else:
                                 gz = griddata(pts, vals, (gx, gy), method="linear")
+
+                            # B. Interpolación Altitud (Para Temperatura y IVC)
+                            vals_alt = df_interp[Config.ALTITUDE_COL].values
+                            gz_alt = griddata(pts, vals_alt, (gx, gy), method='linear')
+
+                            # --- CÁLCULOS MATRICIALES PARA MAPAS DE VULNERABILIDAD (IVC) ---
+                            # T = 28 - 0.006 * H
+                            gz_t = np.maximum(28 - (0.006 * gz_alt), 0)
+                            
+                            # Balance Turc Matricial
+                            l_t = 300 + (25 * gz_t) + (0.05 * gz_t**3)
+                            with np.errstate(divide='ignore', invalid='ignore'):
+                                gz_etr = gz / np.sqrt(0.9 + (gz / l_t)**2)
+                            gz_etr = np.minimum(gz_etr, gz)
+                            gz_esd = gz - gz_etr # Escorrentía (ESD)
+
+                            # Índices Normalizados
+                            t_max = np.nanmax(gz_t)
+                            gz_it = 100 * (gz_t / t_max) if t_max > 0 else gz_t * 0
+                            
+                            esd_max = np.nanmax(gz_esd)
+                            if esd_max <= 0: esd_max = 1
+                            gz_iesd = 100 * ((esd_max - gz_esd) / esd_max)
+                            
+                            # IVC FINAL
+                            gz_ivc = (gz_it + gz_iesd) / 2
+
+                            # C. Vulnerabilidad por Variación Climática (Tendencias)
+                            gz_iv_var = None
+                            if df_trends is not None and not df_trends.empty:
+                                try:
+                                    df_tr_map = pd.merge(df_interp, df_trends, on=Config.STATION_NAME_COL, how="left")
+                                    col_slope = next((c for c in df_tr_map.columns if 'slope' in c.lower()), None)
+                                    if col_slope:
+                                        vals_slope = df_tr_map[col_slope].fillna(0).values
+                                        gz_slope = griddata(pts, vals_slope, (gx, gy), method='linear')
+                                        # Normalización: Pendiente negativa (secado) = Mayor Riesgo
+                                        gz_i_trend = 50 - (gz_slope * 50)
+                                        gz_i_trend = np.clip(gz_i_trend, 0, 100)
+                                        gz_iv_var = (gz_iesd + gz_i_trend) / 2
+                                except: pass
 
                             # 4. Vectorización
                             gdf_isoyetas = generate_isohyets_gdf(gx, gy, gz, levels=12, crs=gdf_stations.crs)
@@ -2837,19 +2890,58 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         st.error("Sin estaciones cercanas.")
                         st.session_state["basin_res"] = None
 
-            # --- MOSTRAR RESULTADOS ---
+            # --- MOSTRAR RESULTADOS (ACTUALIZADO PARA CAPAS NUEVAS) ---
             res = st.session_state.get("basin_res")
             
             if res and res.get("ready"):
-                st.markdown(f"##### 🌧️ Resultados: {res.get('names', 'Cuenca')}")
+                st.markdown(f"##### 📊 Resultados del Análisis: {res.get('names', 'Cuenca')}")
                 
-                # A. Mapa Visual (Plotly - Renderizado Rápido)
+                # A. SELECTOR DE CAPA (EL PODER DEL ANÁLISIS)
+                map_options = [
+                    "Precipitación (Isoyetas)", 
+                    "IVC (Vulnerabilidad Climática)",
+                    "Vulnerabilidad Cultivos (IVC + Agric)",
+                    "Vulnerabilidad Incendios (IVC + Bosque)",
+                    "Vulnerabilidad Variación Clima (ESD + Tendencias)"
+                ]
+                
+                layer_sel = st.selectbox("Seleccionar Mapa Temático:", map_options)
+                
+                # Configuración por defecto
+                z_map = res["gz"]
+                colors = "Blues"
+                title_map = "Precipitación Media (mm)"
+                zmin, zmax = 0, np.nanmax(res["gz"])
+                
+                # Lógica de capas nuevas
+                if layer_sel == "IVC (Vulnerabilidad Climática)":
+                    if "gz_ivc" in res:
+                        z_map = res["gz_ivc"]
+                        colors = "RdYlGn_r"
+                        title_map = "Índice de Vulnerabilidad Climática (0-100)"
+                        zmin, zmax = 0, 100
+                        st.caption("🔴 Rojo: Alta Vulnerabilidad. 🟢 Verde: Baja Vulnerabilidad.")
+
+                elif layer_sel == "Vulnerabilidad Variación Clima (ESD + Tendencias)":
+                    if res.get("gz_iv_var") is not None:
+                        z_map = res["gz_iv_var"]
+                        colors = "RdYlGn_r"
+                        title_map = "Vulnerabilidad a la Variación (Déficit + Tendencia Secado)"
+                        zmin, zmax = 0, 100
+                        st.caption("Cruza el déficit de escorrentía actual con la tendencia histórica.")
+                    else:
+                        st.warning("Sin datos de tendencias para este cálculo.")
+
+                # MAPA BASE
                 fig = go.Figure(go.Contour(
-                    z=res["gz"].T, x=res["gx"][:, 0], y=res["gy"][0, :],
-                    colorscale="Blues", colorbar=dict(title="mm"), contours=dict(start=0, end=5000, size=200)
+                    z=z_map.T, x=res["gx"][:, 0], y=res["gy"][0, :],
+                    colorscale=colors, colorbar=dict(title="Valor"),
+                    contours=dict(start=zmin, end=zmax, size=(zmax-zmin)/15 if zmax>zmin else 1),
+                    zmin=zmin, zmax=zmax
                 ))
+                
+                # Geometría Cuenca
                 try:
-                    # Usamos la geometría simplificada para dibujar más rápido
                     g = res["gdf_vis"].geometry.iloc[0]
                     geoms = g.geoms if g.geom_type == "MultiPolygon" else [g]
                     for geom in geoms:
@@ -2857,40 +2949,44 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=2), name="Cuenca"))
                 except: pass
                 
+                # Estaciones
                 df_p = res["gdf_puntos"]
-                fig.add_trace(go.Scatter(x=df_p.geometry.x, y=df_p.geometry.y, mode="markers", marker=dict(color="red"), name="Estaciones"))
+                fig.add_trace(go.Scatter(x=df_p.geometry.x, y=df_p.geometry.y, mode="markers", marker=dict(color="black", size=5), name="Estaciones"))
+                
+                # Intersección Visual para Coberturas
+                if gdf_coberturas is not None:
+                    if layer_sel == "Vulnerabilidad Cultivos (IVC + Agric)":
+                        z_map = res.get("gz_ivc", res["gz"])
+                        fig.update_traces(z=z_map.T, colorscale="RdYlGn_r", zmin=0, zmax=100)
+                        title_map = "Amenaza Climática sobre Cultivos"
+                        st.caption("ℹ️ Visualizando IVC. La vulnerabilidad es crítica donde hay coincidencia con zonas de cultivo.")
+                        
+                    elif layer_sel == "Vulnerabilidad Incendios (IVC + Bosque)":
+                        z_map = res.get("gz_ivc", res["gz"])
+                        fig.update_traces(z=z_map.T, colorscale="RdYlGn_r", zmin=0, zmax=100)
+                        title_map = "Amenaza de Incendios Forestales"
+                        st.caption("ℹ️ Zonas ROJAS indican alta temperatura y sequedad.")
+
+                fig.update_layout(title=title_map, height=500, margin=dict(l=20, r=20, t=40, b=20))
                 st.plotly_chart(fig, use_container_width=True)
 
-                # --- DESCARGAS (MANUALES PARA EVITAR BLOQUEO) ---
+                # --- DESCARGAS ---
                 st.markdown("---")
-                st.subheader("💾 Descarga de Capas GIS")
-                c_gis1, c_gis2, c_gis3 = st.columns(3)
+                c_d1, c_d2 = st.columns(2)
+                with c_d1:
+                    if st.button("📥 Generar GeoJSON (Capa Actual)"):
+                        gdf_out = generate_isohyets_gdf(res["gx"], res["gy"], z_map, levels=15)
+                        if gdf_out is not None:
+                            st.download_button("Descargar GeoJSON", gdf_out.to_json(), f"mapa_{layer_sel[:3]}.geojson", "application/json")
                 
-                gdf_pts = res["gdf_puntos"]
-                c_gis1.download_button("📍 Estaciones (GeoJSON)", data=gdf_pts.to_json(), file_name="estaciones.geojson", mime="application/json")
-                
-                gdf_basin = res["gdf_cuenca"]
-                c_gis2.download_button("🗺️ Cuenca (GeoJSON)", data=gdf_basin.to_json(), file_name="cuenca.geojson", mime="application/json")
-                
-                gdf_iso = res.get("gdf_isoyetas")
-                if gdf_iso is not None:
-                    c_gis3.download_button("〰️ Isoyetas (GeoJSON)", data=gdf_iso.to_json(), file_name="isoyetas.geojson", mime="application/json")
-
-                # Shapefile MANUAL
-                with st.expander("📦 Generar y Descargar Shapefiles (.zip)"):
-                    st.info("Haga clic para generar los archivos ZIP (puede tardar unos segundos).")
-                    if st.button("🛠️ Preparar Archivos Shapefile"):
-                        with st.spinner("Comprimiendo archivos..."):
-                            try:
-                                col_shp1, col_shp2 = st.columns(2)
-                                if gdf_iso is not None:
-                                    zip_iso = create_zipped_shapefile(gdf_iso, "isoyetas")
-                                    col_shp1.download_button("📥 Descargar Isoyetas (.shp)", zip_iso, "isoyetas.zip", "application/zip")
-                                
-                                zip_basin = create_zipped_shapefile(gdf_basin, "cuenca")
-                                col_shp2.download_button("📥 Descargar Cuenca (.shp)", zip_basin, "cuenca.zip", "application/zip")
-                            except Exception as e:
-                                st.error(f"Error generando Shapefile: {e}")
+                with c_d2:
+                    if st.button("📦 Generar Shapefile (.zip)"):
+                        try:
+                            gdf_out = generate_isohyets_gdf(res["gx"], res["gy"], z_map, levels=15)
+                            if gdf_out is not None:
+                                zip_shp = create_zipped_shapefile(gdf_out, f"mapa_{layer_sel[:3]}")
+                                st.download_button("Descargar ZIP", zip_shp, f"mapa_{layer_sel[:3]}.zip", "application/zip")
+                        except Exception as e: st.error(f"Error ZIP: {e}")
 
                 # B. Métricas
                 st.markdown("---")
