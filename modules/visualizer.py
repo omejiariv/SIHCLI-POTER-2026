@@ -2950,7 +2950,9 @@ def display_climate_forecast_tab(**kwargs):
 
     # --- CAJA INFORMATIVA (Extendida y Mejorada) ---
     with st.expander(
-        "ℹ️ Acerca de los Pronósticos IRI/CPC (Columbia University)", expanded=False
+        "
+        
+        ℹ️ Acerca de los Pronósticos IRI/CPC (Columbia University)", expanded=False
     ):
         st.markdown(
             """
@@ -2974,6 +2976,30 @@ def display_climate_forecast_tab(**kwargs):
         **4. Impacto en Colombia:**
         * 🔥 **El Niño:** Sequías, altas temperaturas, menos lluvias.
         * 💧 **La Niña:** Lluvias intensas, inundaciones, deslizamientos.
+
+        *** Definiciones:
+        Anomalías: Variaciones respecto de un valor medio u otro valor de referencia estadístico
+        Bimodal: Tener dos picos (o modos)
+        Boyante: A medida que el aire se calienta, se expande y se vuelve menos denso que el aire que está encima de él.
+        Convección: La transferencia de energía al mover la molécula calentada de un lugar a otro – tambien el ascenso del aire caliente que forma nubes cumuliformes y da lugar a precipitaciones
+        El Niño: "El niño niño", en referencia al nacimiento de Jesucristo.
+        Infrarrojo: Longitud de onda de la radiación más larga que la luz visible y asociada al "calor" emitido por un cuerpo.
+        Moche: Una civilización precolombina en el norte de Perú que existió desde aproximadamente el año 100 al 800 d.C.
+        Datos proxy del paleoclima: Información climática anterior a la invención de los instrumentos de monitoreo atmosférico 
+        y derivada de indicadores químicos y biológicos conocidos en capas de hielo glacial, corales, sedimentos del fondo marino, anillos de árboles, etc.
+        precolombino: Se refiere a América del Sur y Central en el período anterior a la influencia europea.
+        gradiente de presión: El cambio en la presión del aire a lo largo de una distancia. Un gradiente más fuerte produce un flujo de aire más rápido de alta a baja presión.
+        Presión barométrica a nivel del mar: La fuerza ejercida por la atmósfera al nivel del mar (cero metros de altura) medida con un barómetro.
+        Estandarizado: Ajustado para que los valores de muestras con diferentes propiedades se puedan comparar entre sí
+        Expansión térmica: Calentar un fluido o gas no contenido aumenta su volumen al intentar mantener una presión constante. 
+        En el océano, dado que solo la superficie es ilimitada, la expansión eleva el nivel del mar.
+        Termoclina: Zona bajo la superficie del océano donde el agua superficial se transforma en agua profunda, produciéndose una marcada disminución de su temperatura. 
+        Tanto en la capa superficial (o mixta) como en las aguas profundas, la temperatura se mantiene relativamente constante con la profundidad. 
+        Dentro de la termoclina, la temperatura del agua disminuye rápidamente de la superficial a la profunda.
+        Vientos alisios: Los vientos en los trópicos generalmente soplan de este a oeste (vientos del este). 
+        Se llaman así porque su consistencia facilita la navegación y el comercio transoceánicos.
+
+        Fuentes de información primaria: https://www.ncei.noaa.gov/access/monitoring/enso/sst
         """
         )
 
