@@ -2896,44 +2896,132 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     El caudal específico se deriva como $Q = P - E$. Es ideal para estimar oferta hídrica media a largo plazo.
                     """)
 
-                # Índices Climáticos (Restaurado)
+                # ÍNDICES, FDC Y HIPSOMETRÍA COMPLETOS
+                
+                # A. ÍNDICES CLIMÁTICOS (Con Interpretación Numérica)
                 st.markdown("---")
                 st.subheader("🌡️ Índices Climáticos")
                 idx = res["idx"]
-                k1, k2 = st.columns(2)
-                k1.metric("Martonne (Aridez)", f"{idx.get('martonne_val', 0):.1f}", delta=idx.get("martonne_class", ""))
-                k2.metric("Fournier (Erosión)", f"{idx.get('fournier_val', 0):.1f}", delta=idx.get("fournier_class", ""))
-                with st.expander("ℹ️ Interpretación de Índices"):
+                
+                c_idx1, c_idx2 = st.columns(2)
+                with c_idx1: 
+                    st.metric("Aridez (Martonne)", f"{idx.get('martonne_val', 0):.1f}", delta=idx.get("martonne_class", ""))
+                with c_idx2: 
+                    st.metric("Erosividad (Fournier)", f"{idx.get('fournier_val', 0):.1f}", delta=idx.get("fournier_class", ""))
+                
+                with st.expander("ℹ️ Interpretación y Rangos Numéricos", expanded=False):
                     st.markdown("""
-                    * **Índice de Martonne:** Clasifica el clima según su grado de aridez.
-                    * **Índice de Fournier:** Evalúa la agresividad de la lluvia y potencial erosivo.
+                    **1. Índice de Aridez de Martonne ($I_M$):**
+                    $$ I_M = \\frac{P}{T + 10} $$
+                    * **0 - 10:** Desértico / Árido 🔴
+                    * **10 - 20:** Semiárido 🟠
+                    * **20 - 30:** Mediterráneo 🟡
+                    * **30 - 60:** Húmedo 🟢
+                    * **> 60:** Perhúmedo 🔵
+                    
+                    **2. Índice de Fournier ($I_F$):**
+                    $$ I_F = \\sum \\frac{p_i^2}{P} $$
+                    * **< 60:** Erosividad Muy Baja 🟢
+                    * **60 - 90:** Moderada 🟡
+                    * **90 - 120:** Alta 🟠
+                    * **> 120:** Muy Alta (Riesgo Erosión) 🔴
                     """)
 
-                # FDC (Restaurado)
-                if res["fdc"]:
+                # B. CURVA DE DURACIÓN DE CAUDALES (FDC) - Restaurada
+                if res.get("fdc"):
                     st.markdown("---")
                     st.subheader("📉 Curva de Duración de Caudales (FDC)")
-                    df_fdc = res["fdc"].get("data")
-                    if df_fdc is not None:
-                        fig_f = px.line(df_fdc, x="Probabilidad Excedencia (%)", y="Caudal (m³/s)")
-                        fig_f.update_traces(fill="tozeroy")
-                        st.plotly_chart(fig_f, use_container_width=True)
-                        st.latex(res["fdc"].get("equation", ""))
-                        with st.expander("ℹ️ Interpretación FDC"):
-                            st.write("Indica el % de tiempo que un caudal es igualado o excedido. Q95 es el caudal ecológico base.")
+                    
+                    # Recuperar datos
+                    fdc_data = res["fdc"]
+                    df_fdc = fdc_data.get("data") if isinstance(fdc_data, dict) else fdc_data
+                    
+                    if df_fdc is not None and not df_fdc.empty:
+                        col_f1, col_f2 = st.columns([3, 1])
+                        with col_f1:
+                            # Gráfico de Área
+                            fig_f = go.Figure()
+                            fig_f.add_trace(go.Scatter(
+                                x=df_fdc["Probabilidad Excedencia (%)"], 
+                                y=df_fdc["Caudal (m³/s)"], 
+                                fill='tozeroy', 
+                                mode='lines', 
+                                line=dict(color='#3498db')
+                            ))
+                            fig_f.update_layout(
+                                xaxis_title="Probabilidad Excedencia (%)", 
+                                yaxis_title="Caudal (m³/s)",
+                                margin=dict(l=20, r=20, t=20, b=20),
+                                height=350
+                            )
+                            st.plotly_chart(fig_f, use_container_width=True)
+                        
+                        with col_f2:
+                            st.markdown("**Ecuación Ajustada:**")
+                            if isinstance(fdc_data, dict) and "equation" in fdc_data:
+                                eq_latex = fdc_data["equation"].replace("P", "P_{exc}")
+                                st.latex(eq_latex)
+                                st.caption(f"$R^2 = {fdc_data.get('r_squared', 0):.4f}$")
+                            else:
+                                st.info("Ecuación no disponible")
 
-                # Hipsometría (Restaurado)
+                        with st.expander("ℹ️ Metodología e Interpretación FDC"):
+                            st.markdown("""
+                            **Definición:** La curva FDC representa la relación entre la magnitud del caudal y la frecuencia con la que es superado.
+                            
+                            **Metodología:**
+                            1.  Se genera la serie de caudales medios diarios/mensuales a partir del balance hídrico ($Q = P - ETR$).
+                            2.  Se ordenan los datos de mayor a menor.
+                            3.  Se calcula la probabilidad: $P(\%) = \\frac{m}{n+1} \\times 100$.
+                            
+                            **Interpretación:**
+                            * **Q95 (Caudal Ecológico):** Caudal superado el 95% del tiempo. Indica la oferta hídrica en estiaje.
+                            * **Pendiente:** Una curva con mucha pendiente indica una cuenca con respuesta rápida y poca regulación (acuíferos pobres).
+                            """)
+
+                # C. CURVA HIPSOMÉTRICA - Restaurada
                 if hasattr(analysis, "calculate_hypsometric_curve"):
                     try:
-                        hyp = analysis.calculate_hypsometric_curve(res["gdf_union"])
+                        hyp = analysis.calculate_hypsometric_curve(res["gdf_cuenca"])
                         if hyp:
                             st.markdown("---")
                             st.subheader("⛰️ Curva Hipsométrica")
-                            fig_h = px.area(x=hyp["area_percent"], y=hyp["elevations"], labels={"x": "% Área", "y": "Elevación (m)"})
-                            st.plotly_chart(fig_h, use_container_width=True)
-                            with st.expander("ℹ️ Interpretación Hipsometría"):
-                                st.write("Distribución del área de la cuenca según su altitud. Indica la edad geológica (joven/madura) y potencial energético.")
-                    except: pass
+                            
+                            col_h1, col_h2 = st.columns([3, 1])
+                            with col_h1:
+                                fig_h = go.Figure()
+                                fig_h.add_trace(go.Scatter(
+                                    x=hyp["area_percent"], 
+                                    y=hyp["elevations"], 
+                                    fill='tozeroy', 
+                                    line=dict(color='green')
+                                ))
+                                fig_h.update_layout(
+                                    xaxis_title="% Área Acumulada sobre la cota", 
+                                    yaxis_title="Elevación (msnm)",
+                                    margin=dict(l=20, r=20, t=20, b=20),
+                                    height=350
+                                )
+                                st.plotly_chart(fig_h, use_container_width=True)
+                            
+                            with col_h2:
+                                st.markdown("**Modelo Altitudinal:**")
+                                if hyp.get("equation"):
+                                    # Limpiamos la ecuación para LaTeX
+                                    eq_clean = hyp["equation"].replace("x", "A")
+                                    st.latex(eq_clean)
+                            
+                            with st.expander("ℹ️ Interpretación Geomorfológica"):
+                                st.markdown("""
+                                **Concepto:** Muestra la distribución del área de la cuenca en función de la altura.
+                                
+                                **Interpretación (Integral Hipsométrica):**
+                                * **Curva Convexa (Integral > 0.6):** Cuenca en fase de **Juventud**. Gran potencial erosivo, laderas inestables.
+                                * **Curva en 'S' (Integral 0.35 - 0.60):** Cuenca en fase de **Madurez**. Equilibrio entre erosión y sedimentación.
+                                * **Curva Cóncava (Integral < 0.35):** Cuenca en fase de **Vejez**. Predomina la sedimentación, relieves suaves.
+                                """)
+                    except Exception as e:
+                        pass # Silenciar errores no críticos aquí
 
                 # Mapa de Contexto (Restaurado con Popups)
                 st.markdown("---")
@@ -2945,15 +3033,41 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     if "gdf_vis" in res:
                         folium.GeoJson(res["gdf_vis"], style_function=lambda x: {"color": "blue", "weight": 2, "fillOpacity": 0.1}).add_to(m_ctx)
                     
-                    # Popups recuperados
+                    # POPUPS DETALLADOS ---
+                    # Pre-calculamos años de registro por estación para eficiencia
+                    years_per_station = res["df_raw"].groupby(Config.STATION_NAME_COL)[Config.YEAR_COL].nunique()
+
                     for _, r in res["df_int"].iterrows():
+                        nombre = r[Config.STATION_NAME_COL]
+                        ppt_val = r[Config.PRECIPITATION_COL]
+                        
+                        # Recuperar datos con seguridad (usando .get si es diccionario o atributos si es serie)
+                        # Asumimos columnas estándar, ajusta si tus nombres son diferentes (ej: 'Municipio', 'Altitude')
+                        muni = r.get("Municipio", r.get("MUNICIPIO", "N/A")) 
+                        alt = r.get(Config.ALTITUDE_COL, 0)
+                        n_anos = years_per_station.get(nombre, 0)
+
+                        # HTML Estilizado para el Popup
+                        html = f"""
+                        <div style='font-family:sans-serif; font-size:12px; min-width:180px'>
+                            <h4 style='margin:0; color:#2c3e50'>{nombre}</h4>
+                            <hr style='margin:5px 0'>
+                            <b>📍 Municipio:</b> {muni}<br>
+                            <b>⛰️ Altitud:</b> {alt:.0f} msnm<br>
+                            <b>🌧️ Ppt Media:</b> {ppt_val:.0f} mm<br>
+                            <b>📅 Registro:</b> {n_anos} años
+                        </div>
+                        """
+                        iframe = folium.IFrame(html, width=200, height=120)
+                        popup = folium.Popup(iframe, max_width=200)
+                        
                         folium.CircleMarker(
-                            [r.latitude, r.longitude], radius=4, color="red", fill=True,
-                            popup=f"{r[Config.STATION_NAME_COL]}: {r[Config.PRECIPITATION_COL]:.0f}mm"
+                            [r.latitude, r.longitude], 
+                            radius=5, color="darkred", fill=True, fill_color="red", fill_opacity=0.8,
+                            popup=popup
                         ).add_to(m_ctx)
                     
                     st_folium(m_ctx, height=400, width="100%")
-
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
 # -----------------------------------------------------------------------------
