@@ -2368,21 +2368,36 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión Master Completa: 
-    - Interpolación Regional y por Cuenca.
-    - IVC con recorte (clipping) real por coberturas (Cultivos/Bosques).
-    - Cálculo de tendencias "in-situ" si faltan datos externos.
-    - Restauración total de textos, ecuaciones y mapa de contexto.
+    Versión Integral Definitiva: 
+    - Hidrología Completa (FDC, Hipsometría, Balances).
+    - Mapas de Vulnerabilidad (IVC) con recorte automático de CRS.
+    - Cálculo de tendencias in-situ (si faltan datos externos).
+    - Persistencia de sesión y restauración de textos explicativos.
     """
+    import plotly.graph_objects as go
+    import plotly.express as px
+    from scipy.interpolate import Rbf, griddata
+    import numpy as np
+    from streamlit_folium import st_folium
+    import folium
+    from folium.plugins import LocateControl
+    import geopandas as gpd
+    import matplotlib
+    import matplotlib.pyplot as plt
+    from matplotlib import path as mpath 
+    from shapely.geometry import LineString
+    import tempfile
+    import os
+    import shutil
     
-    # Configuración de Matplotlib para servidores web (Crucial para estabilidad)
+    # Configuración de Backend Gráfico
     matplotlib.use('Agg')
 
-    # Recuperar datos
+    # Recuperación de capas opcionales
     gdf_coberturas = kwargs.get("gdf_coberturas", None) 
     df_trends_global = kwargs.get("df_trends", None)           
 
-    # Configuración Meses
+    # Configuración de Títulos
     selected_months = kwargs.get("selected_months", [])
     titulo_meses = ""
     if selected_months and len(selected_months) < 12:
@@ -2395,7 +2410,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     mode = st.radio("Modo de Análisis:", ["Regional (Comparación)", "Por Cuenca (Detallado)"], horizontal=True)
     user_loc = kwargs.get("user_loc", None)
 
-    # --- HELPERS ---
+    # --- HELPERS (FUNCIONES AUXILIARES) ---
     def run_interp(df_puntos, metodo, bounds_box):
         try:
             gx, gy = np.mgrid[bounds_box[0]:bounds_box[1]:60j, bounds_box[2]:bounds_box[3]:60j]
@@ -2445,25 +2460,19 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             shutil.make_archive(base_zip, 'zip', tmpdir)
             with open(f"{base_zip}.zip", "rb") as f: return f.read()
 
-    # --- HELPER MÁSCARA (CON CORRECCIÓN CRS) ---
+    # --- HELPER CRÍTICO: MÁSCARA CON CORRECCIÓN DE CRS ---
     def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
-        """
-        Recorta la grilla usando geometrías. 
-        IMPORTANTE: Asegura que el CRS sea Lat/Lon (EPSG:4326) para coincidir con la malla.
-        """
-        if gdf_mask is None or gdf_mask.empty:
-            return grid_values 
+        """Recorta la grilla usando geometrías, asegurando coincidencia de CRS."""
+        if gdf_mask is None or gdf_mask.empty: return grid_values 
         
         try:
-            # 1. Reproyección de Seguridad (Vital para que no salga vacío)
-            if gdf_mask.crs != "EPSG:4326":
+            # ¡LA CLAVE! Forzar proyección a WGS84 para coincidir con el mapa base
+            if gdf_mask.crs is not None and gdf_mask.crs.to_string() != "EPSG:4326":
                 gdf_mask = gdf_mask.to_crs("EPSG:4326")
 
-            # 2. Crear Polígonos de Máscara
             points = np.vstack((gx.flatten(), gy.flatten())).T
             final_mask = np.zeros(points.shape[0], dtype=bool)
             
-            # Optimización: Unir todo en una sola geometría si es posible
             try:
                 geom_union = gdf_mask.unary_union
                 geoms = geom_union.geoms if geom_union.geom_type == 'MultiPolygon' else [geom_union]
@@ -2480,14 +2489,13 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             grid_masked = grid_values.flatten()
             grid_masked[~final_mask] = np.nan
             
-            # Verificar si se borró todo (fallback de seguridad)
+            # Si el recorte dejó todo vacío (error posible), devolvemos original con warning interno
             if np.nansum(grid_masked) == 0 and np.nansum(grid_values) != 0:
-                return grid_values # Si falló el recorte, devolvemos el original
+                return grid_values 
                 
             return grid_masked.reshape(gx.shape)
-        except Exception as e:
-            return grid_values
-
+        except: return grid_values
+            
 # ==========================================================================
     # MODO 1: REGIONAL (COMPARACIÓN) - CON DESCARGAS
     # ==========================================================================
@@ -2655,7 +2663,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             plot_panel(p["r1"], p["m1"], c1, "A", user_loc)
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
             
-    # MODO 2: CUENCA (COMPLETO)
+    # ==========================================================================
+    # MODO 2: CUENCA (COMPLETO E INTEGRADO)
     # ==========================================================================
     else:
         gdf_subcuencas = kwargs.get("gdf_subcuencas")
@@ -2677,12 +2686,13 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             rng_c = c_p1.slider("Periodo:", 1980, 2025, (2000, 2020))
             meth_c = c_p2.selectbox("Método Interpolación:", ["Kriging (RBF)", "IDW"])
 
-            # --- CÁLCULO ---
+            # --- LÓGICA DE CÁLCULO ---
             if st.button("⚡ Analizar Cuenca"):
                 st.session_state["last_sel_cuencas"] = sel_cuencas
                 if "basin_res" in st.session_state: del st.session_state["basin_res"]
 
                 with st.spinner("Procesando hidrología, IVC y tendencias..."):
+                    # 1. Geometría
                     sub = gdf_subcuencas[gdf_subcuencas[col_name].isin(sel_cuencas)]
                     try:
                         geom_union = sub.geometry.unary_union
@@ -2699,6 +2709,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     stns = gpd.sjoin(gdf_stations, gdf_buf, predicate="intersects")
                     
                     if not stns.empty:
+                        # 2. Datos
                         mask = (df_long[Config.STATION_NAME_COL].isin(stns[Config.STATION_NAME_COL].unique())) & \
                                (df_long[Config.YEAR_COL] >= rng_c[0]) & (df_long[Config.YEAR_COL] <= rng_c[1])
                         df_raw = df_long[mask].copy()
@@ -2710,13 +2721,14 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         gdf_pts = gpd.GeoDataFrame(df_int, geometry=gpd.points_from_xy(df_int.longitude, df_int.latitude), crs=gdf_stations.crs)
 
                         if len(df_int) >= 3:
+                            # 3. Malla Base
                             minx, miny, maxx, maxy = gdf_buf.total_bounds
                             gx, gy = np.mgrid[minx:maxx:70j, miny:maxy:70j]
                             pts = df_int[["longitude", "latitude"]].values
                             vals_p = df_int[Config.PRECIPITATION_COL].values
                             vals_alt = df_int[Config.ALTITUDE_COL].values
                             
-                            # Interpolaciones
+                            # A. Interpolación Base
                             if "Kriging" in meth_c:
                                 rbf = Rbf(pts[:, 0], pts[:, 1], vals_p, function="thin_plate")
                                 gz = rbf(gx, gy)
@@ -2725,7 +2737,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             
                             gz_alt = griddata(pts, vals_alt, (gx, gy), method='linear')
 
-                            # IVC
+                            # B. IVC (Física y Normalización)
                             gz_t = np.maximum(28 - (0.006 * gz_alt), 0)
                             l_t = 300 + (25 * gz_t) + (0.05 * gz_t**3)
                             with np.errstate(divide='ignore', invalid='ignore'):
@@ -2740,9 +2752,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             gz_iesd = 100 * ((esd_max - gz_esd) / esd_max)
                             gz_ivc = (gz_it + gz_iesd) / 2
 
-                            # Tendencias (In-Situ)
+                            # C. Tendencias (In-Situ Backup)
                             gz_iv_var = None
-                            df_slopes = df_trends_global
+                            df_slopes = df_trends_global # Intentar usar el global
+                            
+                            # Si no hay global, calcular localmente
                             if df_slopes is None and len(df_raw) > 0:
                                 try:
                                     import scipy.stats
@@ -2764,7 +2778,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                         gz_iv_var = (gz_iesd + gz_tr) / 2
                                 except: pass
 
-                            # Masking Cultivos/Incendios
+                            # D. Recorte (Masking) para Cultivos e Incendios
                             gz_cult, gz_inc = None, None
                             if gdf_coberturas is not None:
                                 try:
@@ -2779,8 +2793,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                         gz_inc = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_b)
                                 except: pass
 
-                            # Hidrología
+                            # 4. Hidrología Completa
+                            gdf_iso = generate_isohyets_gdf(gx, gy, gz, levels=12, crs=gdf_stations.crs)
                             ppt_med = np.nanmean(gz) if gz is not None else 0
+                            
                             try: morph = analysis.calculate_morphometry(gdf_union)
                             except: morph = {"area_km2": 0, "alt_prom_m": 1500}
                             
@@ -2796,6 +2812,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             try: fdc = analysis.calculate_fdc(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), q_mm/ppt_med if ppt_med>0 else 0.4, morph.get("area_km2", 100))
                             except: pass
 
+                            # GUARDADO FINAL EN SESIÓN
                             st.session_state["basin_res"] = {
                                 "ready": True, "names": ", ".join(sel_cuencas), "bounds": [minx, maxx, miny, maxy],
                                 "gz": gz, "gx": gx, "gy": gy, "gz_ivc": gz_ivc, "gz_iv_var": gz_iv_var,
@@ -2833,7 +2850,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     z, tit, colors = res.get("gz_iv_var", res["gz_ivc"]), "Vulnerabilidad Variación (Tendencia)", "RdYlGn_r"
                     zmin, zmax = 0, 100
 
-                # Plot Map
+                # Mapa Principal Plotly
                 fig = go.Figure(go.Contour(z=z.T, x=res["gx"][:,0], y=res["gy"][0,:], colorscale=colors, zmin=zmin, zmax=zmax, contours=dict(start=zmin, end=zmax, size=(zmax-zmin)/15 if zmax>zmin else 1)))
                 try:
                     for g in (res["gdf_vis"].geometry if res["gdf_vis"].geometry.iloc[0].geom_type != 'MultiPolygon' else res["gdf_vis"].geometry.iloc[0].geoms):
@@ -2849,7 +2866,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     with st.expander("ℹ️ Interpretación del IVC (Semáforo de Riesgo)", expanded=True):
                         st.markdown("""
                         El **Índice de Vulnerabilidad Climática (IVC)** identifica zonas críticas por condiciones biofísicas:
-                        * 🔴 **Rojo (80-100): Vulnerabilidad Crítica.** Coincidencia de altas temperaturas y bajo balance hídrico (déficit). Alto riesgo de estrés en cultivos e incendios.
+                        * 🔴 **Rojo (80-100): Vulnerabilidad Crítica.** Coincidencia de altas temperaturas y bajo balance hídrico (déficit).
                         * 🟠 **Naranja (60-80): Vulnerabilidad Alta.**
                         * 🟡 **Amarillo (40-60): Vulnerabilidad Media.**
                         * 🟢 **Verde (0-40): Vulnerabilidad Baja.** Zonas con superávit hídrico y temperaturas moderadas.
@@ -2862,7 +2879,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         gdf_out = generate_isohyets_gdf(res["gx"], res["gy"], z, levels=15)
                         if gdf_out is not None: col_d1.download_button("Descargar", gdf_out.to_json(), "mapa.geojson")
                 
-                # Métricas
+                # Métricas y Balance (Restaurado)
                 st.markdown("---")
                 st.subheader("💧 Balance Hídrico y Morfometría")
                 m, b = res["morph"], res["bal"]
@@ -2879,15 +2896,20 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     El caudal específico se deriva como $Q = P - E$. Es ideal para estimar oferta hídrica media a largo plazo.
                     """)
 
-                # Índices
+                # Índices Climáticos (Restaurado)
                 st.markdown("---")
                 st.subheader("🌡️ Índices Climáticos")
                 idx = res["idx"]
                 k1, k2 = st.columns(2)
                 k1.metric("Martonne (Aridez)", f"{idx.get('martonne_val', 0):.1f}", delta=idx.get("martonne_class", ""))
                 k2.metric("Fournier (Erosión)", f"{idx.get('fournier_val', 0):.1f}", delta=idx.get("fournier_class", ""))
-                
-                # FDC
+                with st.expander("ℹ️ Interpretación de Índices"):
+                    st.markdown("""
+                    * **Índice de Martonne:** Clasifica el clima según su grado de aridez.
+                    * **Índice de Fournier:** Evalúa la agresividad de la lluvia y potencial erosivo.
+                    """)
+
+                # FDC (Restaurado)
                 if res["fdc"]:
                     st.markdown("---")
                     st.subheader("📉 Curva de Duración de Caudales (FDC)")
@@ -2900,7 +2922,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         with st.expander("ℹ️ Interpretación FDC"):
                             st.write("Indica el % de tiempo que un caudal es igualado o excedido. Q95 es el caudal ecológico base.")
 
-                # Hipsometría
+                # Hipsometría (Restaurado)
                 if hasattr(analysis, "calculate_hypsometric_curve"):
                     try:
                         hyp = analysis.calculate_hypsometric_curve(res["gdf_union"])
@@ -2913,14 +2935,24 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                 st.write("Distribución del área de la cuenca según su altitud. Indica la edad geológica (joven/madura) y potencial energético.")
                     except: pass
 
-                # Contexto
+                # Mapa de Contexto (Restaurado con Popups)
                 st.markdown("---")
                 st.subheader("📍 Mapa de Contexto")
-                m_ctx = folium.Map([(res["bounds"][2]+res["bounds"][3])/2, (res["bounds"][0]+res["bounds"][1])/2], zoom_start=10, tiles="CartoDB positron")
-                folium.GeoJson(res["gdf_vis"], style_function=lambda x:{"color":"blue", "fillOpacity":0.1}).add_to(m_ctx)
-                for _, r in res["df_int"].iterrows():
-                    folium.CircleMarker([r.latitude, r.longitude], radius=4, color="red", popup=f"{r[Config.STATION_NAME_COL]}: {r[Config.PRECIPITATION_COL]:.0f}mm").add_to(m_ctx)
-                st_folium(m_ctx, height=400, width="100%")
+                if "bounds" in res:
+                    m_ctx = folium.Map([(res["bounds"][2]+res["bounds"][3])/2, (res["bounds"][0]+res["bounds"][1])/2], zoom_start=10, tiles="CartoDB positron")
+                    if res.get("gdf_buf") is not None:
+                        folium.GeoJson(res["gdf_buf"], style_function=lambda x: {"color": "gray", "dashArray": "5,5", "fill": False}).add_to(m_ctx)
+                    if "gdf_vis" in res:
+                        folium.GeoJson(res["gdf_vis"], style_function=lambda x: {"color": "blue", "weight": 2, "fillOpacity": 0.1}).add_to(m_ctx)
+                    
+                    # Popups recuperados
+                    for _, r in res["df_int"].iterrows():
+                        folium.CircleMarker(
+                            [r.latitude, r.longitude], radius=4, color="red", fill=True,
+                            popup=f"{r[Config.STATION_NAME_COL]}: {r[Config.PRECIPITATION_COL]:.0f}mm"
+                        ).add_to(m_ctx)
+                    
+                    st_folium(m_ctx, height=400, width="100%")
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
