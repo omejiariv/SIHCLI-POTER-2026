@@ -2950,9 +2950,7 @@ def display_climate_forecast_tab(**kwargs):
 
     # --- CAJA INFORMATIVA (Extendida y Mejorada) ---
     with st.expander(
-        "
-        
-        ℹ️ Acerca de los Pronósticos IRI/CPC (Columbia University)", expanded=False
+        "ℹ️ Acerca de los Pronósticos IRI/CPC (Columbia University)", expanded=False
     ):
         st.markdown(
             """
