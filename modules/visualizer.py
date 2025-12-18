@@ -2380,7 +2380,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
     # Recuperar capas adicionales de los argumentos (NUEVO)
     gdf_coberturas = kwargs.get("gdf_coberturas", None) # Capa de usos del suelo
-    df_trends = kwargs.get("df_trends", None)           # DataFrame con tendencias (sen slope)    
+    df_trends_global = kwargs.get("df_trends", None)
 
     # 1. Configuración de Meses y Título
     selected_months = kwargs.get("selected_months", [])
@@ -2505,46 +2505,38 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             with open(f"{base_zip}.zip", "rb") as f:
                 return f.read()
 
-    # --- NUEVO HELPER: MÁSCARA POR GEOMETRÍA (CLIPPING) ---
+# --- NUEVO HELPER: MÁSCARA POR GEOMETRÍA (Soluciona mapas idénticos) ---
     def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
         """Pone en NaN los valores de la grilla que caen fuera de las geometrías dadas."""
         if gdf_mask is None or gdf_mask.empty:
-            return grid_values # No hay filtro
+            return grid_values 
         
         try:
             # Aplanar coordenadas de la malla
             points = np.vstack((gx.flatten(), gy.flatten())).T
-            
-            # Crear máscara global (False = fuera)
             final_mask = np.zeros(points.shape[0], dtype=bool)
             
-            # Iterar geometrías (Simplificado para velocidad: usa unary_union si es posible antes)
-            # Para optimizar, usamos solo la unión disuelta
+            # Unir geometrías para optimizar
             try:
                 geom_union = gdf_mask.unary_union
-                if geom_union.geom_type == 'MultiPolygon':
-                    geoms = geom_union.geoms
-                else:
-                    geoms = [geom_union]
+                geoms = geom_union.geoms if geom_union.geom_type == 'MultiPolygon' else [geom_union]
             except:
                 geoms = gdf_mask.geometry
                 
             for geom in geoms:
                 if geom.is_empty: continue
-                # Obtener path del polígono exterior
+                # Usar matplotlib path para verificar inclusión (más rápido que shapely para nubes de puntos)
                 exterior_coords = np.array(geom.exterior.coords)
                 p = mpath.Path(exterior_coords)
-                # Verificar puntos dentro
                 mask = p.contains_points(points)
-                final_mask |= mask # Sumar a la máscara final
+                final_mask |= mask
             
             # Aplicar máscara
             grid_masked = grid_values.flatten()
             grid_masked[~final_mask] = np.nan
             return grid_masked.reshape(gx.shape)
-        except Exception as e:
-            # print(f"Error en masking: {e}")
-            return grid_values # Fallback: devolver original    
+        except:
+            return grid_values # Fallback
 
 # ==========================================================================
     # MODO 1: REGIONAL (COMPARACIÓN) - CON DESCARGAS
