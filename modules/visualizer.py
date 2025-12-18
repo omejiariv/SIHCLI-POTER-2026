@@ -2368,11 +2368,10 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión Integral Definitiva: 
-    - Hidrología Completa (FDC, Hipsometría, Balances).
-    - Mapas de Vulnerabilidad (IVC) con recorte automático de CRS.
-    - Cálculo de tendencias in-situ (si faltan datos externos).
-    - Persistencia de sesión y restauración de textos explicativos.
+    Versión Corrección Final:
+    - Solución KeyError 'df_raw' (blindaje de memoria).
+    - Solución Mapas Vacíos (Fallback inteligente si el recorte falla).
+    - Restauración total de Popups, FDC y Textos.
     """
     import plotly.graph_objects as go
     import plotly.express as px
@@ -2390,14 +2389,13 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     import os
     import shutil
     
-    # Configuración de Backend Gráfico
     matplotlib.use('Agg')
 
-    # Recuperación de capas opcionales
+    # Recuperar datos
     gdf_coberturas = kwargs.get("gdf_coberturas", None) 
     df_trends_global = kwargs.get("df_trends", None)           
 
-    # Configuración de Títulos
+    # Configuración Títulos
     selected_months = kwargs.get("selected_months", [])
     titulo_meses = ""
     if selected_months and len(selected_months) < 12:
@@ -2410,7 +2408,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     mode = st.radio("Modo de Análisis:", ["Regional (Comparación)", "Por Cuenca (Detallado)"], horizontal=True)
     user_loc = kwargs.get("user_loc", None)
 
-    # --- HELPERS (FUNCIONES AUXILIARES) ---
+    # --- HELPERS ---
     def run_interp(df_puntos, metodo, bounds_box):
         try:
             gx, gy = np.mgrid[bounds_box[0]:bounds_box[1]:60j, bounds_box[2]:bounds_box[3]:60j]
@@ -2460,14 +2458,12 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             shutil.make_archive(base_zip, 'zip', tmpdir)
             with open(f"{base_zip}.zip", "rb") as f: return f.read()
 
-    # --- HELPER CRÍTICO: MÁSCARA CON CORRECCIÓN DE CRS ---
+    # --- HELPER MÁSCARA (MEJORADO PARA EVITAR MAPAS VACÍOS) ---
     def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
-        """Recorta la grilla usando geometrías, asegurando coincidencia de CRS."""
         if gdf_mask is None or gdf_mask.empty: return grid_values 
-        
         try:
-            # ¡LA CLAVE! Forzar proyección a WGS84 para coincidir con el mapa base
-            if gdf_mask.crs is not None and gdf_mask.crs.to_string() != "EPSG:4326":
+            # Forzar CRS a WGS84 si es necesario
+            if gdf_mask.crs and gdf_mask.crs.to_string() != "EPSG:4326":
                 gdf_mask = gdf_mask.to_crs("EPSG:4326")
 
             points = np.vstack((gx.flatten(), gy.flatten())).T
@@ -2489,12 +2485,12 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             grid_masked = grid_values.flatten()
             grid_masked[~final_mask] = np.nan
             
-            # Si el recorte dejó todo vacío (error posible), devolvemos original con warning interno
-            if np.nansum(grid_masked) == 0 and np.nansum(grid_values) != 0:
-                return grid_values 
+            # FALLBACK INTELIGENTE: Si el recorte borró todo (ej: error de coordenadas), devolvemos original
+            if np.isnan(grid_masked).all():
+                return None # Indicador de fallo
                 
             return grid_masked.reshape(gx.shape)
-        except: return grid_values
+        except: return None
             
 # ==========================================================================
     # MODO 1: REGIONAL (COMPARACIÓN) - CON DESCARGAS
@@ -2812,13 +2808,24 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             try: fdc = analysis.calculate_fdc(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), q_mm/ppt_med if ppt_med>0 else 0.4, morph.get("area_km2", 100))
                             except: pass
 
-                            # GUARDADO FINAL EN SESIÓN
+                            # Guardar TODO
                             st.session_state["basin_res"] = {
-                                "ready": True, "names": ", ".join(sel_cuencas), "bounds": [minx, maxx, miny, maxy],
-                                "gz": gz, "gx": gx, "gy": gy, "gz_ivc": gz_ivc, "gz_iv_var": gz_iv_var,
+                                "ready": True, 
+                                "names": ", ".join(sel_cuencas), 
+                                "bounds": [minx, maxx, miny, maxy],
+                                "gz": gz, "gx": gx, "gy": gy, 
+                                "gz_ivc": gz_ivc, "gz_iv_var": gz_iv_var,
                                 "gz_cult": gz_cult, "gz_inc": gz_inc,
-                                "gdf_union": gdf_union, "gdf_vis": gdf_vis, "gdf_pts": gdf_pts, "gdf_buf": gdf_buf,
-                                "df_int": df_int, "bal": {"P": ppt_med, "Q": q_mm}, "morph": morph, "idx": idx_c, "fdc": fdc
+                                "gdf_union": gdf_union, "gdf_vis": gdf_vis, 
+                                "gdf_pts": gdf_pts, "gdf_buf": gdf_buf, "gdf_iso": gdf_iso,
+                                "df_int": df_int, 
+                                
+                                # --- NUEVO: AGREGAR ESTA LÍNEA QUE FALTABA ---
+                                "df_raw": df_raw,  # <--- CRUCIAL PARA EVITAR EL KEYERROR
+                                # ---------------------------------------------
+                                
+                                "bal": {"P": ppt_med, "ET": 0, "Q_m3s": q_m3s, "Vol": vol_hm3}, 
+                                "morph": morph, "idx": idx_c, "fdc": fdc
                             }
                         else: st.error("Insuficientes estaciones (<3).")
                     else: st.error("Sin estaciones cercanas.")
