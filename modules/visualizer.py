@@ -2378,11 +2378,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # Configuración de Matplotlib para servidores web (Crucial para estabilidad)
     matplotlib.use('Agg')
 
-    # Recuperar capas adicionales de los argumentos (NUEVO)
-    gdf_coberturas = kwargs.get("gdf_coberturas", None) # Capa de usos del suelo
-    df_trends_global = kwargs.get("df_trends", None)
+    # Recuperar datos
+    gdf_coberturas = kwargs.get("gdf_coberturas", None) 
+    df_trends_global = kwargs.get("df_trends", None)           
 
-    # 1. Configuración de Meses y Título
+    # Configuración Meses
     selected_months = kwargs.get("selected_months", [])
     titulo_meses = ""
     if selected_months and len(selected_months) < 12:
@@ -2392,131 +2392,78 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
     st.subheader(f"🌍 Superficies de Interpolación{titulo_meses} y Análisis Hidrológico")
 
-    # 2. Control de Modo
-    mode = st.radio(
-        "Modo de Análisis:",
-        ["Regional (Comparación)", "Por Cuenca (Detallado)"],
-        horizontal=True,
-    )
-
-    # 3. Obtener ubicación del usuario
+    mode = st.radio("Modo de Análisis:", ["Regional (Comparación)", "Por Cuenca (Detallado)"], horizontal=True)
     user_loc = kwargs.get("user_loc", None)
 
-    # --- HELPER INTERPOLACIÓN (OPTIMIZADO) ---
+    # --- HELPERS ---
     def run_interp(df_puntos, metodo, bounds_box):
         try:
-            # OPTIMIZACIÓN: 60j es suficiente para web y mucho más rápido que 75j o 100j
-            gx, gy = np.mgrid[
-                bounds_box[0] : bounds_box[1] : 60j,
-                bounds_box[2] : bounds_box[3] : 60j,
-            ]
+            gx, gy = np.mgrid[bounds_box[0]:bounds_box[1]:60j, bounds_box[2]:bounds_box[3]:60j]
             df_unique = df_puntos.drop_duplicates(subset=["longitude", "latitude"])
             pts = df_unique[["longitude", "latitude"]].values
             vals = df_unique[Config.PRECIPITATION_COL].values
-
-            if len(pts) < 3:
-                return None, None, None
-
-            if "Kriging" in metodo or "RBF" in metodo:
+            if len(pts) < 3: return None, None, None
+            if "Kriging" in metodo:
                 rbf = Rbf(pts[:, 0], pts[:, 1], vals, function="thin_plate")
                 gz = rbf(gx, gy)
             else:
-                method_scipy = "cubic" if "Spline" in metodo else "linear"
-                gz = griddata(pts, vals, (gx, gy), method=method_scipy)
+                gz = griddata(pts, vals, (gx, gy), method="linear")
             return gx, gy, gz
-        except Exception:
-            return None, None, None
+        except: return None, None, None
 
-    # --- HELPER PROMEDIOS ---
     def calcular_promedios_reales(df_datos):
-        if df_datos.empty:
-            return pd.DataFrame()
-        
-        # Agrupación optimizada
-        df_valid = df_datos[df_datos[Config.PRECIPITATION_COL] >= 0]
-        conteo = df_valid.groupby([Config.STATION_NAME_COL, Config.YEAR_COL]).size()
-        
-        # Filtro: Al menos 5 años de datos para considerar la estación
+        if df_datos.empty: return pd.DataFrame()
+        conteo = df_datos[df_datos[Config.PRECIPITATION_COL] >= 0].groupby([Config.STATION_NAME_COL, Config.YEAR_COL]).size()
         anos_validos = conteo[conteo >= 5].index
-        
-        df_filtrado = (
-            df_datos.set_index([Config.STATION_NAME_COL, Config.YEAR_COL])
-            .loc[anos_validos]
-            .reset_index()
-        )
-        
-        # Suma anual y luego promedio multianual
-        suma_anual = (
-            df_filtrado.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[Config.PRECIPITATION_COL]
-            .sum()
-            .reset_index()
-        )
-        
-        return (
-            suma_anual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL]
-            .mean()
-            .reset_index()
-        )
+        df_filtrado = df_datos.set_index([Config.STATION_NAME_COL, Config.YEAR_COL]).loc[anos_validos].reset_index()
+        suma_anual = df_filtrado.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[Config.PRECIPITATION_COL].sum().reset_index()
+        return suma_anual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index()
 
-    # --- HELPER: VECTORIZAR ISOYETAS (ROBUSTO) ---
     def generate_isohyets_gdf(gx, gy, gz, levels=10, crs="EPSG:4326"):
-        """Convierte la matriz numpy en líneas vectoriales (GeoDataFrame)."""
         try:
-            # Crear figura sin mostrarla (backend Agg)
             fig, ax = plt.subplots()
             contour = ax.contour(gx, gy, gz, levels=levels)
-            plt.close(fig) # Liberar memoria inmediatamente
-
-            lines = []
-            values = []
-
+            plt.close(fig)
+            lines, values = [], []
             for collection in contour.collections:
-                paths = collection.get_paths()
-                # Intentar obtener valor Z de forma segura
-                try:
-                    z_val = collection.level
-                except:
-                    z_val = 0
-                
-                for path in paths:
+                z_val = 0
+                try: z_val = collection.level
+                except: pass
+                for path in collection.get_paths():
                     if len(path.vertices) >= 2:
                         lines.append(LineString(path.vertices))
                         values.append(z_val)
-            
-            if not lines:
-                return None
+            if not lines: return None
+            return gpd.GeoDataFrame({"valor": values, "geometry": lines}, crs=crs)
+        except: return None
 
-            gdf_iso = gpd.GeoDataFrame({"precip_mm": values, "geometry": lines}, crs=crs)
-            return gdf_iso
-        except Exception as e:
-            # print(f"Error vectorizando: {e}") 
-            return None
-
-    # --- HELPER: ZIP SHAPEFILE ---
     def create_zipped_shapefile(gdf, filename_base):
-        """Guarda un GDF como shapefile comprimido en memoria."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, f"{filename_base}.shp")
             gdf.to_file(path, driver="ESRI Shapefile")
-            
             base_zip = os.path.join(tmpdir, filename_base)
             shutil.make_archive(base_zip, 'zip', tmpdir)
-            
-            with open(f"{base_zip}.zip", "rb") as f:
-                return f.read()
+            with open(f"{base_zip}.zip", "rb") as f: return f.read()
 
-# --- NUEVO HELPER: MÁSCARA POR GEOMETRÍA (Soluciona mapas idénticos) ---
+    # --- HELPER MÁSCARA (CON CORRECCIÓN CRS) ---
     def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
-        """Pone en NaN los valores de la grilla que caen fuera de las geometrías dadas."""
+        """
+        Recorta la grilla usando geometrías. 
+        IMPORTANTE: Asegura que el CRS sea Lat/Lon (EPSG:4326) para coincidir con la malla.
+        """
         if gdf_mask is None or gdf_mask.empty:
             return grid_values 
         
         try:
-            # Aplanar coordenadas de la malla
+            # 1. Reproyección de Seguridad (Vital para que no salga vacío)
+            if gdf_mask.crs != "EPSG:4326":
+                gdf_mask = gdf_mask.to_crs("EPSG:4326")
+
+            # 2. Crear Polígonos de Máscara
             points = np.vstack((gx.flatten(), gy.flatten())).T
             final_mask = np.zeros(points.shape[0], dtype=bool)
             
-            # Unir geometrías para optimizar
+            # Optimización: Unir todo en una sola geometría si es posible
             try:
                 geom_union = gdf_mask.unary_union
                 geoms = geom_union.geoms if geom_union.geom_type == 'MultiPolygon' else [geom_union]
@@ -2525,18 +2472,21 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 
             for geom in geoms:
                 if geom.is_empty: continue
-                # Usar matplotlib path para verificar inclusión (más rápido que shapely para nubes de puntos)
                 exterior_coords = np.array(geom.exterior.coords)
                 p = mpath.Path(exterior_coords)
                 mask = p.contains_points(points)
                 final_mask |= mask
             
-            # Aplicar máscara
             grid_masked = grid_values.flatten()
             grid_masked[~final_mask] = np.nan
+            
+            # Verificar si se borró todo (fallback de seguridad)
+            if np.nansum(grid_masked) == 0 and np.nansum(grid_values) != 0:
+                return grid_values # Si falló el recorte, devolvemos el original
+                
             return grid_masked.reshape(gx.shape)
-        except:
-            return grid_values # Fallback
+        except Exception as e:
+            return grid_values
 
 # ==========================================================================
     # MODO 1: REGIONAL (COMPARACIÓN) - CON DESCARGAS
@@ -2705,7 +2655,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             plot_panel(p["r1"], p["m1"], c1, "A", user_loc)
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
             
-# MODO 2: CUENCA (MASTER UPDATE)
+    # MODO 2: CUENCA (COMPLETO)
     # ==========================================================================
     else:
         gdf_subcuencas = kwargs.get("gdf_subcuencas")
@@ -2727,60 +2677,55 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             rng_c = c_p1.slider("Periodo:", 1980, 2025, (2000, 2020))
             meth_c = c_p2.selectbox("Método Interpolación:", ["Kriging (RBF)", "IDW"])
 
-            # --- LÓGICA DE CÁLCULO ---
+            # --- CÁLCULO ---
             if st.button("⚡ Analizar Cuenca"):
                 st.session_state["last_sel_cuencas"] = sel_cuencas
                 if "basin_res" in st.session_state: del st.session_state["basin_res"]
 
-                with st.spinner("Procesando hidrología, IVC y Riesgos..."):
-                    # 1. Geometría Base
+                with st.spinner("Procesando hidrología, IVC y tendencias..."):
                     sub = gdf_subcuencas[gdf_subcuencas[col_name].isin(sel_cuencas)]
                     try:
-                        geom_union_shape = sub.geometry.unary_union
-                        gdf_union_real = gpd.GeoDataFrame({"geometry": [geom_union_shape]}, crs=gdf_subcuencas.crs)
+                        geom_union = sub.geometry.unary_union
+                        gdf_union = gpd.GeoDataFrame({"geometry": [geom_union]}, crs=gdf_subcuencas.crs)
                     except:
-                        gdf_union_real = gpd.GeoDataFrame({"geometry": [sub.geometry.iloc[0]]}, crs=gdf_subcuencas.crs)
-                        geom_union_shape = sub.geometry.iloc[0]
+                        gdf_union = gpd.GeoDataFrame({"geometry": [sub.geometry.iloc[0]]}, crs=gdf_subcuencas.crs)
+                        geom_union = sub.geometry.iloc[0]
 
-                    gdf_vis = gdf_union_real.copy()
+                    gdf_vis = gdf_union.copy()
                     gdf_vis["geometry"] = gdf_vis.geometry.simplify(0.005)
 
-                    buf_shape = geom_union_shape.buffer(buffer_km / 111.32)
-                    gdf_buffer = gpd.GeoDataFrame({"geometry": [buf_shape]}, crs=gdf_stations.crs)
-                    stns_zone = gpd.sjoin(gdf_stations, gdf_buffer, predicate="intersects")
+                    buf = geom_union.buffer(buffer_km / 111.32)
+                    gdf_buf = gpd.GeoDataFrame({"geometry": [buf]}, crs=gdf_stations.crs)
+                    stns = gpd.sjoin(gdf_stations, gdf_buf, predicate="intersects")
                     
-                    if not stns_zone.empty:
-                        # 2. Datos Temporales
-                        mask = (df_long[Config.STATION_NAME_COL].isin(stns_zone[Config.STATION_NAME_COL].unique())) & \
+                    if not stns.empty:
+                        mask = (df_long[Config.STATION_NAME_COL].isin(stns[Config.STATION_NAME_COL].unique())) & \
                                (df_long[Config.YEAR_COL] >= rng_c[0]) & (df_long[Config.YEAR_COL] <= rng_c[1])
                         df_raw = df_long[mask].copy()
-                        
                         df_avg = calcular_promedios_reales(df_raw)
+                        
                         if Config.STATION_NAME_COL not in df_avg.columns: df_avg = df_avg.reset_index()
-                        df_interp = pd.merge(df_avg, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
-                        if Config.ALTITUDE_COL not in df_interp.columns: df_interp[Config.ALTITUDE_COL] = 1500
+                        df_int = pd.merge(df_avg, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
+                        if Config.ALTITUDE_COL not in df_int.columns: df_int[Config.ALTITUDE_COL] = 1500
+                        gdf_pts = gpd.GeoDataFrame(df_int, geometry=gpd.points_from_xy(df_int.longitude, df_int.latitude), crs=gdf_stations.crs)
 
-                        gdf_puntos_interp = gpd.GeoDataFrame(df_interp, geometry=gpd.points_from_xy(df_interp.longitude, df_interp.latitude), crs=gdf_stations.crs)
-
-                        if len(df_interp) >= 3:
-                            # 3. Malla e Interpolación Base
-                            minx, miny, maxx, maxy = gdf_buffer.total_bounds
+                        if len(df_int) >= 3:
+                            minx, miny, maxx, maxy = gdf_buf.total_bounds
                             gx, gy = np.mgrid[minx:maxx:70j, miny:maxy:70j]
-                            pts = df_interp[["longitude", "latitude"]].values
-                            vals_p = df_interp[Config.PRECIPITATION_COL].values
-                            vals_alt = df_interp[Config.ALTITUDE_COL].values
+                            pts = df_int[["longitude", "latitude"]].values
+                            vals_p = df_int[Config.PRECIPITATION_COL].values
+                            vals_alt = df_int[Config.ALTITUDE_COL].values
                             
-                            # A. Lluvia (gz)
+                            # Interpolaciones
                             if "Kriging" in meth_c:
                                 rbf = Rbf(pts[:, 0], pts[:, 1], vals_p, function="thin_plate")
                                 gz = rbf(gx, gy)
                             else:
                                 gz = griddata(pts, vals_p, (gx, gy), method="linear")
-
-                            # B. Altitud (gz_alt)
+                            
                             gz_alt = griddata(pts, vals_alt, (gx, gy), method='linear')
 
-                            # C. IVC (Física)
+                            # IVC
                             gz_t = np.maximum(28 - (0.006 * gz_alt), 0)
                             l_t = 300 + (25 * gz_t) + (0.05 * gz_t**3)
                             with np.errstate(divide='ignore', invalid='ignore'):
@@ -2788,7 +2733,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             gz_etr = np.minimum(gz_etr, gz)
                             gz_esd = gz - gz_etr
 
-                            # Normalización IVC
                             t_max = np.nanmax(gz_t)
                             gz_it = 100 * (gz_t / t_max) if t_max > 0 else gz_t * 0
                             esd_max = np.nanmax(gz_esd)
@@ -2796,287 +2740,187 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             gz_iesd = 100 * ((esd_max - gz_esd) / esd_max)
                             gz_ivc = (gz_it + gz_iesd) / 2
 
-                            # D. Tendencias (Fallback interno si df_trends_global es None)
+                            # Tendencias (In-Situ)
                             gz_iv_var = None
-                            df_slopes = None
-                            
-                            # Intentamos usar el global, si no, calculamos local
-                            if df_trends_global is not None and not df_trends_global.empty:
-                                df_slopes = df_trends_global
-                            elif len(df_raw) > 0: # Cálculo de emergencia ("in-situ")
+                            df_slopes = df_trends_global
+                            if df_slopes is None and len(df_raw) > 0:
                                 try:
                                     import scipy.stats
-                                    slopes_list = []
-                                    for st_name in df_interp[Config.STATION_NAME_COL].unique():
-                                        d_st = df_raw[df_raw[Config.STATION_NAME_COL] == st_name].groupby(Config.YEAR_COL)[Config.PRECIPITATION_COL].sum()
-                                        if len(d_st) > 5:
-                                            slope, _, _, _, _ = scipy.stats.linregress(d_st.index, d_st.values)
-                                            slopes_list.append({Config.STATION_NAME_COL: st_name, 'slope': slope})
-                                    if slopes_list:
-                                        df_slopes = pd.DataFrame(slopes_list)
+                                    slopes = []
+                                    for s in df_int[Config.STATION_NAME_COL].unique():
+                                        d = df_raw[df_raw[Config.STATION_NAME_COL] == s].groupby(Config.YEAR_COL)[Config.PRECIPITATION_COL].sum()
+                                        if len(d) > 5:
+                                            sl, _, _, _, _ = scipy.stats.linregress(d.index, d.values)
+                                            slopes.append({Config.STATION_NAME_COL: s, 'slope': sl})
+                                    if slopes: df_slopes = pd.DataFrame(slopes)
                                 except: pass
-
-                            # Si logramos tener pendientes, interpolamos
+                            
                             if df_slopes is not None:
                                 try:
-                                    df_tr_map = pd.merge(df_interp, df_slopes, on=Config.STATION_NAME_COL, how="left")
-                                    if 'slope' in df_tr_map.columns:
-                                        vals_slope = df_tr_map['slope'].fillna(0).values
-                                        gz_slope = griddata(pts, vals_slope, (gx, gy), method='linear')
-                                        # Normalizar (-slope es riesgo): Escala empírica para visualizar
-                                        gz_i_trend = 50 - (gz_slope * 20) 
-                                        gz_i_trend = np.clip(gz_i_trend, 0, 100)
-                                        gz_iv_var = (gz_iesd + gz_i_trend) / 2
+                                    df_tm = pd.merge(df_int, df_slopes, on=Config.STATION_NAME_COL, how="left")
+                                    if 'slope' in df_tm.columns:
+                                        gz_slope = griddata(pts, df_tm['slope'].fillna(0).values, (gx, gy), method='linear')
+                                        gz_tr = np.clip(50 - (gz_slope * 25), 0, 100)
+                                        gz_iv_var = (gz_iesd + gz_tr) / 2
                                 except: pass
 
-                            # E. Recorte (Masking) para Cultivos e Incendios
-                            gz_cultivos = None
-                            gz_incendios = None
-                            
+                            # Masking Cultivos/Incendios
+                            gz_cult, gz_inc = None, None
                             if gdf_coberturas is not None:
-                                # Filtros aproximados (ajustar palabras clave según tu shapefile real)
-                                # Buscamos columnas de texto
-                                txt_cols = gdf_coberturas.select_dtypes(include=['object']).columns
-                                if len(txt_cols) > 0:
-                                    col_cob = txt_cols[0] # Asumimos la primera columna de texto es la categoría
-                                    
-                                    # Máscara Cultivos
-                                    gdf_agri = gdf_coberturas[gdf_coberturas[col_cob].astype(str).str.contains("Cultivo|Past|Agri", case=False, na=False)]
-                                    if not gdf_agri.empty:
-                                        gz_cultivos = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_agri)
-                                    
-                                    # Máscara Bosques (Incendios)
-                                    gdf_bosq = gdf_coberturas[gdf_coberturas[col_cob].astype(str).str.contains("Bosq|Forest|Selv", case=False, na=False)]
-                                    if not gdf_bosq.empty:
-                                        gz_incendios = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_bosq)
+                                try:
+                                    txt_cols = gdf_coberturas.select_dtypes(include=['object']).columns
+                                    if len(txt_cols) > 0:
+                                        c = txt_cols[0]
+                                        # Filtro flexible para coberturas
+                                        gdf_a = gdf_coberturas[gdf_coberturas[c].astype(str).str.contains("Cult|Past|Agri", case=False, na=False)]
+                                        gz_cult = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_a)
+                                        
+                                        gdf_b = gdf_coberturas[gdf_coberturas[c].astype(str).str.contains("Bosq|For|Selv", case=False, na=False)]
+                                        gz_inc = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_b)
+                                except: pass
 
-                            # 4. Vectorización
-                            gdf_isoyetas = generate_isohyets_gdf(gx, gy, gz, levels=12, crs=gdf_stations.crs)
-
-                            # 5. Hidrología (Restauración completa)
+                            # Hidrología
                             ppt_med = np.nanmean(gz) if gz is not None else 0
-                            try: morph = analysis.calculate_morphometry(gdf_union_real)
-                            except: morph = {"area_km2": 0, "perimetro_km": 0, "alt_prom_m": 1500, "pendiente_prom": 0}
+                            try: morph = analysis.calculate_morphometry(gdf_union)
+                            except: morph = {"area_km2": 0, "alt_prom_m": 1500}
                             
-                            area_km2 = morph.get("area_km2", 100)
-                            temp_media = 28 - (0.006 * morph.get("alt_prom_m", 1500))
-                            temp_media = max(0, temp_media)
+                            tm = max(0, 28 - 0.006 * morph.get("alt_prom_m", 1500))
+                            try: _, q_mm = analysis.calculate_water_balance_turc(ppt_med, tm)
+                            except: q_mm = 0
                             
-                            try: etr_mm, q_mm = analysis.calculate_water_balance_turc(ppt_med, temp_media)
-                            except: etr_mm, q_mm = 0, 0
+                            idx_c = {}
+                            try: idx_c = analysis.calculate_climatic_indices(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), morph.get("alt_prom_m", 1500))
+                            except: pass
                             
-                            vol_hm3 = (q_mm * area_km2) / 1000 
-                            q_m3s = (vol_hm3 * 1_000_000) / 31536000
-                            
-                            bs_ts = df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean()
-                            c_run = q_mm / ppt_med if ppt_med > 0 else 0.4
+                            fdc = None
+                            try: fdc = analysis.calculate_fdc(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), q_mm/ppt_med if ppt_med>0 else 0.4, morph.get("area_km2", 100))
+                            except: pass
 
-                            idx_calc = {}
-                            idx_error = None
-                            try:
-                                if hasattr(analysis, "calculate_climatic_indices"):
-                                    idx_calc = analysis.calculate_climatic_indices(bs_ts, morph.get("alt_prom_m", 1500))
-                                elif hasattr(analysis, "calculate_indices"):
-                                    idx_calc = analysis.calculate_indices(bs_ts, morph.get("alt_prom_m", 1500))
-                            except Exception as e: idx_error = str(e)
-                                
-                            fdc_calc = None
-                            fdc_error = None
-                            try:
-                                if hasattr(analysis, "calculate_duration_curve"):
-                                    fdc_calc = analysis.calculate_duration_curve(bs_ts, c_run, area_km2)
-                                elif hasattr(analysis, "calculate_fdc"):
-                                    fdc_calc = analysis.calculate_fdc(bs_ts, c_run, area_km2)
-                            except Exception as e: fdc_error = str(e)
-
-                            # GUARDADO
                             st.session_state["basin_res"] = {
                                 "ready": True, "names": ", ".join(sel_cuencas), "bounds": [minx, maxx, miny, maxy],
-                                "gz": gz, "gx": gx, "gy": gy, 
-                                "gz_ivc": gz_ivc, "gz_iv_var": gz_iv_var,
-                                "gz_cultivos": gz_cultivos, "gz_incendios": gz_incendios, # Nuevas máscaras
-                                "gdf_cuenca": gdf_union_real, "gdf_vis": gdf_vis, "gdf_puntos": gdf_puntos_interp,
-                                "gdf_buffer": gdf_buffer, "gdf_isoyetas": gdf_isoyetas,
-                                "df_interp": df_interp, "df_raw": df_raw,
-                                "bal": {"P": ppt_med, "ET": etr_mm, "Q_m3s": q_m3s, "Vol": vol_hm3},
-                                "morph": morph, "idx": idx_calc, "idx_error": idx_error,
-                                "fdc": fdc_calc, "fdc_error": fdc_error
+                                "gz": gz, "gx": gx, "gy": gy, "gz_ivc": gz_ivc, "gz_iv_var": gz_iv_var,
+                                "gz_cult": gz_cult, "gz_inc": gz_inc,
+                                "gdf_union": gdf_union, "gdf_vis": gdf_vis, "gdf_pts": gdf_pts, "gdf_buf": gdf_buf,
+                                "df_int": df_int, "bal": {"P": ppt_med, "Q": q_mm}, "morph": morph, "idx": idx_c, "fdc": fdc
                             }
-                        else:
-                            st.error("Insuficientes estaciones (<3).")
-                            st.session_state["basin_res"] = None
-                    else:
-                        st.error("Sin estaciones cercanas.")
-                        st.session_state["basin_res"] = None
+                        else: st.error("Insuficientes estaciones (<3).")
+                    else: st.error("Sin estaciones cercanas.")
 
             # --- VISUALIZACIÓN ---
             res = st.session_state.get("basin_res")
-            
             if res and res.get("ready"):
-                st.markdown(f"##### 📊 Resultados: {res.get('names', 'Cuenca')}")
+                st.markdown(f"##### 📊 Resultados: {res['names']}")
                 
-                # A. Selector
-                map_options = ["Precipitación (Isoyetas)", "IVC (Vulnerabilidad Climática)", "Vulnerabilidad Variación Clima (ESD + Tendencias)"]
-                if kwargs.get("gdf_coberturas") is not None:
-                    map_options.insert(2, "Vulnerabilidad Cultivos (IVC + Agric)")
-                    map_options.insert(3, "Vulnerabilidad Incendios (IVC + Bosque)")
-
-                layer_sel = st.selectbox("Seleccionar Mapa Temático:", map_options)
+                opts = ["Precipitación (Isoyetas)", "IVC (Vulnerabilidad Climática)", "Vulnerabilidad Variación Clima (ESD + Tendencias)"]
+                if gdf_coberturas is not None:
+                    opts += ["Vulnerabilidad Cultivos (IVC + Agric)", "Vulnerabilidad Incendios (IVC + Bosque)"]
                 
-                # B. Configurar Capa
-                z_map = res["gz"]
-                colors = "Blues"
-                title_map = "Precipitación Media (mm)"
-                zmin, zmax = 0, np.nanmax(res["gz"])
+                sel = st.selectbox("Seleccionar Mapa Temático:", opts)
                 
-                if layer_sel == "IVC (Vulnerabilidad Climática)":
-                    z_map = res["gz_ivc"]
+                z, tit, colors = res["gz"], "Precipitación (mm)", "Blues"
+                zmin, zmax = 0, np.nanmax(z)
+                
+                if "IVC" in sel:
                     colors = "RdYlGn_r"
-                    title_map = "Índice de Vulnerabilidad Climática (IVC)"
                     zmin, zmax = 0, 100
-                    st.caption("🔴 Rojo: Alta Vulnerabilidad. 🟢 Verde: Baja Vulnerabilidad.")
+                    if sel == "IVC (Vulnerabilidad Climática)":
+                        z, tit = res["gz_ivc"], "IVC Global"
+                    elif "Cultivos" in sel:
+                        z, tit = res.get("gz_cult", res["gz_ivc"]), "Amenaza en Cultivos (Recortado)"
+                    elif "Incendios" in sel:
+                        z, tit = res.get("gz_inc", res["gz_ivc"]), "Amenaza Incendios (Recortado)"
+                elif "Variación" in sel:
+                    z, tit, colors = res.get("gz_iv_var", res["gz_ivc"]), "Vulnerabilidad Variación (Tendencia)", "RdYlGn_r"
+                    zmin, zmax = 0, 100
 
-                elif layer_sel == "Vulnerabilidad Variación Clima (ESD + Tendencias)":
-                    if res.get("gz_iv_var") is not None:
-                        z_map = res["gz_iv_var"]
-                        colors = "RdYlGn_r"
-                        title_map = "Vulnerabilidad (Déficit + Tendencia Secado)"
-                        zmin, zmax = 0, 100
-                    else:
-                        st.warning("⚠️ Sin datos de tendencias. Verifique que tenga >=5 años de datos.")
+                # Plot Map
+                fig = go.Figure(go.Contour(z=z.T, x=res["gx"][:,0], y=res["gy"][0,:], colorscale=colors, zmin=zmin, zmax=zmax, contours=dict(start=zmin, end=zmax, size=(zmax-zmin)/15 if zmax>zmin else 1)))
+                try:
+                    for g in (res["gdf_vis"].geometry if res["gdf_vis"].geometry.iloc[0].geom_type != 'MultiPolygon' else res["gdf_vis"].geometry.iloc[0].geoms):
+                        xs, ys = g.exterior.xy
+                        fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=2), name="Cuenca"))
+                except: pass
+                
+                fig.add_trace(go.Scatter(x=res["gdf_pts"].geometry.x, y=res["gdf_pts"].geometry.y, mode="markers", marker=dict(color="black", size=4), name="Est"))
+                fig.update_layout(title=tit, height=500, margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig, use_container_width=True)
 
-                elif layer_sel == "Vulnerabilidad Cultivos (IVC + Agric)":
-                    if res.get("gz_cultivos") is not None:
-                        z_map = res["gz_cultivos"] # Mapa RECORTADO
-                        colors = "RdYlGn_r"
-                        title_map = "IVC en Zonas Agrícolas (Recortado)"
-                        zmin, zmax = 0, 100
-                        st.caption("Solo se muestra el riesgo dentro de las coberturas de cultivo detectadas.")
-                    else:
-                        st.warning("No se encontraron zonas de cultivo en esta cuenca (o falló el recorte). Mostrando IVC completo.")
-                        z_map = res["gz_ivc"]
-                        colors = "RdYlGn_r"
-                        zmin, zmax = 0, 100
+                if "IVC" in sel or "Variación" in sel:
+                    with st.expander("ℹ️ Interpretación del IVC (Semáforo de Riesgo)", expanded=True):
+                        st.markdown("""
+                        El **Índice de Vulnerabilidad Climática (IVC)** identifica zonas críticas por condiciones biofísicas:
+                        * 🔴 **Rojo (80-100): Vulnerabilidad Crítica.** Coincidencia de altas temperaturas y bajo balance hídrico (déficit). Alto riesgo de estrés en cultivos e incendios.
+                        * 🟠 **Naranja (60-80): Vulnerabilidad Alta.**
+                        * 🟡 **Amarillo (40-60): Vulnerabilidad Media.**
+                        * 🟢 **Verde (0-40): Vulnerabilidad Baja.** Zonas con superávit hídrico y temperaturas moderadas.
+                        """)
 
-                elif layer_sel == "Vulnerabilidad Incendios (IVC + Bosque)":
-                    if res.get("gz_incendios") is not None:
-                        z_map = res["gz_incendios"] # Mapa RECORTADO
-                        colors = "RdYlGn_r"
-                        title_map = "Amenaza de Incendios en Bosques (Recortado)"
-                        zmin, zmax = 0, 100
-                        st.caption("Solo se muestra el riesgo dentro de las zonas de bosque detectadas.")
-                    else:
-                        st.warning("No se encontraron zonas de bosque. Mostrando IVC completo.")
-                        z_map = res["gz_ivc"]
-                        colors = "RdYlGn_r"
-                        zmin, zmax = 0, 100
-
-                # C. Renderizar
-                if z_map is not None:
-                    fig = go.Figure(go.Contour(
-                        z=z_map.T, x=res["gx"][:, 0], y=res["gy"][0, :],
-                        colorscale=colors, colorbar=dict(title="Valor"),
-                        contours=dict(start=zmin, end=zmax, size=(zmax-zmin)/15 if zmax>zmin else 1),
-                        zmin=zmin, zmax=zmax
-                    ))
-                    
-                    try:
-                        g = res["gdf_vis"].geometry.iloc[0]
-                        geoms = g.geoms if g.geom_type == "MultiPolygon" else [g]
-                        for geom in geoms:
-                            xs, ys = geom.exterior.xy
-                            fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=2), name="Cuenca"))
-                    except: pass
-                    
-                    df_p = res["gdf_puntos"]
-                    fig.add_trace(go.Scatter(x=df_p.geometry.x, y=df_p.geometry.y, mode="markers", marker=dict(color="black", size=4), name="Estaciones"))
-                    
-                    fig.update_layout(title=title_map, height=500, margin=dict(l=20, r=20, t=40, b=20))
-                    st.plotly_chart(fig, use_container_width=True)
-
-                # --- DESCARGAS Y RESTO DE MÓDULOS (RESTAURADOS) ---
-                st.markdown("---")
-                c_d1, c_d2 = st.columns(2)
-                with c_d1:
+                # Descargas
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
                     if st.button("📥 Generar GeoJSON"):
-                        gdf_out = generate_isohyets_gdf(res["gx"], res["gy"], z_map, levels=15)
-                        if gdf_out is not None:
-                            st.download_button("Descargar", gdf_out.to_json(), f"mapa.geojson", "application/json")
-                with c_d2:
-                    if st.button("📦 Generar Shapefile (.zip)"):
-                        try:
-                            gdf_out = generate_isohyets_gdf(res["gx"], res["gy"], z_map, levels=15)
-                            if gdf_out is not None:
-                                zip_shp = create_zipped_shapefile(gdf_out, f"mapa")
-                                st.download_button("Descargar ZIP", zip_shp, f"mapa.zip", "application/zip")
-                        except Exception as e: st.error(f"Error ZIP: {e}")
-
+                        gdf_out = generate_isohyets_gdf(res["gx"], res["gy"], z, levels=15)
+                        if gdf_out is not None: col_d1.download_button("Descargar", gdf_out.to_json(), "mapa.geojson")
+                
+                # Métricas
                 st.markdown("---")
                 st.subheader("💧 Balance Hídrico y Morfometría")
-                b, m = res.get("bal", {}), res.get("morph", {})
+                m, b = res["morph"], res["bal"]
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Área", f"{m.get('area_km2', 0):.1f} km²")
-                c2.metric("Perímetro", f"{m.get('perimetro_km', 0):.1f} km")
-                c3.metric("Altitud Media", f"{m.get('alt_prom_m', 0):.0f} m")
-                c4.metric("Pendiente Media", f"{m.get('pendiente_prom', 0):.1f} %")
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Ppt Media", f"{b.get('P',0):.0f} mm")
-                k2.metric("ET Real", f"{b.get('ET',0):.0f} mm")
-                k3.metric("Caudal", f"{b.get('Q_m3s',0):.2f} m³/s")
-                k4.metric("Volumen", f"{b.get('Vol',0):.2f} Mm³")
-                with st.expander("ℹ️ Metodología: Balance Hídrico de Turc"):
-                    st.markdown("Estimación de caudales medios a partir de Precipitación y Temperatura.")
-
-                st.markdown("---")
-                st.subheader("🌡️ Índices Climáticos")
-                idx = res.get("idx", {})
-                if res.get("idx_error"): st.error(f"Nota: {res['idx_error']}")
-                i1, i2 = st.columns(2)
-                with i1: st.metric("Aridez (Martonne)", f"{idx.get('martonne_val',0):.1f}", delta=idx.get("martonne_class", ""))
-                with i2: st.metric("Erosividad (Fournier)", f"{idx.get('fournier_val',0):.1f}", delta=idx.get("fournier_class", ""))
-                with st.expander("ℹ️ Interpretación de Índices"):
+                c2.metric("Altitud Media", f"{m.get('alt_prom_m', 0):.0f} m")
+                c3.metric("Ppt Media", f"{b.get('P', 0):.0f} mm")
+                c4.metric("Caudal (Q)", f"{(b.get('Q', 0)*m.get('area_km2',0)/1000 * 1e6 / 31536000):.2f} m³/s")
+                
+                with st.expander("ℹ️ Detalle Metodológico: Balance de Turc"):
                     st.markdown("""
-                    * **Índice de Martonne:** Clasifica el clima según su grado de aridez.
-                    * **Índice de Fournier:** Evalúa la agresividad de la lluvia y potencial erosivo.
+                    **Fórmula de Turc (1954):** Estima la escorrentía anual ($Q$) en función de la Precipitación ($P$) y Temperatura ($T$).
+                    $$ E = \\frac{P}{\\sqrt{0.9 + \\frac{P^2}{L(T)^2}}} \\quad \\text{donde} \\quad L(T) = 300 + 25T + 0.05T^3 $$
+                    El caudal específico se deriva como $Q = P - E$. Es ideal para estimar oferta hídrica media a largo plazo.
                     """)
 
-                fdc_data = res.get("fdc")
-                if fdc_data:
+                # Índices
+                st.markdown("---")
+                st.subheader("🌡️ Índices Climáticos")
+                idx = res["idx"]
+                k1, k2 = st.columns(2)
+                k1.metric("Martonne (Aridez)", f"{idx.get('martonne_val', 0):.1f}", delta=idx.get("martonne_class", ""))
+                k2.metric("Fournier (Erosión)", f"{idx.get('fournier_val', 0):.1f}", delta=idx.get("fournier_class", ""))
+                
+                # FDC
+                if res["fdc"]:
                     st.markdown("---")
                     st.subheader("📉 Curva de Duración de Caudales (FDC)")
-                    df_fdc = fdc_data.get("data") if isinstance(fdc_data, dict) else fdc_data
+                    df_fdc = res["fdc"].get("data")
                     if df_fdc is not None:
-                        fig_f = go.Figure()
-                        fig_f.add_trace(go.Scatter(x=df_fdc["Probabilidad Excedencia (%)"], y=df_fdc["Caudal (m³/s)"], fill='tozeroy'))
-                        fig_f.update_layout(xaxis_title="Probabilidad Excedencia (%)", yaxis_title="Caudal (m³/s)")
+                        fig_f = px.line(df_fdc, x="Probabilidad Excedencia (%)", y="Caudal (m³/s)")
+                        fig_f.update_traces(fill="tozeroy")
                         st.plotly_chart(fig_f, use_container_width=True)
-                        if isinstance(fdc_data, dict):
-                            st.latex(fdc_data.get("equation", "").replace("P", "P_{exc}"))
+                        st.latex(res["fdc"].get("equation", ""))
+                        with st.expander("ℹ️ Interpretación FDC"):
+                            st.write("Indica el % de tiempo que un caudal es igualado o excedido. Q95 es el caudal ecológico base.")
 
+                # Hipsometría
                 if hasattr(analysis, "calculate_hypsometric_curve"):
                     try:
-                        hyp = analysis.calculate_hypsometric_curve(res["gdf_cuenca"])
+                        hyp = analysis.calculate_hypsometric_curve(res["gdf_union"])
                         if hyp:
                             st.markdown("---")
                             st.subheader("⛰️ Curva Hipsométrica")
-                            fig_h = go.Figure()
-                            fig_h.add_trace(go.Scatter(x=hyp["area_percent"], y=hyp["elevations"], fill="tozeroy", line=dict(color="green")))
-                            fig_h.update_layout(xaxis_title="% Área Acumulada", yaxis_title="Elevación (m)")
+                            fig_h = px.area(x=hyp["area_percent"], y=hyp["elevations"], labels={"x": "% Área", "y": "Elevación (m)"})
                             st.plotly_chart(fig_h, use_container_width=True)
-                            if hyp.get("equation"): st.latex(hyp["equation"].replace("x", "A"))
+                            with st.expander("ℹ️ Interpretación Hipsometría"):
+                                st.write("Distribución del área de la cuenca según su altitud. Indica la edad geológica (joven/madura) y potencial energético.")
                     except: pass
 
+                # Contexto
                 st.markdown("---")
-                st.subheader("📍 Contexto Espacial")
-                if "bounds" in res:
-                    m_ctx = folium.Map([(res["bounds"][2] + res["bounds"][3]) / 2, (res["bounds"][0] + res["bounds"][1]) / 2], zoom_start=10, tiles="CartoDB positron")
-                    if res.get("gdf_buffer") is not None:
-                        folium.GeoJson(res["gdf_buffer"], style_function=lambda x: {"color": "gray", "dashArray": "5,5", "fill": False}).add_to(m_ctx)
-                    if "gdf_vis" in res:
-                        folium.GeoJson(res["gdf_vis"], style_function=lambda x: {"color": "blue", "weight": 2, "fillOpacity": 0.1}).add_to(m_ctx)
-                    for _, row in res["df_interp"].iterrows():
-                        folium.CircleMarker([row["latitude"], row["longitude"]], radius=4, color="darkred", fill=True, popup=row[Config.STATION_NAME_COL]).add_to(m_ctx)
-                    st_folium(m_ctx, height=400, width="100%")
+                st.subheader("📍 Mapa de Contexto")
+                m_ctx = folium.Map([(res["bounds"][2]+res["bounds"][3])/2, (res["bounds"][0]+res["bounds"][1])/2], zoom_start=10, tiles="CartoDB positron")
+                folium.GeoJson(res["gdf_vis"], style_function=lambda x:{"color":"blue", "fillOpacity":0.1}).add_to(m_ctx)
+                for _, r in res["df_int"].iterrows():
+                    folium.CircleMarker([r.latitude, r.longitude], radius=4, color="red", popup=f"{r[Config.STATION_NAME_COL]}: {r[Config.PRECIPITATION_COL]:.0f}mm").add_to(m_ctx)
+                st_folium(m_ctx, height=400, width="100%")
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
