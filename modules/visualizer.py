@@ -2864,24 +2864,31 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             except Exception as e:
                                 fdc_error = str(e)
 
-                            # Guardar en Session State
+                            # --- GUARDADO FINAL (AQUÍ ESTÁ LA CLAVE PARA QUE LOS MAPAS FUNCIONEN) ---
                             st.session_state["basin_res"] = {
-                                "ready": True, "gz": gz, "gx": gx, "gy": gy,
-                                "gdf_puntos": gdf_puntos_interp,
-                                "gdf_cuenca": gdf_union_real, # Real para cálculos y descargas
-                                "gdf_vis": gdf_vis,           # Simplificado para mostrar en mapa
+                                "ready": True, 
+                                "names": ", ".join(sel_cuencas),
+                                "bounds": bounds,
+                                # Matrices de Mapas
+                                "gz": gz, "gx": gx, "gy": gy,       # Lluvia
+                                "gz_ivc": gz_ivc,                   # Vulnerabilidad
+                                "gz_it": gz_it,                     # Temperatura (Indice)
+                                "gz_iesd": gz_iesd,                 # Escorrentía (Indice)
+                                "gz_iv_var": gz_iv_var,             # Variación Climática
+                                # Geometría
+                                "gdf_cuenca": gdf_union_real, 
+                                "gdf_vis": gdf_vis,
+                                "gdf_puntos": gdf_puntos_interp, 
                                 "gdf_buffer": gdf_buffer,
                                 "gdf_isoyetas": gdf_isoyetas,
+                                # Datos Tabulares
                                 "df_interp": df_interp, 
                                 "df_raw": df_raw,
+                                # Resultados Hidrológicos
                                 "bal": {"P": ppt_med, "ET": etr_mm, "Q_m3s": q_m3s, "Vol": vol_hm3},
                                 "morph": morph,
-                                "idx": idx_calc,
-                                "idx_error": idx_error,
-                                "fdc": fdc_calc,
-                                "fdc_error": fdc_error,
-                                "bounds": bounds,
-                                "names": ", ".join(sel_cuencas)
+                                "idx": idx_calc, "idx_error": idx_error,
+                                "fdc": fdc_calc, "fdc_error": fdc_error
                             }
                         else:
                             st.error("Insuficientes estaciones (<3).")
@@ -2889,6 +2896,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     else:
                         st.error("Sin estaciones cercanas.")
                         st.session_state["basin_res"] = None
+                        
 
 # --- MOSTRAR RESULTADOS (VISUALIZACIÓN CORREGIDA) ---
             res = st.session_state.get("basin_res")
