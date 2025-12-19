@@ -183,47 +183,53 @@ def create_sidebar(gdf_stations, df_long):
 
         st.divider()
 
-        # --- 3. FILTRO DE TIEMPO ---
-        st.markdown("### 📅 Periodo Temporal")
-        try:
-            min_y = int(df_long[Config.YEAR_COL].min())
-            max_y = int(df_long[Config.YEAR_COL].max())
-            year_range = st.slider("Años:", min_y, max_y, (max_y - 10, max_y))
-        except:
-            year_range = (1980, 2020)  # Fallback por seguridad
+        # ==============================================================================
+        # INICIO DEL CAMBIO: Encerramos el tiempo en un FORMULARIO para evitar bloqueos
+        # ==============================================================================
+        with st.sidebar.form(key="formulario_tiempo"):
+            
+            # --- 3. FILTRO DE TIEMPO ---
+            st.markdown("### 📅 Periodo Temporal")
+            try:
+                min_y = int(df_long[Config.YEAR_COL].min())
+                max_y = int(df_long[Config.YEAR_COL].max())
+                # El slider ahora vive dentro del form, no recargará la página al moverlo
+                year_range = st.slider("Años:", min_y, max_y, (max_y - 10, max_y))
+            except:
+                year_range = (1980, 2020)  # Fallback por seguridad
 
-        # --- 4. FILTRO DE MESES ---
-        st.markdown("### 📆 Análisis Estacional")
+            # --- 4. FILTRO DE MESES ---
+            st.markdown("### 📆 Análisis Estacional")
 
-        meses_nombres = [
-            "Enero",
-            "Febrero",
-            "Marzo",
-            "Abril",
-            "Mayo",
-            "Junio",
-            "Julio",
-            "Agosto",
-            "Septiembre",
-            "Octubre",
-            "Noviembre",
-            "Diciembre",
-        ]
+            meses_nombres = [
+                "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+            ]
 
-        # Checkbox para seleccionar todos los meses por defecto
-        if st.checkbox("Seleccionar todos los meses", value=True, key="sel_all_months"):
-            default_months = meses_nombres
-        else:
-            default_months = []
+            # Checkbox para seleccionar todos
+            sel_all_months = st.checkbox("Seleccionar todos los meses", value=True, key="sel_all_months")
+            
+            if sel_all_months:
+                default_months = meses_nombres
+            else:
+                default_months = []
 
-        selected_months = st.multiselect(
-            "Meses a incluir:",
-            options=meses_nombres,
-            default=default_months,
-            help="Seleccione los meses que desea incluir en el análisis.",
-        )
+            selected_months = st.multiselect(
+                "Meses a incluir:",
+                options=meses_nombres,
+                default=default_months,
+                help="Seleccione los meses que desea incluir en el análisis.",
+            )
+            
+            st.markdown("---")
+            # ESTE ES EL BOTÓN CLAVE: Nada se procesa hasta que hagas clic aquí
+            boton_aplicar = st.form_submit_button("🔄 Actualizar Gráficos y Mapa", type="primary")
 
-        # Mapear nombres a números (1-12)
+        # ==============================================================================
+        # FIN DEL FORMULARIO - A partir de aquí el código sigue normal
+        # ==============================================================================
+
+        # Mapear nombres a números (1-12) fuera del form para el procesamiento
         mapa_meses = {m: i + 1 for i, m in enumerate(meses_nombres)}
         selected_months_nums = [mapa_meses[m] for m in selected_months]
 
