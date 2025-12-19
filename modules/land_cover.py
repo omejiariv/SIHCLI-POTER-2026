@@ -4,6 +4,7 @@ import rasterio
 from rasterio.mask import mask
 from rasterio.enums import Resampling
 from rasterio.features import shapes
+from rasterio.warp import calculate_default_transform, reproject, Resampling as WarpResampling
 from shapely.geometry import shape
 import geopandas as gpd
 import os
@@ -56,9 +57,6 @@ def get_pixel_area_in_km2(transform, crs, height, width):
     px_h = abs(transform[4])
     
     # Si es Geográfico (WGS84, EPSG:4326), las unidades son GRADOS.
-    # Debemos convertir a Kilómetros.
-    # 1 grado latitud ~= 111.32 km
-    # 1 grado longitud ~= 111.32 * cos(lat) km
     if crs.is_geographic:
         # Usamos una latitud promedio (ej. 6.5 para Antioquia) para el factor de longitud
         lat_factor = 111.32
@@ -71,10 +69,13 @@ def get_pixel_area_in_km2(transform, crs, height, width):
         
     return area_km2
 
-# --- 3. PROCESAMIENTO ---
+# --- 3. PROCESAMIENTO ROBUSTO (CORRECCIÓN PROYECCIONES) ---
 
 def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=1):
-    """Lee el raster. Si hay gdf_mask, recorta."""
+    """
+    Lee el raster y lo recorta por la máscara.
+    CORRECCIÓN CRÍTICA: Asegura que la máscara se reproyecte al CRS del Raster antes de cortar.
+    """
     if not os.path.exists(raster_path):
         return None, None, None, None
 
@@ -83,15 +84,25 @@ def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=1):
         crs = src.crs
 
         if gdf_mask is not None:
+            # 1. Verificar y corregir proyección de la máscara
+            # El raster manda. Si el raster es 3116, la máscara debe ser 3116.
             if gdf_mask.crs != src.crs:
-                gdf_proj = gdf_mask.to_crs(src.crs)
+                try:
+                    gdf_proj = gdf_mask.to_crs(src.crs)
+                except:
+                    # Si falla (ej: CRS origen desconocido), forzamos reproyección si asumimos LatLon
+                    gdf_mask.set_crs("EPSG:4326", inplace=True, allow_override=True)
+                    gdf_proj = gdf_mask.to_crs(src.crs)
             else:
                 gdf_proj = gdf_mask
             
+            # 2. Recortar
             try:
+                # crop=True ajusta la ventana al tamaño de la máscara
                 out_image, out_transform = mask(src, gdf_proj.geometry, crop=True)
                 data = out_image[0]
             except ValueError:
+                # Pasa si la geometría no se superpone con el raster
                 return None, None, None, None
         else:
             # Modo Regional: Aplicamos scale_factor solo si se pide
@@ -106,6 +117,8 @@ def process_land_cover_raster(raster_path, gdf_mask=None, scale_factor=1):
 
 def calculate_land_cover_stats(data, transform, crs, nodata, manual_area_km2=None):
     """Calcula estadísticas corrigiendo el problema de área cero."""
+    if data is None: return pd.DataFrame(), 0
+    
     valid_pixels = data[(data != nodata) & (data > 0)]
     if valid_pixels.size == 0: return pd.DataFrame(), 0
 
@@ -115,12 +128,16 @@ def calculate_land_cover_stats(data, transform, crs, nodata, manual_area_km2=Non
     unique, counts = np.unique(valid_pixels, return_counts=True)
     calc_total_area = counts.sum() * pixel_area_km2
     
-    # Ajuste fino si tenemos área vectorial
+    # Ajuste fino si tenemos área vectorial (para que cuadre exacto con el polígono)
     final_total_area = calc_total_area
     factor = 1.0
+    
+    # Solo aplicamos factor de corrección si la diferencia es razonable (ej. < 20%)
+    # Si difiere mucho, confiamos en el cálculo raster
     if manual_area_km2 and manual_area_km2 > 0 and calc_total_area > 0:
-        final_total_area = manual_area_km2
-        factor = manual_area_km2 / calc_total_area
+        if 0.8 < (manual_area_km2 / calc_total_area) < 1.2:
+            final_total_area = manual_area_km2
+            factor = manual_area_km2 / calc_total_area
     
     rows = []
     for val, count in zip(unique, counts):
@@ -138,16 +155,20 @@ def calculate_land_cover_stats(data, transform, crs, nodata, manual_area_km2=Non
 
 def get_raster_img_b64(data, nodata):
     """Genera imagen PNG Base64 optimizada."""
+    if data is None: return ""
+    
     rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
     for val, hex_c in LAND_COVER_COLORS.items():
         if isinstance(hex_c, str):
             hex_c = hex_c.lstrip('#')
             r, g, b = tuple(int(hex_c[i:i+2], 16) for i in (0, 2, 4))
+            
+            # Vectorización rápida numpy
             mask_val = (data == val)
             rgba[mask_val, 0] = r
             rgba[mask_val, 1] = g
             rgba[mask_val, 2] = b
-            rgba[mask_val, 3] = 200
+            rgba[mask_val, 3] = 200 # Transparencia ligera
             
     rgba[(data == 0) | (data == nodata), 3] = 0
     image_data = io.BytesIO()
@@ -157,15 +178,15 @@ def get_raster_img_b64(data, nodata):
 
 # --- 4. VECTORIZACIÓN SIMPLIFICADA (ESTABILIDAD) ---
 
-def vectorize_raster_optimized(data, transform, crs, nodata, max_shapes=2000):
+def vectorize_raster_optimized(data, transform, crs, nodata, max_shapes=3000):
     """
-    Vectoriza el raster pero SIMPLIFICA la geometría para no colgar el navegador.
-    Si hay demasiados polígonos, filtra los muy pequeños.
+    Vectoriza el raster y lo reproyecta a EPSG:4326 para visualización web.
     """
+    if data is None: return gpd.GeoDataFrame()
+    
     mask_arr = (data != nodata) & (data != 0)
     
-    # Si hay demasiados datos, hacemos un downsample temporal SOLO para la capa de hover
-    # Esto mantiene la imagen bonita de fondo, pero hace el hover ligero.
+    # Shapes genera geometrías en las coordenadas del raster (posiblemente Metros EPSG:3116)
     shapes_gen = shapes(data, mask=mask_arr, transform=transform)
     
     geoms = []
@@ -173,25 +194,36 @@ def vectorize_raster_optimized(data, transform, crs, nodata, max_shapes=2000):
     count = 0
     
     for geom, val in shapes_gen:
-        # Filtro de seguridad: Si ya tenemos muchos polígonos, paramos para no crashear
         if count > max_shapes: break 
         
-        # Simplificación de geometría (Shapely)
-        s_geom = shape(geom).simplify(tolerance=0.0001, preserve_topology=True)
-        geoms.append(s_geom)
+        # Convertimos diccionario geojson a objeto shapely
+        s_geom = shape(geom)
+        
+        # Simplificación para rendimiento web
+        s_geom_simp = s_geom.simplify(tolerance=10, preserve_topology=True) # Tolerancia en metros si es proyectado
+        if s_geom_simp.is_empty: continue
+
+        geoms.append(s_geom_simp)
         values.append(val)
         count += 1
         
     if not geoms: return gpd.GeoDataFrame()
     
+    # Creamos el GeoDataFrame con el CRS original del raster
     gdf = gpd.GeoDataFrame({'ID': values}, geometry=geoms, crs=crs)
+    
+    # Mapear nombres y colores
     gdf['Cobertura'] = gdf['ID'].map(lambda x: LAND_COVER_LEGEND.get(int(x), f"Clase {int(x)}"))
     gdf['Color'] = gdf['ID'].map(lambda x: LAND_COVER_COLORS.get(int(x), "#808080"))
     
-    # Reproyectar siempre a Lat/Lon para Folium
-    if gdf.crs != "EPSG:4326":
-        gdf = gdf.to_crs(epsg=4326)
-        
+    # REPROYECCIÓN OBLIGATORIA A LAT/LON PARA FOLIUM
+    # Esto soluciona que el mapa vectorial no aparezca
+    if gdf.crs is not None and gdf.crs.to_string() != "EPSG:4326":
+        try:
+            gdf = gdf.to_crs("EPSG:4326")
+        except:
+            pass # Si falla, enviamos original y esperamos lo mejor
+
     return gdf
 
 def generate_legend_html():
@@ -209,6 +241,7 @@ def generate_legend_html():
     return html
 
 def get_tiff_bytes(data, transform, crs, nodata):
+    if data is None: return None
     mem_file = io.BytesIO()
     with rasterio.open(
         mem_file, 'w', driver='GTiff', height=data.shape[0], width=data.shape[1],
@@ -220,10 +253,12 @@ def get_tiff_bytes(data, transform, crs, nodata):
 
 # --- MÉTODOS SCS ---
 def calculate_weighted_cn(df_stats, cn_config):
+    if df_stats.empty: return 0
     cn_pond = 0; total_pct = 0
     for _, row in df_stats.iterrows():
-        cob = row["Cobertura"]; pct = row["%"]
-        val = 85
+        cob = str(row["Cobertura"]) # Asegurar string
+        pct = row["%"]
+        val = 85 # Default
         if "Bosque" in cob: val = cn_config['bosque']
         elif "Pasto" in cob or "Herbácea" in cob: val = cn_config['pasto']
         elif "Urban" in cob: val = cn_config['urbano']
@@ -244,9 +279,24 @@ def get_land_cover_at_point(lat, lon, raster_path):
     if not os.path.exists(raster_path):
         return "Raster no encontrado"
     try:
+        # Aquí el raster manda. Si el raster es proyectado (metros), 
+        # debemos reproyectar el punto (lat, lon) a las coordenadas del raster.
         with rasterio.open(raster_path) as src:
-            val = next(src.sample([(lon, lat)]))[0]
-            # Usamos int(val) para buscar en el diccionario
-            return LAND_COVER_LEGEND.get(int(val), f"Clase {val}")
-    except Exception:
-        return "Error"
+            if src.crs.to_string() != "EPSG:4326":
+                # Transformación rápida de coordenadas
+                from pyproj import Transformer
+                transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+                x, y = transformer.transform(lon, lat)
+                coords = [(x, y)]
+            else:
+                coords = [(lon, lat)]
+                
+            val_gen = src.sample(coords)
+            try:
+                val = next(val_gen)[0]
+                return LAND_COVER_LEGEND.get(int(val), f"Clase {val}")
+            except StopIteration:
+                return "Fuera de rango"
+                
+    except Exception as e:
+        return f"Error: {str(e)}"
