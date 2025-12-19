@@ -2419,20 +2419,47 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     user_loc = kwargs.get("user_loc", None)
 
     # --- HELPERS ---
+    # --- HELPER: INTERPOLACIÓN ROBUSTA (CON EXTRAPOLACIÓN) ---
     def run_interp(df_puntos, metodo, bounds_box):
         try:
-            gx, gy = np.mgrid[bounds_box[0]:bounds_box[1]:60j, bounds_box[2]:bounds_box[3]:60j]
+            # 1. Extraer límites
+            minx, maxx, miny, maxy = bounds_box
+            
+            # 2. Generar grilla con mayor resolución (100x100)
+            # Usamos números complejos (100j) para incluir el punto final exacto
+            gx, gy = np.mgrid[minx:maxx:100j, miny:maxy:100j]
+            
+            # 3. Preparar datos
             df_unique = df_puntos.drop_duplicates(subset=["longitude", "latitude"])
             pts = df_unique[["longitude", "latitude"]].values
             vals = df_unique[Config.PRECIPITATION_COL].values
+            
             if len(pts) < 3: return None, None, None
+            
+            # 4. Interpolación Principal
             if "Kriging" in metodo:
-                rbf = Rbf(pts[:, 0], pts[:, 1], vals, function="thin_plate")
-                gz = rbf(gx, gy)
+                try:
+                    # Rbf (Thin Plate Spline) suele extrapolar bien suavemente
+                    rbf = Rbf(pts[:, 0], pts[:, 1], vals, function="thin_plate")
+                    gz = rbf(gx, gy)
+                except:
+                    gz = griddata(pts, vals, (gx, gy), method="linear")
             else:
+                # IDW / Lineal genera NaNs afuera.
                 gz = griddata(pts, vals, (gx, gy), method="linear")
+            
+            # 5. RELLENO DE BORDES (EXTRAPOLACIÓN) - EL SECRETO
+            # Buscamos dónde quedó vacío (NaN) y lo llenamos con el vecino más cercano
+            mask_nan = np.isnan(gz)
+            if np.any(mask_nan):
+                gz_nearest = griddata(pts, vals, (gx, gy), method="nearest")
+                gz[mask_nan] = gz_nearest[mask_nan]
+            
             return gx, gy, gz
-        except: return None, None, None
+            
+        except Exception as e:
+            print(f"Error interpolación: {e}")
+            return None, None, None
 
     def calcular_promedios_reales(df_datos):
         if df_datos.empty: return pd.DataFrame()
@@ -2469,7 +2496,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             with open(f"{base_zip}.zip", "rb") as f: return f.read()
 
     # --- HELPER MÁSCARA (MEJORADO PARA EVITAR MAPAS VACÍOS) ---
-# --- HELPER CORREGIDO: MÁSCARA CON REPROYECCIÓN AUTOMÁTICA ---
+    # --- HELPER CORREGIDO: MÁSCARA CON REPROYECCIÓN AUTOMÁTICA ---
     def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
         """
         Aplica una máscara vectorial (gdf_mask) sobre una grilla numpy (gx, gy).
@@ -2761,12 +2788,31 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         gdf_pts = gpd.GeoDataFrame(df_int, geometry=gpd.points_from_xy(df_int.longitude, df_int.latitude), crs=gdf_stations.crs)
 
                         if len(df_int) >= 3:
-                            # 3. Malla Base
+                            # 3. Malla Base e Interpolación
+                            # Usamos los límites del buffer (Cuenca + Margen) para asegurar cobertura total
                             minx, miny, maxx, maxy = gdf_buf.total_bounds
-                            gx, gy = np.mgrid[minx:maxx:70j, miny:maxy:70j]
-                            pts = df_int[["longitude", "latitude"]].values
-                            vals_p = df_int[Config.PRECIPITATION_COL].values
-                            vals_alt = df_int[Config.ALTITUDE_COL].values
+                            
+                            # LLAMADA A LA FUNCIÓN MEJORADA
+                            # Esto nos devuelve gx, gy y gz ya calculados y RELLENADOS (sin huecos)
+                            gx, gy, gz = run_interp(df_int, meth_c, [minx, maxx, miny, maxy])
+                            
+                            # También interpolamos la altitud (para el IVC) usando la misma lógica
+                            # Nota: Creamos un helper rápido o reutilizamos griddata para altitud
+                            if gx is not None:
+                                pts = df_int[["longitude", "latitude"]].values
+                                vals_alt = df_int[Config.ALTITUDE_COL].values
+                                
+                                # Interpolación lineal para altitud
+                                gz_alt = griddata(pts, vals_alt, (gx, gy), method='linear')
+                                
+                                # Rellenar altitud también (importante para IVC en los bordes)
+                                mask_nan_alt = np.isnan(gz_alt)
+                                if np.any(mask_nan_alt):
+                                    gz_alt_near = griddata(pts, vals_alt, (gx, gy), method='nearest')
+                                    gz_alt[mask_nan_alt] = gz_alt_near[mask_nan_alt]
+                            else:
+                                gz_alt = None
+
                             
                             # A. Interpolación Base
                             if "Kriging" in meth_c:
