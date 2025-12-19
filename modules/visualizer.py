@@ -41,8 +41,9 @@ import modules.life_zones as lz
 import modules.land_cover as lc
 
 # Módulos Internos
+
 from modules.config import Config
-from modules import analysis
+import modules.analysis as analysis
 
 # Importar funciones de análisis (Manejo de errores por si faltan)
 try:
@@ -2818,48 +2819,48 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             vol_hm3 = (q_mm * area_km2) / 1000 
                             q_m3s = (vol_hm3 * 1_000_000) / 31536000
 
-                            # --- INTERVENCIÓN 2: CÁLCULO DE CURVAS (HIPSOMETRÍA Y FDC) ---
+                            # --- INTERVENCIÓN 2: CÁLCULO DE CURVAS (CORREGIDO) ---
                             
-                            # A. PREPARAR DATOS PARA CURVA HIPSOMÉTRICA
-                            df_elevacion = pd.DataFrame()
+                            # A. CURVA HIPSOMÉTRICA (Usando DEM Real)
+                            hyp_data = None
                             try:
-                                # Usamos el DEM recortado o la geometría para calcular
-                                hyp_data = analysis.calculate_hypsometric_curve(gdf_union)
-                                if hyp_data:
-                                    df_elevacion = pd.DataFrame({
-                                        'Elevacion': hyp_data['elevations'],
-                                        'Area_Acumulada_Porcentaje': hyp_data['area_percent']
-                                    })
+                                # Pasamos la geometría Y la ruta del archivo DEM definida en Config
+                                hyp_data = analysis.calculate_hypsometric_curve(
+                                    gdf_union, 
+                                    dem_path=getattr(Config, "DEM_FILE_PATH", None) # Usa None si no está en Config
+                                )
                             except Exception as e:
-                                print(f"Error cálculo hipsometría: {e}")
+                                print(f"Error hipsometría: {e}")
 
-                            # B. PREPARAR DATOS PARA FDC (Curva de Duración)
-                            df_caudales = pd.DataFrame()
+                            # B. CURVA DE DURACIÓN DE CAUDALES (FDC)
+                            fdc_data = None
                             try:
-                                # Agrupamos precipitación mensual histórica de la cuenca
+                                # 1. Serie de Precipitación Mensual de la Cuenca
                                 ppt_series = df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean()
-                                # Estimamos caudal mensual (Q = P * Coeficiente Escorrentía aprox 0.4 o fórmula Turc)
-                                # Aquí usamos una aproximación simple basada en el balance calculado arriba (q_mm/ppt_med)
-                                runoff_coef = (q_mm / ppt_med) if ppt_med > 0 else 0.4
-                                q_series_mm = ppt_series * runoff_coef
-                                # Convertir mm/mes a m3/s
-                                q_series_m3s = (q_series_mm * area_km2 * 1000) / (30 * 24 * 3600) # Aprox mes de 30 días
                                 
-                                df_caudales = pd.DataFrame({'Caudal': q_series_m3s})
+                                # 2. Coeficiente de Escorrentía (Estimado simple)
+                                # Si hay mucha lluvia (>2000mm) asumimos mayor escorrentía (0.5), si no 0.3
+                                c_est = 0.5 if ppt_med > 2000 else 0.3
+                                
+                                # 3. Calcular usando la función de analysis.py
+                                fdc_data = analysis.calculate_duration_curve(
+                                    ppt_series, 
+                                    runoff_coeff=c_est, 
+                                    area_km2=area_km2
+                                )
                             except Exception as e:
-                                print(f"Error cálculo caudales: {e}")
-                            # -----------------------------------------------------------                            
-                            
-                            # E. Índices y Curvas
-                            idx_c = {}
-                            try: idx_c = analysis.calculate_climatic_indices(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), morph.get("alt_prom_m", 1500))
-                            except: pass
-                            
-                            fdc = None
-                            try: fdc = analysis.calculate_fdc(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), q_mm/ppt_med if ppt_med>0 else 0.4, area_km2)
-                            except: pass
+                                print(f"Error FDC: {e}")
 
-                            # GUARDADO FINAL
+                            # E. Índices Climáticos
+                            idx_c = {}
+                            try: 
+                                idx_c = analysis.calculate_climatic_indices(
+                                    df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), 
+                                    morph.get("alt_prom_m", 1500)
+                                )
+                            except: pass
+                            
+                            # GUARDADO FINAL EN SESSION STATE
                             st.session_state["basin_res"] = {
                                 "ready": True, "names": ", ".join(sel_cuencas), "bounds": [minx, maxx, miny, maxy],
                                 "gz": gz, "gx": gx, "gy": gy, "gz_ivc": gz_ivc, "gz_iv_var": gz_iv_var,
@@ -2867,7 +2868,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                 "gdf_union": gdf_union, "gdf_vis": gdf_vis, "gdf_pts": gdf_pts, "gdf_buf": gdf_buf, "gdf_iso": gdf_iso,
                                 "df_int": df_int, "df_raw": df_raw, 
                                 "bal": {"P": ppt_med, "Q": q_mm, "Q_m3s": q_m3s, "Vol": vol_hm3}, 
-                                "morph": morph, "idx": idx_c, "fdc": fdc
+                                "morph": morph, 
+                                "idx": idx_c, 
+                                "fdc": fdc_data,      # <--- Guardamos el resultado limpio
+                                "hyp": hyp_data       # <--- Guardamos el resultado limpio
                             }
                         else: st.error("Insuficientes estaciones (<3).")
                     else: st.error("Sin estaciones cercanas.")
@@ -3134,56 +3138,80 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     
                     st_folium(m_ctx, height=450, width="100%")
 
-# --- INTERVENCIÓN 3: VISUALIZACIÓN CORREGIDA ---
-            # Recuperamos las variables calculadas arriba desde el diccionario res (o locales si están disponibles)
+            # --- INTERVENCIÓN 3: VISUALIZACIÓN CORREGIDA ---
             
-            # Intentar recuperar del diccionario de sesión si las variables locales se perdieron
-            if 'df_elevacion' not in locals() and 'basin_res' in st.session_state:
-                 # Recuperación de emergencia (Fallback)
-                 pass 
-
             st.markdown("---")
             st.subheader("📊 Análisis Hidrológico Detallado")
 
+            # Recuperamos los resultados del diccionario 'res' (Más seguro que locals())
+            hyp = res.get("hyp")
+            fdc = res.get("fdc")
+
             col_curvas_1, col_curvas_2 = st.columns(2)
 
-            # 1. Curva Hipsométrica
+            # 1. VISUALIZACIÓN CURVA HIPSOMÉTRICA
             with col_curvas_1:
-                st.markdown("**Curva Hipsométrica**")
-                if 'df_elevacion' in locals() and not df_elevacion.empty:
-                    fig_hipso = px.area(df_elevacion, x='Area_Acumulada_Porcentaje', y='Elevacion', 
-                                        labels={'Area_Acumulada_Porcentaje':'% Área sobre la cota', 'Elevacion':'Elevación (m.s.n.m.)'})
-                    fig_hipso.update_layout(height=350, margin=dict(l=0,r=0,t=30,b=0))
-                    # Invertir eje Y si es necesario o ajustar fill
-                    st.plotly_chart(fig_hipso, use_container_width=True)
-                else:
-                    st.warning("⚠️ Datos de elevación no disponibles. Verifique el DEM.")
-
-            # 2. Curva de Duración de Caudales (FDC)
-            with col_curvas_2:
-                st.markdown("**Curva de Duración de Caudales (FDC)**")
-                if 'df_caudales' in locals() and not df_caudales.empty:
-                    # Ordenar caudales de mayor a menor
-                    sort_flow = np.sort(df_caudales['Caudal'].dropna())[::-1]
-                    exceedence = np.arange(1., len(sort_flow)+1) / len(sort_flow) * 100
+                st.markdown("**🏔️ Curva Hipsométrica**")
+                if hyp:
+                    # Plotly Area Chart
+                    fig_h = go.Figure()
+                    fig_h.add_trace(go.Scatter(
+                        x=hyp["area_percent"], 
+                        y=hyp["elevations"], 
+                        fill='tozeroy', 
+                        mode='lines',
+                        line=dict(color='#2E86C1'),
+                        name='Terreno'
+                    ))
+                    fig_h.update_layout(
+                        xaxis_title="% Área Acumulada", 
+                        yaxis_title="Elevación (msnm)",
+                        height=300, 
+                        margin=dict(l=0,r=0,t=30,b=0),
+                        hovermode="x unified"
+                    )
+                    st.plotly_chart(fig_h, use_container_width=True)
                     
-                    fig_fdc = go.Figure()
-                    fig_fdc.add_trace(go.Scatter(x=exceedence, y=sort_flow, mode='lines', name='FDC', line=dict(color='blue', width=2)))
-                    fig_fdc.update_layout(
-                        xaxis_title="% Tiempo que iguala o excede", 
-                        yaxis_title="Caudal (m³/s)", 
-                        yaxis_type="log", # Escala logarítmica es estándar para FDC
-                        height=350,
+                    # Ecuación y Fuente
+                    st.caption(f"📐 **Modelo:** `${hyp.get('equation', 'N/A')}$`")
+                    if hyp.get("source") == "Simulado":
+                        st.caption("⚠️ *Datos simulados (DEM no detectado)*")
+                else:
+                    st.warning("⚠️ Datos de elevación no disponibles.")
+
+            # 2. VISUALIZACIÓN CURVA FDC
+            with col_curvas_2:
+                st.markdown("**🌊 Curva de Duración de Caudales (FDC)**")
+                if fdc and fdc.get("data") is not None:
+                    df_fdc = fdc["data"]
+                    
+                    # Plotly Line Chart
+                    fig_f = go.Figure()
+                    fig_f.add_trace(go.Scatter(
+                        x=df_fdc["Probabilidad Excedencia (%)"], 
+                        y=df_fdc["Caudal (m³/s)"], 
+                        mode='lines', 
+                        line=dict(color='#27AE60', width=2),
+                        name='Caudal'
+                    ))
+                    fig_f.update_layout(
+                        xaxis_title="% Tiempo excedencia", 
+                        yaxis_title="Caudal (m³/s)",
+                        yaxis_type="log", # Escala logarítmica recomendada para FDC
+                        height=300, 
                         margin=dict(l=0,r=0,t=30,b=0)
                     )
-                    st.plotly_chart(fig_fdc, use_container_width=True)
+                    st.plotly_chart(fig_f, use_container_width=True)
                     
-                    # Métricas clave
-                    q95 = np.percentile(sort_flow, 5) # Q95 (Caudal ecológico aprox)
-                    q50 = np.percentile(sort_flow, 50)
-                    st.caption(f"**Q50 (Medio):** {q50:.2f} m³/s | **Q95 (Ecológico/Estiaje):** {q95:.2f} m³/s")
+                    # Métricas Q95 (Caudal Ecológico)
+                    try:
+                        q_vals = df_fdc["Caudal (m³/s)"].values
+                        q95 = np.percentile(q_vals, 5) # En FDC inversa, el 95% excede este valor
+                        st.caption(f"🐟 **Caudal Ecológico (Q95):** {q95:.2f} m³/s")
+                        st.caption(f"📐 **R² Ajuste:** {fdc.get('r_squared', 0):.2f}")
+                    except: pass
                 else:
-                    st.warning("⚠️ Datos de caudal no disponibles para cálculo FDC.")
+                    st.info("⚠️ Faltan datos de lluvia para generar la curva FDC.")
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
