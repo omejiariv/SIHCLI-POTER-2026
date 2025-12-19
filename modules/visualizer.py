@@ -3138,80 +3138,88 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     
                     st_folium(m_ctx, height=450, width="100%")
 
-            # --- INTERVENCIÓN 3: VISUALIZACIÓN CORREGIDA ---
+            # --- INTERVENCIÓN 3: VISUALIZACIÓN CORREGIDA (CON PROTECCIÓN DE ERROR) ---
             
-            st.markdown("---")
-            st.subheader("📊 Análisis Hidrológico Detallado")
+            # 1. Intentamos recuperar los resultados
+            res = st.session_state.get("basin_res")
 
-            # Recuperamos los resultados del diccionario 'res' (Más seguro que locals())
-            hyp = res.get("hyp")
-            fdc = res.get("fdc")
+            # 2. VERIFICACIÓN CRÍTICA: Solo intentamos dibujar si 'res' tiene datos
+            if res is not None:
+                
+                st.markdown("---")
+                st.subheader("📊 Análisis Hidrológico Detallado")
 
-            col_curvas_1, col_curvas_2 = st.columns(2)
+                # Recuperamos los resultados del diccionario de forma segura
+                hyp = res.get("hyp")
+                fdc = res.get("fdc")
 
-            # 1. VISUALIZACIÓN CURVA HIPSOMÉTRICA
-            with col_curvas_1:
-                st.markdown("**🏔️ Curva Hipsométrica**")
-                if hyp:
-                    # Plotly Area Chart
-                    fig_h = go.Figure()
-                    fig_h.add_trace(go.Scatter(
-                        x=hyp["area_percent"], 
-                        y=hyp["elevations"], 
-                        fill='tozeroy', 
-                        mode='lines',
-                        line=dict(color='#2E86C1'),
-                        name='Terreno'
-                    ))
-                    fig_h.update_layout(
-                        xaxis_title="% Área Acumulada", 
-                        yaxis_title="Elevación (msnm)",
-                        height=300, 
-                        margin=dict(l=0,r=0,t=30,b=0),
-                        hovermode="x unified"
-                    )
-                    st.plotly_chart(fig_h, use_container_width=True)
-                    
-                    # Ecuación y Fuente
-                    st.caption(f"📐 **Modelo:** `${hyp.get('equation', 'N/A')}$`")
-                    if hyp.get("source") == "Simulado":
-                        st.caption("⚠️ *Datos simulados (DEM no detectado)*")
-                else:
-                    st.warning("⚠️ Datos de elevación no disponibles.")
+                col_curvas_1, col_curvas_2 = st.columns(2)
 
-            # 2. VISUALIZACIÓN CURVA FDC
-            with col_curvas_2:
-                st.markdown("**🌊 Curva de Duración de Caudales (FDC)**")
-                if fdc and fdc.get("data") is not None:
-                    df_fdc = fdc["data"]
-                    
-                    # Plotly Line Chart
-                    fig_f = go.Figure()
-                    fig_f.add_trace(go.Scatter(
-                        x=df_fdc["Probabilidad Excedencia (%)"], 
-                        y=df_fdc["Caudal (m³/s)"], 
-                        mode='lines', 
-                        line=dict(color='#27AE60', width=2),
-                        name='Caudal'
-                    ))
-                    fig_f.update_layout(
-                        xaxis_title="% Tiempo excedencia", 
-                        yaxis_title="Caudal (m³/s)",
-                        yaxis_type="log", # Escala logarítmica recomendada para FDC
-                        height=300, 
-                        margin=dict(l=0,r=0,t=30,b=0)
-                    )
-                    st.plotly_chart(fig_f, use_container_width=True)
-                    
-                    # Métricas Q95 (Caudal Ecológico)
-                    try:
-                        q_vals = df_fdc["Caudal (m³/s)"].values
-                        q95 = np.percentile(q_vals, 5) # En FDC inversa, el 95% excede este valor
-                        st.caption(f"🐟 **Caudal Ecológico (Q95):** {q95:.2f} m³/s")
-                        st.caption(f"📐 **R² Ajuste:** {fdc.get('r_squared', 0):.2f}")
-                    except: pass
-                else:
-                    st.info("⚠️ Faltan datos de lluvia para generar la curva FDC.")
+                # --- A. VISUALIZACIÓN CURVA HIPSOMÉTRICA ---
+                with col_curvas_1:
+                    st.markdown("**🏔️ Curva Hipsométrica**")
+                    if hyp:
+                        import plotly.graph_objects as go # Aseguramos importación
+                        
+                        fig_h = go.Figure()
+                        fig_h.add_trace(go.Scatter(
+                            x=hyp["area_percent"], 
+                            y=hyp["elevations"], 
+                            fill='tozeroy', 
+                            mode='lines',
+                            line=dict(color='#2E86C1'),
+                            name='Terreno'
+                        ))
+                        fig_h.update_layout(
+                            xaxis_title="% Área Acumulada", 
+                            yaxis_title="Elevación (msnm)",
+                            height=300, 
+                            margin=dict(l=0,r=0,t=30,b=0),
+                            hovermode="x unified"
+                        )
+                        st.plotly_chart(fig_h, use_container_width=True)
+                        
+                        st.caption(f"📐 **Modelo:** `${hyp.get('equation', 'N/A')}$`")
+                        if hyp.get("source") == "Simulado":
+                            st.caption("⚠️ *Datos simulados (DEM no detectado)*")
+                    else:
+                        st.warning("⚠️ Datos de elevación no disponibles.")
+
+                # --- B. VISUALIZACIÓN CURVA FDC ---
+                with col_curvas_2:
+                    st.markdown("**🌊 Curva de Duración de Caudales (FDC)**")
+                    if fdc and fdc.get("data") is not None:
+                        df_fdc = fdc["data"]
+                        
+                        fig_f = go.Figure()
+                        fig_f.add_trace(go.Scatter(
+                            x=df_fdc["Probabilidad Excedencia (%)"], 
+                            y=df_fdc["Caudal (m³/s)"], 
+                            mode='lines', 
+                            line=dict(color='#27AE60', width=2),
+                            name='Caudal'
+                        ))
+                        fig_f.update_layout(
+                            xaxis_title="% Tiempo excedencia", 
+                            yaxis_title="Caudal (m³/s)",
+                            yaxis_type="log", 
+                            height=300, 
+                            margin=dict(l=0,r=0,t=30,b=0)
+                        )
+                        st.plotly_chart(fig_f, use_container_width=True)
+                        
+                        try:
+                            q_vals = df_fdc["Caudal (m³/s)"].values
+                            q95 = np.percentile(q_vals, 5) 
+                            st.caption(f"🐟 **Caudal Ecológico (Q95):** {q95:.2f} m³/s")
+                            st.caption(f"📐 **R² Ajuste:** {fdc.get('r_squared', 0):.2f}")
+                        except: pass
+                    else:
+                        st.info("⚠️ Faltan datos de lluvia para generar la curva FDC.")
+            
+            else:
+                # Si res es None (aún no se ha analizado nada), mostramos esto:
+                st.info("👈 Seleccione una cuenca y haga clic en '⚡ Analizar Cuenca' para ver los detalles.")
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
