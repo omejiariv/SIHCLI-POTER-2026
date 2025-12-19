@@ -2789,7 +2789,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                         gz_inc = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_b)
                                 except: pass
 
-                            # E. Hidrología Completa (Cálculo de variables faltantes)
+                            # 5. Hidrología Completa
+                            gdf_iso = generate_isohyets_gdf(gx, gy, gz, levels=12, crs=gdf_stations.crs) # <--- AGREGAR ESTA LÍNEA
                             ppt_med = np.nanmean(gz) if gz is not None else 0
                             
                             try: 
