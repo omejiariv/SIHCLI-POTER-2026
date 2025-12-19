@@ -3041,41 +3041,57 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     if "gdf_vis" in res:
                         folium.GeoJson(res["gdf_vis"], style_function=lambda x: {"color": "blue", "weight": 2, "fillOpacity": 0.1}).add_to(m_ctx)
                     
-                    # POPUPS DETALLADOS ---
-                    # Pre-calculamos años de registro por estación para eficiencia
-                    years_per_station = res["df_raw"].groupby(Config.STATION_NAME_COL)[Config.YEAR_COL].nunique()
+                    # --- POPUPS DETALLADOS Y SEGUROS ---
+                    # 1. Pre-cálculo seguro de años de registro (Evita KeyError)
+                    df_raw_safe = res.get("df_raw", pd.DataFrame())
+                    if not df_raw_safe.empty:
+                        years_per_station = df_raw_safe.groupby(Config.STATION_NAME_COL)[Config.YEAR_COL].nunique()
+                    else:
+                        years_per_station = {}
 
+                    # 2. Iteración sobre estaciones interpoladas
                     for _, r in res["df_int"].iterrows():
                         nombre = r[Config.STATION_NAME_COL]
                         ppt_val = r[Config.PRECIPITATION_COL]
                         
-                        # Recuperar datos con seguridad (usando .get si es diccionario o atributos si es serie)
-                        # Asumimos columnas estándar, ajusta si tus nombres son diferentes (ej: 'Municipio', 'Altitude')
-                        muni = r.get("Municipio", r.get("MUNICIPIO", "N/A")) 
-                        alt = r.get(Config.ALTITUDE_COL, 0)
-                        n_anos = years_per_station.get(nombre, 0)
+                        # 3. Recuperación inteligente de Municipio
+                        # Convertimos índices a string y buscamos 'muni' o 'ciud' sin importar mayúsculas
+                        cols_r = [str(c) for c in r.index.tolist()]
+                        col_muni = next((c for c in cols_r if "muni" in c.lower() or "municipio" in c.lower()), None)
+                        muni_val = r[col_muni] if col_muni else "N/A"
+                        
+                        # 4. Recuperación de Años y Altitud
+                        n_anos = years_per_station.get(nombre, 0) if isinstance(years_per_station, dict) else years_per_station.get(nombre, 0)
+                        alt_val = r.get(Config.ALTITUDE_COL, 0)
 
-                        # HTML Estilizado para el Popup
-                        html = f"""
-                        <div style='font-family:sans-serif; font-size:12px; min-width:180px'>
-                            <h4 style='margin:0; color:#2c3e50'>{nombre}</h4>
-                            <hr style='margin:5px 0'>
-                            <b>📍 Municipio:</b> {muni}<br>
-                            <b>⛰️ Altitud:</b> {alt:.0f} msnm<br>
-                            <b>🌧️ Ppt Media:</b> {ppt_val:.0f} mm<br>
-                            <b>📅 Registro:</b> {n_anos} años
+                        # 5. Construcción del HTML
+                        html_content = f"""
+                        <div style='font-family:sans-serif; font-size:12px; min-width:150px'>
+                            <h5 style='margin:0; color:#2c3e50; border-bottom:1px solid #ccc; padding-bottom:3px'>{nombre}</h5>
+                            <div style='margin-top:5px'>
+                                📍 <b>Mun:</b> {muni_val}<br>
+                                ⛰️ <b>Alt:</b> {alt_val:.0f} msnm<br>
+                                🌧️ <b>Ppt:</b> {ppt_val:.0f} mm<br>
+                                📅 <b>Reg:</b> {n_anos} años
+                            </div>
                         </div>
                         """
-                        iframe = folium.IFrame(html, width=200, height=120)
-                        popup = folium.Popup(iframe, max_width=200)
+                        
+                        # 6. Creación del Popup y Marcador
+                        iframe = folium.IFrame(html_content, width=220, height=130)
+                        popup = folium.Popup(iframe, max_width=220)
                         
                         folium.CircleMarker(
                             [r.latitude, r.longitude], 
-                            radius=5, color="darkred", fill=True, fill_color="red", fill_opacity=0.8,
+                            radius=5, 
+                            color="darkred", 
+                            fill=True, 
+                            fill_color="#e74c3c", 
+                            fill_opacity=0.9,
                             popup=popup
                         ).add_to(m_ctx)
                     
-                    st_folium(m_ctx, height=400, width="100%")
+                    st_folium(m_ctx, height=450, width="100%")
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
 # -----------------------------------------------------------------------------
