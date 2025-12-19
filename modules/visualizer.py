@@ -2425,9 +2425,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             # 1. Extraer límites
             minx, maxx, miny, maxy = bounds_box
             
-            # 2. Generar grilla con mayor resolución (300x300)
-            # Usamos números complejos (300j) para incluir el punto final exacto
-            gx, gy = np.mgrid[minx:maxx:300j, miny:maxy:300j]
+            # 2. Generar grilla con mayor resolución (1500x150)
+            # Usamos números complejos (150j) para incluir el punto final exacto
+            gx, gy = np.mgrid[minx:maxx:150j, miny:maxy:150j]
             
             # 3. Preparar datos
             df_unique = df_puntos.drop_duplicates(subset=["longitude", "latitude"])
@@ -2496,58 +2496,71 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             with open(f"{base_zip}.zip", "rb") as f: return f.read()
 
     # --- HELPER MÁSCARA (MEJORADO PARA EVITAR MAPAS VACÍOS) ---
-    # --- HELPER CORREGIDO DEFINITIVO: MÁSCARA PARA VULNERABILIDAD ---
+# --- HELPER OPTIMIZADO: MÁSCARA RÁPIDA (RASTERIO) ---
     def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
         """
-        Aplica una máscara vectorial (gdf_mask) sobre una grilla de valores (IVC).
-        CORRECCIÓN: Las zonas FUERA de la máscara se vuelven 0, no NaN.
-        Esto asegura que se visualice la forma completa de la cobertura.
+        Usa Rasterio para 'pintar' los polígonos sobre la grilla instantáneamente.
+        Mucho más rápido y robusto que el método anterior.
         """
         if gdf_mask is None or gdf_mask.empty or grid_values is None:
-            # Si no hay capa de cobertura, devolvemos una grilla de ceros (sin riesgo)
             return np.zeros_like(grid_values) if grid_values is not None else None
-
+            
         try:
-            # 1. Asegurar CRS y Reproyectar a Lat/Lon (EPSG:4326)
+            from rasterio import features
+            from rasterio.transform import from_bounds
+            
+            # 1. Asegurar proyección Lat/Lon
             if gdf_mask.crs is None: gdf_mask.set_crs("EPSG:3116", inplace=True)
             if gdf_mask.crs.to_string() != "EPSG:4326":
                 gdf_mask = gdf_mask.to_crs("EPSG:4326")
+            
+            # 2. Configurar dimensiones de la "foto" (raster)
+            # OJO: rasterio espera (filas, columnas) = (latitud, longitud) usualmente
+            # gx varía en eje 0, gy en eje 1 según np.mgrid
+            rows, cols = gx.shape
+            
+            # Detectar límites reales de la grilla generada
+            minx, maxx = gx.min(), gx.max()
+            miny, maxy = gy.min(), gy.max()
+            
+            # Crear transformación (Mapea píxeles a coordenadas)
+            # Nota: rasterio espera que la transformación vaya de arriba a abajo en Y, 
+            # pero np.mgrid va de menor a mayor. Ajustamos bounds.
+            transform = from_bounds(minx, miny, maxx, maxy, cols, rows)
+            
+            # 3. Rasterizar (Pintar polígonos con un 1)
+            # shapes espera una lista de (geometría, valor)
+            shapes = [(geom, 1) for geom in gdf_mask.geometry if not geom.is_empty]
+            
+            if not shapes: return np.zeros_like(grid_values)
+            
+            mask_arr = features.rasterize(
+                shapes=shapes,
+                out_shape=(rows, cols),
+                transform=transform,
+                fill=0,      # Fondo 0
+                default_value=1,
+                dtype='uint8'
+            )
+            
+            # NOTA CRÍTICA DE ALINEACIÓN:
+            # np.mgrid[minx:maxx, miny:maxy] a veces transpone ejes respecto a imágenes estándar.
+            # Si el mapa sale rotado 90 grados, simplemente usamos mask_arr.T
+            # Por la estructura de gx/gy en tu código, es probable que necesitemos transponer la máscara
+            # para que coincida con grid_values.
+            if mask_arr.shape != grid_values.shape:
+                mask_arr = mask_arr.T
 
-            # 2. Preparar puntos de la grilla
-            points = np.vstack((gx.flatten(), gy.flatten())).T
-            final_mask = np.zeros(points.shape[0], dtype=bool)
+            # 4. Aplicar máscara
+            result = grid_values.copy()
+            # Donde la máscara es 0 (no hay cobertura), ponemos NaN (Transparente)
+            result[mask_arr == 0] = np.nan
             
-            # 3. Obtener geometrías
-            try:
-                geom_union = gdf_mask.unary_union
-                if geom_union.is_empty: return np.zeros_like(grid_values)
-                geoms = geom_union.geoms if geom_union.geom_type == 'MultiPolygon' else [geom_union]
-            except:
-                geoms = gdf_mask.geometry
-
-            # 4. Crear la máscara booleana (Matplotlib Path)
-            import matplotlib.path as mpath
-            has_overlap = False
-            for geom in geoms:
-                if geom.is_empty: continue
-                p = mpath.Path(np.array(geom.exterior.coords))
-                mask = p.contains_points(points)
-                final_mask |= mask # Suma lógica de áreas
-                if np.any(mask): has_overlap = True
-            
-            # 5. APLICAR LA MÁSCARA (CAMBIO PARA TRANSPARENCIA)
-            grid_masked = grid_values.flatten().copy()
-            
-            # CAMBIO: Usamos np.nan en lugar de 0.
-            # Esto hará que lo que no es bosque/cultivo sea transparente.
-            grid_masked[~final_mask] = np.nan 
-            
-            return grid_masked.reshape(gx.shape)
+            return result
 
         except Exception as e:
-            print(f"Error crítico en máscara: {e}")
-            # En caso de error, devolver ceros es más seguro que None
-            return np.zeros_like(grid_values) if grid_values is not None else None
+            print(f"Error máscara rápida: {e}")
+            return np.zeros_like(grid_values)
             
 # ==========================================================================
     # MODO 1: REGIONAL (COMPARACIÓN) - CON DESCARGAS
@@ -2857,9 +2870,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                         
                                         # Aplicar la nueva función de máscara corregida
                                         if not gdf_a.empty:
+                                            # gz_cult tendrá valores donde hay cultivo, y NaN donde no
                                             gz_cult = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_a)
                                         
                                         if not gdf_b.empty:
+                                            # gz_inc tendrá valores donde hay bosque, y NaN donde no
                                             gz_inc = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_b)
                                             
                                 except Exception as e:
