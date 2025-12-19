@@ -2469,38 +2469,72 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             with open(f"{base_zip}.zip", "rb") as f: return f.read()
 
     # --- HELPER MÁSCARA (MEJORADO PARA EVITAR MAPAS VACÍOS) ---
+# --- HELPER CORREGIDO: MÁSCARA CON REPROYECCIÓN AUTOMÁTICA ---
     def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
-        if gdf_mask is None or gdf_mask.empty: return grid_values # Retorno original si no hay máscara
+        """
+        Aplica una máscara vectorial (gdf_mask) sobre una grilla numpy (gx, gy).
+        Maneja automáticamente la reproyección a EPSG:4326 para coincidir con la grilla.
+        """
+        if gdf_mask is None or gdf_mask.empty: 
+            return None # Si no hay máscara, no podemos filtrar (o devolvemos original según lógica)
+        
+        if grid_values is None:
+            return None
+
         try:
-            # Si las coordenadas no son lat/lon, convertirlas para que coincidan con la grilla
-            if gdf_mask.crs and gdf_mask.crs.to_string() != "EPSG:4326":
+            # 1. Asegurar CRS de la máscara
+            # Si el archivo no tiene CRS definido, asumimos EPSG:3116 (Magna Sirgas Colombia)
+            # que es el estándar que mencionaste.
+            if gdf_mask.crs is None:
+                gdf_mask.set_crs("EPSG:3116", inplace=True)
+
+            # 2. Reproyectar SIEMPRE a EPSG:4326 (Lat/Lon)
+            # Porque gx y gy generados por np.mgrid desde bounds de estaciones (GPS) están en 4326.
+            if gdf_mask.crs.to_string() != "EPSG:4326":
                 gdf_mask = gdf_mask.to_crs("EPSG:4326")
 
+            # 3. Preparar puntos de la grilla para la prueba de inclusión
             points = np.vstack((gx.flatten(), gy.flatten())).T
             final_mask = np.zeros(points.shape[0], dtype=bool)
             
+            # 4. Iterar sobre geometrías (Manejo robusto de MultiPolygon)
+            # Unimos todas las geometrías en una sola para facilitar, o iteramos si es pesado
             try:
                 geom_union = gdf_mask.unary_union
+                if geom_union.is_empty:
+                    return None
+                    
                 geoms = geom_union.geoms if geom_union.geom_type == 'MultiPolygon' else [geom_union]
             except:
                 geoms = gdf_mask.geometry
-                
+
+            # 5. Aplicar máscara (Matplotlib Path es muy rápido para esto)
+            import matplotlib.path as mpath
+            
+            has_overlap = False
             for geom in geoms:
                 if geom.is_empty: continue
+                # Convertir polígono a path
                 exterior_coords = np.array(geom.exterior.coords)
                 p = mpath.Path(exterior_coords)
+                # Verificar qué puntos caen dentro
                 mask = p.contains_points(points)
-                final_mask |= mask
+                final_mask |= mask # OR lógico (suma de máscaras)
+                if np.any(mask): has_overlap = True
             
-            grid_masked = grid_values.flatten()
-            grid_masked[~final_mask] = np.nan
+            # Si ningún punto de la grilla cae dentro de la máscara (no hay cultivos en esa zona)
+            if not has_overlap:
+                return None 
+
+            # 6. Aplicar NaN donde no hay máscara
+            grid_masked = grid_values.flatten().copy() # Copia para no dañar original
+            grid_masked[~final_mask] = np.nan # Lo que está FUERA de la máscara se vuelve NaN
             
-            # FALLBACK INTELIGENTE: Si el recorte borró todo (ej: error de coordenadas), devolvemos original
-            if np.isnan(grid_masked).all():
-                return None # Indicador de fallo
-                
             return grid_masked.reshape(gx.shape)
-        except: return None
+
+        except Exception as e:
+            print(f"Error en mask_grid_with_geometries: {e}")
+            return None
             
 # ==========================================================================
     # MODO 1: REGIONAL (COMPARACIÓN) - CON DESCARGAS
