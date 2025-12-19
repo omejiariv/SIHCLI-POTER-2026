@@ -3093,6 +3093,43 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     
                     st_folium(m_ctx, height=450, width="100%")
 
+# --- INICIO INTERVENCIÓN: CURVAS HIDROLÓGICAS ---
+st.markdown("---")
+st.subheader("📊 Análisis Hidrológico Detallado")
+
+col_curvas_1, col_curvas_2 = st.columns(2)
+
+# 1. Curva Hipsométrica (Elevación vs % Área acumulada)
+with col_curvas_1:
+    st.markdown("**Curva Hipsométrica**")
+    # Asegúrate de tener 'df_elevacion' disponible o cálculalo aquí
+    if 'df_elevacion' in locals() and not df_elevacion.empty: 
+        fig_hipso = px.area(df_elevacion, x='Area_Acumulada_Porcentaje', y='Elevacion', 
+                            title='Curva Hipsométrica', labels={'Area_Acumulada_Porcentaje':'% Área', 'Elevacion':'m.s.n.m.'})
+        fig_hipso.update_layout(yaxis_title="Elevación (m)", xaxis_title="% Área de Cuenca")
+        st.plotly_chart(fig_hipso, use_container_width=True)
+    else:
+        st.warning("⚠️ Datos de elevación no cargados para esta zona.")
+
+# 2. Curva de Duración de Caudales (FDC)
+with col_curvas_2:
+    st.markdown("**Curva de Duración de Caudales (FDC)**")
+    # Asegúrate de tener 'df_caudales' disponible
+    if 'df_caudales' in locals() and not df_caudales.empty:
+        # Ordenar caudales de mayor a menor para FDC
+        sort_flow = np.sort(df_caudales['Caudal'].dropna())[::-1]
+        exceedence = np.arange(1., len(sort_flow)+1) / len(sort_flow) * 100
+        
+        fig_fdc = go.Figure()
+        fig_fdc.add_trace(go.Scatter(x=exceedence, y=sort_flow, mode='lines', name='FDC', line=dict(color='blue')))
+        fig_fdc.update_layout(title='Curva de Duración de Caudales', 
+                              xaxis_title="% Tiempo que iguala o excede", yaxis_title="Caudal (m³/s)", 
+                              yaxis_type="log") # Logarítmico suele ser mejor para FDC
+        st.plotly_chart(fig_fdc, use_container_width=True)
+    else:
+        st.warning("⚠️ Datos de caudal no disponibles para cálculo FDC.")
+
+
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
 # -----------------------------------------------------------------------------
 def display_climate_forecast_tab(**kwargs):
@@ -5915,32 +5952,72 @@ def display_land_cover_analysis_tab(df_long, gdf_stations, **kwargs):
                     image=img_url, bounds=bounds, opacity=0.75, name="Cobertura"
                 ).add_to(m)
 
-                # CAPA 2: INTERACTIVA (Vectorial)
-                if use_hover:
-                    with st.spinner("Generando capa interactiva..."):
-                        if view_mode == "Regional":
-                            data_hover, trans_hover, _, _ = lc.process_land_cover_raster(
-                                raster_path, gdf_mask=None, scale_factor=50
-                            )
-                            gdf_vec = lc.vectorize_raster_optimized(data_hover, trans_hover, crs, nodata)
-                        else:
-                            gdf_vec = lc.vectorize_raster_optimized(data, transform, crs, nodata)
-                        
-                        if not gdf_vec.empty:
-                            # --- NUEVO: OPTIMIZACIÓN DE GEOMETRÍA EXTRA ---
-                            # Simplifica ligeramente para evitar que el navegador se congele
-                            gdf_vec['geometry'] = gdf_vec.geometry.simplify(tolerance=0.0001, preserve_topology=True)
+# CAPA 2: INTERACTIVA (Vectorial)
+            if use_hover:
+                with st.spinner("Generando capa interactiva..."):
+                    if view_mode == "Regional":
+                        data_hover, trans_hover, _, _ = lc.process_land_cover_raster(
+                            raster_path, gdf_mask=None, scale_factor=50
+                        )
+                        gdf_vec = lc.vectorize_raster_optimized(data_hover, trans_hover, crs, nodata)
+                    else:
+                        gdf_vec = lc.vectorize_raster_optimized(data, transform, crs, nodata)
+                    
+                    if not gdf_vec.empty:
+                        # --- NUEVO: OPTIMIZACIÓN DE GEOMETRÍA EXTRA ---
+                        # Simplifica ligeramente para evitar que el navegador se congele
+                        gdf_vec['geometry'] = gdf_vec.geometry.simplify(tolerance=0.0001, preserve_topology=True)
 
-                            folium.GeoJson(
-                                gdf_vec,
-                                style_function=lambda x: {'fillColor': '#ffffff', 'color': 'none', 'fillOpacity': 0},
-                                tooltip=folium.GeoJsonTooltip(fields=['Cobertura'], aliases=['Tipo:']),
-                                name="Hover Info"
-                            ).add_to(m)
+                        folium.GeoJson(
+                            gdf_vec,
+                            style_function=lambda x: {'fillColor': '#ffffff', 'color': 'none', 'fillOpacity': 0},
+                            tooltip=folium.GeoJsonTooltip(fields=['Cobertura'], aliases=['Tipo:']),
+                            name="Hover Info"
+                        ).add_to(m)
 
-                if view_mode == "Cuenca" and gdf_mask is not None:
-                    folium.GeoJson(gdf_mask, style_function=lambda x: {'color': 'black', 'fill': False, 'weight': 2}).add_to(m)
+            if view_mode == "Cuenca" and gdf_mask is not None:
+                folium.GeoJson(gdf_mask, style_function=lambda x: {'color': 'black', 'fill': False, 'weight': 2}).add_to(m)
 
+            # --- INICIO INTERVENCIÓN 2: CAPAS DE VULNERABILIDAD ---
+            
+            # Capa de Vulnerabilidad a Incendios
+            try:
+                # Asegúrate que 'gdf_amenaza_incendios' esté definido antes de este bloque
+                if 'gdf_amenaza_incendios' in locals() and gdf_amenaza_incendios is not None:
+                    folium.GeoJson(
+                        data=gdf_amenaza_incendios,
+                        name='Amenaza Incendios',
+                        style_function=lambda x: {
+                            'fillColor': '#e74c3c' if x['properties'].get('riesgo') == 'Alto' else '#f1c40f',
+                            'color': 'black',
+                            'weight': 0.5,
+                            'fillOpacity': 0.6
+                        },
+                        tooltip="Riesgo Incendio: " + folium.features.GeoJsonTooltip(fields=['riesgo'])
+                    ).add_to(m)
+            except Exception as e:
+                print(f"Error cargando capa incendios: {e}")
+
+            # Capa de Vulnerabilidad/Aptitud Agrícola
+            try:
+                # Asegúrate que 'gdf_aptitud_agricola' esté definido antes de este bloque
+                if 'gdf_aptitud_agricola' in locals() and gdf_aptitud_agricola is not None:
+                    folium.GeoJson(
+                        data=gdf_aptitud_agricola,
+                        name='Aptitud Agrícola',
+                        show=False, 
+                        style_function=lambda x: {
+                            'fillColor': '#2ecc71',
+                            'color': 'black',
+                            'weight': 0.5,
+                            'fillOpacity': 0.5
+                        }
+                    ).add_to(m)
+            except Exception as e:
+                print(f"Error cargando capa agrícola: {e}")
+
+            # --- FIN INTERVENCIÓN 2 ---
+                
                 folium.LayerControl().add_to(m)
                 st_folium(m, height=600, use_container_width=True, key="map_lc_stable")
 
