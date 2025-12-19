@@ -2496,72 +2496,58 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             with open(f"{base_zip}.zip", "rb") as f: return f.read()
 
     # --- HELPER MÁSCARA (MEJORADO PARA EVITAR MAPAS VACÍOS) ---
-    # --- HELPER CORREGIDO: MÁSCARA CON REPROYECCIÓN AUTOMÁTICA ---
+    # --- HELPER CORREGIDO DEFINITIVO: MÁSCARA PARA VULNERABILIDAD ---
     def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
         """
-        Aplica una máscara vectorial (gdf_mask) sobre una grilla numpy (gx, gy).
-        Maneja automáticamente la reproyección a EPSG:4326 para coincidir con la grilla.
+        Aplica una máscara vectorial (gdf_mask) sobre una grilla de valores (IVC).
+        CORRECCIÓN: Las zonas FUERA de la máscara se vuelven 0, no NaN.
+        Esto asegura que se visualice la forma completa de la cobertura.
         """
-        if gdf_mask is None or gdf_mask.empty: 
-            return None # Si no hay máscara, no podemos filtrar (o devolvemos original según lógica)
-        
-        if grid_values is None:
-            return None
+        if gdf_mask is None or gdf_mask.empty or grid_values is None:
+            # Si no hay capa de cobertura, devolvemos una grilla de ceros (sin riesgo)
+            return np.zeros_like(grid_values) if grid_values is not None else None
 
         try:
-            # 1. Asegurar CRS de la máscara
-            # Si el archivo no tiene CRS definido, asumimos EPSG:3116 (Magna Sirgas Colombia)
-            # que es el estándar que mencionaste.
-            if gdf_mask.crs is None:
-                gdf_mask.set_crs("EPSG:3116", inplace=True)
-
-            # 2. Reproyectar SIEMPRE a EPSG:4326 (Lat/Lon)
-            # Porque gx y gy generados por np.mgrid desde bounds de estaciones (GPS) están en 4326.
+            # 1. Asegurar CRS y Reproyectar a Lat/Lon (EPSG:4326)
+            if gdf_mask.crs is None: gdf_mask.set_crs("EPSG:3116", inplace=True)
             if gdf_mask.crs.to_string() != "EPSG:4326":
                 gdf_mask = gdf_mask.to_crs("EPSG:4326")
 
-            # 3. Preparar puntos de la grilla para la prueba de inclusión
+            # 2. Preparar puntos de la grilla
             points = np.vstack((gx.flatten(), gy.flatten())).T
             final_mask = np.zeros(points.shape[0], dtype=bool)
             
-            # 4. Iterar sobre geometrías (Manejo robusto de MultiPolygon)
-            # Unimos todas las geometrías en una sola para facilitar, o iteramos si es pesado
+            # 3. Obtener geometrías
             try:
                 geom_union = gdf_mask.unary_union
-                if geom_union.is_empty:
-                    return None
-                    
+                if geom_union.is_empty: return np.zeros_like(grid_values)
                 geoms = geom_union.geoms if geom_union.geom_type == 'MultiPolygon' else [geom_union]
             except:
                 geoms = gdf_mask.geometry
 
-            # 5. Aplicar máscara (Matplotlib Path es muy rápido para esto)
+            # 4. Crear la máscara booleana (Matplotlib Path)
             import matplotlib.path as mpath
-            
             has_overlap = False
             for geom in geoms:
                 if geom.is_empty: continue
-                # Convertir polígono a path
-                exterior_coords = np.array(geom.exterior.coords)
-                p = mpath.Path(exterior_coords)
-                # Verificar qué puntos caen dentro
+                p = mpath.Path(np.array(geom.exterior.coords))
                 mask = p.contains_points(points)
-                final_mask |= mask # OR lógico (suma de máscaras)
+                final_mask |= mask # Suma lógica de áreas
                 if np.any(mask): has_overlap = True
             
-            # Si ningún punto de la grilla cae dentro de la máscara (no hay cultivos en esa zona)
-            if not has_overlap:
-                return None 
-
-            # 6. Aplicar NaN donde no hay máscara
-            grid_masked = grid_values.flatten().copy() # Copia para no dañar original
-            grid_masked[~final_mask] = np.nan # Lo que está FUERA de la máscara se vuelve NaN
+            # 5. APLICAR LA MÁSCARA (EL CAMBIO CLAVE)
+            grid_masked = grid_values.flatten().copy()
+            
+            # Donde NO hay máscara (no es bosque/cultivo), la vulnerabilidad es 0.
+            # Donde SÍ hay máscara, se mantiene el valor original del IVC.
+            grid_masked[~final_mask] = 0 
             
             return grid_masked.reshape(gx.shape)
 
         except Exception as e:
-            print(f"Error en mask_grid_with_geometries: {e}")
-            return None
+            print(f"Error crítico en máscara: {e}")
+            # En caso de error, devolver ceros es más seguro que None
+            return np.zeros_like(grid_values) if grid_values is not None else None
             
 # ==========================================================================
     # MODO 1: REGIONAL (COMPARACIÓN) - CON DESCARGAS
@@ -2854,20 +2840,30 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                         gz_iv_var = (gz_iesd + gz_tr) / 2
                                 except: pass
 
-                            # D. Recorte (Masking) para Cultivos e Incendios
-                            gz_cult, gz_inc = None, None
+                            # D. Recorte (Masking) para Cultivos e Incendios (CÓDIGO SIMPLIFICADO)
+                            # Inicializamos con ceros por defecto
+                            gz_cult = np.zeros_like(gz_ivc)
+                            gz_inc = np.zeros_like(gz_ivc)
+                            
                             if gdf_coberturas is not None:
                                 try:
+                                    # Identificar columna de texto
                                     txt_cols = gdf_coberturas.select_dtypes(include=['object']).columns
                                     if len(txt_cols) > 0:
                                         c = txt_cols[0]
-                                        # Filtro flexible para coberturas
+                                        # Filtros flexibles (case-insensitive)
                                         gdf_a = gdf_coberturas[gdf_coberturas[c].astype(str).str.contains("Cult|Past|Agri", case=False, na=False)]
-                                        gz_cult = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_a)
-                                        
                                         gdf_b = gdf_coberturas[gdf_coberturas[c].astype(str).str.contains("Bosq|For|Selv", case=False, na=False)]
-                                        gz_inc = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_b)
-                                except: pass
+                                        
+                                        # Aplicar la nueva función de máscara corregida
+                                        if not gdf_a.empty:
+                                            gz_cult = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_a)
+                                        
+                                        if not gdf_b.empty:
+                                            gz_inc = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_b)
+                                            
+                                except Exception as e:
+                                    print(f"Error en filtrado de coberturas: {e}")
 
                             # 5. Hidrología Completa (ORDEN CORREGIDO)
                             # A. Primero generamos isoyetas (para que exista gdf_iso)
