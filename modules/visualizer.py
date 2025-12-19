@@ -2425,9 +2425,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             # 1. Extraer límites
             minx, maxx, miny, maxy = bounds_box
             
-            # 2. Generar grilla con mayor resolución (100x100)
-            # Usamos números complejos (100j) para incluir el punto final exacto
-            gx, gy = np.mgrid[minx:maxx:100j, miny:maxy:100j]
+            # 2. Generar grilla con mayor resolución (300x300)
+            # Usamos números complejos (300j) para incluir el punto final exacto
+            gx, gy = np.mgrid[minx:maxx:300j, miny:maxy:300j]
             
             # 3. Preparar datos
             df_unique = df_puntos.drop_duplicates(subset=["longitude", "latitude"])
@@ -2535,12 +2535,12 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                 final_mask |= mask # Suma lógica de áreas
                 if np.any(mask): has_overlap = True
             
-            # 5. APLICAR LA MÁSCARA (EL CAMBIO CLAVE)
+            # 5. APLICAR LA MÁSCARA (CAMBIO PARA TRANSPARENCIA)
             grid_masked = grid_values.flatten().copy()
             
-            # Donde NO hay máscara (no es bosque/cultivo), la vulnerabilidad es 0.
-            # Donde SÍ hay máscara, se mantiene el valor original del IVC.
-            grid_masked[~final_mask] = 0 
+            # CAMBIO: Usamos np.nan en lugar de 0.
+            # Esto hará que lo que no es bosque/cultivo sea transparente.
+            grid_masked[~final_mask] = np.nan 
             
             return grid_masked.reshape(gx.shape)
 
