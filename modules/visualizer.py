@@ -2777,8 +2777,13 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                     print(f"Error masking: {e}")
 
                             # 6. Análisis Hidrológico Externo (Depende de analysis.py)
-                            # Asegúrate de importar analysis al principio del script
-                            import analysis 
+                            # =======================================================
+                            # Importación correcta desde el paquete modules
+                            try:
+                                import modules.analysis as analysis
+                            except ImportError:
+                                # Fallback por si acaso se ejecuta desde otro contexto
+                                import analysis 
                             
                             morph = {"area_km2": 0, "alt_prom_m": 1500}
                             try: morph = analysis.calculate_morphometry(gdf_union)
@@ -2794,9 +2799,23 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             # Curvas (FDC y Hipsométrica)
                             fdc_res = None
                             try: 
-                                # Verifica que df_raw tenga datos diarios o mensuales según lo que pida calculate_fdc
-                                fdc_res = analysis.calculate_fdc(df_raw.groupby(col_date)[col_ppt].mean(), q_mm/ppt_med if ppt_med>0 else 0.4, morph.get("area_km2", 100))
-                            except Exception as e: print(f"Error FDC: {e}")
+                                # CORRECCIÓN DE NOMBRE DE FUNCIÓN: 
+                                # En tu analysis.py la función se llama 'calculate_duration_curve'
+                                # y requiere: series_mensual, runoff_coeff, area_km2
+                                
+                                # Calculamos serie mensual promedio para la cuenca
+                                serie_mensual_cuenca = df_raw.groupby(col_date)[col_ppt].mean()
+                                coef_escorrentia = q_mm/ppt_med if ppt_med > 0 else 0.4
+                                area_cuenca = morph.get("area_km2", 100)
+
+                                fdc_res = analysis.calculate_duration_curve(
+                                    serie_mensual_cuenca, 
+                                    coef_escorrentia, 
+                                    area_cuenca
+                                )
+                            except Exception as e: 
+                                print(f"Error FDC: {e}")
+                                fdc_res = None
                             
                             hyp_res = None
                             try: 
@@ -2816,8 +2835,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                 "df_raw": df_raw, 
                                 "bal": {"P": ppt_med, "Q": q_mm, "Vol": vol_hm3}, 
                                 "morph": morph, 
-                                "fdc": fdc_res,   # Guardamos resultado FDC aquí
-                                "hyp": hyp_res    # Guardamos resultado Hipsometría aquí
+                                "fdc": fdc_res,   
+                                "hyp": hyp_res    
                             }
                         else: st.error("Insuficientes estaciones (<3).")
                     else: st.error("Sin estaciones cercanas.")
