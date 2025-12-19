@@ -517,42 +517,93 @@ def calculate_morphometry(gdf_basin):
 
 def calculate_hypsometric_curve(gdf_basin, dem_path=None):
     """
-    Genera curva hipsométrica con ecuación legible.
+    Genera la curva hipsométrica REAL leyendo el DEM y recortando por la cuenca.
     """
     if gdf_basin is None or gdf_basin.empty:
         return None
 
-    morph = calculate_morphometry(gdf_basin)
-    min_z, max_z = morph["alt_min_m"], morph["alt_max_m"]
+    elevations = []
+    
+    # 1. INTENTAR LEER DEL DEM SI EXISTE
+    if dem_path:
+        try:
+            import rasterio
+            from rasterio.mask import mask
+            
+            with rasterio.open(dem_path) as src:
+                # Asegurar que la geometría de la cuenca esté en el mismo CRS que el DEM
+                if gdf_basin.crs != src.crs:
+                    gdf_basin_proj = gdf_basin.to_crs(src.crs)
+                else:
+                    gdf_basin_proj = gdf_basin
 
-    # Simulación S-Curve (Modelo teórico robusto para cuencas andinas)
-    n_points = 100
-    elevations = np.linspace(min_z, max_z, n_points)
-    x = np.linspace(-3, 3, n_points)
-    area_percent = 100 * (1 / (1 + np.exp(-x)))
-    area_percent = np.sort(area_percent)[
-        ::-1
-    ]  # Invertir para que sea decreciente (100% en base)
+                # Recortar el DEM usando la geometría de la cuenca
+                out_image, out_transform = mask(
+                    src, 
+                    gdf_basin_proj.geometry, 
+                    crop=True, 
+                    nodata=src.nodata
+                )
+                
+                # Aplanar el array y eliminar valores NoData
+                data = out_image[0] # Banda 1
+                elevations = data[data != src.nodata]
+                
+                # Filtrar valores absurdos (ej. errores de medición < -100 o > 6000 en Colombia)
+                elevations = elevations[(elevations > -100) & (elevations < 6000)]
 
+        except Exception as e:
+            print(f"Error leyendo DEM: {e}")
+            elevations = []
+
+    # 2. SI FALLA EL DEM O NO HAY RUTA, USAR MODELO TEÓRICO (FALLBACK)
+    if len(elevations) == 0:
+        # Tu lógica original de simulación S-Curve como respaldo
+        morph = calculate_morphometry(gdf_basin)
+        min_z, max_z = morph["alt_min_m"], morph["alt_max_m"]
+        n_points = 1000
+        # Simulación simple lineal si no hay DEM
+        elevations = np.linspace(min_z, max_z, n_points)
+
+    # 3. CALCULAR CURVA (Histograma acumulado)
+    # Ordenar de mayor a menor (para hipsometría: área sobre cota X)
+    elevations_sorted = np.sort(elevations)[::-1] 
+    n_pixels = len(elevations_sorted)
+    
+    # Eje X: Porcentaje del área (0 a 100)
+    area_percent = np.arange(1, n_pixels + 1) / n_pixels * 100
+    
+    # Reducir resolución para graficar (no necesitamos 1 millón de puntos)
+    if n_pixels > 200:
+        indices = np.linspace(0, n_pixels - 1, 200, dtype=int)
+        elevations_plot = elevations_sorted[indices]
+        area_plot = area_percent[indices]
+    else:
+        elevations_plot = elevations_sorted
+        area_plot = area_percent
+
+    # 4. Ajuste de Ecuación (Polinomio Grado 3)
     try:
-        # Ajuste Polinómico Grado 3
-        coeffs = np.polyfit(area_percent, elevations, 3)
+        coeffs = np.polyfit(area_plot, elevations_plot, 3)
         poly_model = np.poly1d(coeffs)
-
-        # FORMATO DECIMAL LEGIBLE (Fixed-point notation 'f')
-        # Evita la notación científica 'e' que confunde.
-        eq_str = f"H = {coeffs[0]:.6f}A³ + {coeffs[1]:.4f}A² + {coeffs[2]:.2f}A + {coeffs[3]:.0f}"
+        
+        eq_str = (
+            f"H = {coeffs[0]:.4f}A³ "
+            f"{'+' if coeffs[1]>=0 else '-'} {abs(coeffs[1]):.3f}A² "
+            f"{'+' if coeffs[2]>=0 else '-'} {abs(coeffs[2]):.2f}A "
+            f"{'+' if coeffs[3]>=0 else '-'} {abs(coeffs[3]):.0f}"
+        )
     except:
         eq_str = "N/A"
         poly_model = lambda x: x
 
     return {
-        "elevations": elevations,
-        "area_percent": area_percent,
+        "elevations": elevations_plot,  # Eje Y
+        "area_percent": area_plot,      # Eje X
         "equation": eq_str,
         "poly_model": poly_model,
+        "source": "DEM Real" if dem_path and len(elevations) > 0 else "Simulado"
     }
-
 
 def calculate_all_station_trends(df_anual, gdf_stations):
     """
