@@ -1,3 +1,4 @@
+# app.py
 import warnings
 import pandas as pd
 import streamlit as st
@@ -12,7 +13,7 @@ try:
     from modules.data_processor import complete_series, load_and_process_all_data
     from modules.reporter import generate_pdf_report
     
-    # Importamos función de tendencias para el mapa de vulnerabilidad
+    # Importamos función de tendencias
     try:
         from modules.analysis import calculate_trends_mann_kendall
     except ImportError:
@@ -75,74 +76,74 @@ def main():
         st.error("No se pudieron cargar los datos.")
         st.stop()
 
-    # --- C. FILTROS AVANZADOS (BARRA LATERAL) ---
+    # --- C. BARRA LATERAL (FILTROS Y NAVEGACIÓN) ---
     with st.sidebar:
-        st.title("🎛️ Panel de Control")
+        st.title("🎛️ SIHCLI-POTER")
         
-        # 1. GESTIÓN DE DATOS
-        with st.expander("📂 Gestión de Datos", expanded=False):
-            st.info("Fuente: GitHub (Automático)")
-            if st.button("🔄 Recargar Datos"):
-                st.cache_data.clear()
-                st.rerun()
-            if st.checkbox("Carga Manual", value=False):
-                st.file_uploader("Subir CSV", type=["csv", "txt"])
+        # --- 1. MENÚ DE NAVEGACIÓN (SOLUCIÓN AL BLOQUEO) ---
+        st.markdown("### 🚀 Navegación Principal")
+        # Usamos Radio Button en lugar de Tabs para cargar SOLO lo necesario
+        selected_module = st.radio(
+            "Ir a:",
+            [
+                "🏠 Inicio", 
+                "🚨 Monitoreo", 
+                "🗺️ Distribución", 
+                "📈 Gráficos", 
+                "📊 Estadísticas", 
+                "🔮 Pronóstico Climático", 
+                "📉 Tendencias", 
+                "⚠️ Anomalías", 
+                "🔗 Correlación", 
+                "🌊 Extremos", 
+                "🌍 Mapas Avanzados", 
+                "🧪 Sesgo", 
+                "🌿 Cobertura", 
+                "🌱 Zonas Vida", 
+                "🌡️ Clima Futuro", 
+                "📄 Reporte"
+            ]
+        )
+        st.markdown("---")
 
-        # 2. FILTROS GEOGRÁFICOS
-        # Detectar columnas automáticamente (Región/Zona y Altitud/Elevación)
-        col_region = get_fuzzy_col(gdf_stations, ["region", "zon", "cuenca", "dpto"])
-        col_muni = get_fuzzy_col(gdf_stations, ["muni", "ciud", "city"])
-        col_alt = get_fuzzy_col(gdf_stations, ["alt", "elev", "cota", "height"])
+        # --- 2. FILTROS GEOGRÁFICOS ---
+        with st.expander("🗺️ Filtros Geográficos", expanded=False):
+            # Detectar columnas
+            col_region = get_fuzzy_col(gdf_stations, ["region", "zon", "cuenca", "dpto"])
+            col_muni = get_fuzzy_col(gdf_stations, ["muni", "ciud", "city"])
+            col_alt = get_fuzzy_col(gdf_stations, ["alt", "elev", "cota", "height"])
 
-        with st.expander("🗺️ Filtros Geográficos", expanded=True):
             # A. Regiones
             list_regions = []
             sel_regions = []
             if col_region:
-                # Normalizamos a string para evitar errores de tipo
                 list_regions = sorted(gdf_stations[col_region].astype(str).unique())
-                sel_regions = st.multiselect(f"📍 Región ({col_region}):", list_regions, default=[])
-            else:
-                st.warning("⚠️ No se detectó columna de Región.")
+                sel_regions = st.multiselect(f"📍 Región:", list_regions, default=[])
 
-            # B. Municipios (Cascada)
+            # B. Municipios
             list_munis = []
             sel_munis = []
             if col_muni:
-                # Filtramos GDF temporalmente para la cascada
                 if sel_regions and col_region:
                     gdf_temp = gdf_stations[gdf_stations[col_region].isin(sel_regions)]
                 else:
                     gdf_temp = gdf_stations
-                
                 list_munis = sorted(gdf_temp[col_muni].astype(str).unique())
-                sel_munis = st.multiselect(f"🏙️ Municipio ({col_muni}):", list_munis, default=[])
+                sel_munis = st.multiselect(f"🏙️ Municipio:", list_munis, default=[])
 
             # C. Altitud
             rango_alt = None
             if col_alt:
                 try:
-                    # Convertir a numérico forzado por si hay texto sucio
                     gdf_stations[col_alt] = pd.to_numeric(gdf_stations[col_alt], errors='coerce')
-                    min_a = float(gdf_stations[col_alt].min())
-                    max_a = float(gdf_stations[col_alt].max())
-                    
-                    # Solo mostramos si hay datos válidos
+                    min_a, max_a = float(gdf_stations[col_alt].min()), float(gdf_stations[col_alt].max())
                     if pd.notnull(min_a) and pd.notnull(max_a) and min_a < max_a:
-                        rango_alt = st.slider(
-                            "⛰️ Altitud (msnm):", 
-                            int(min_a), int(max_a), (int(min_a), int(max_a))
-                        )
-                except Exception as e:
-                    st.caption(f"Error en filtro altitud: {e}")
-            else:
-                st.warning("⚠️ No se detectó columna de Altitud.")
+                        rango_alt = st.slider("⛰️ Altitud:", int(min_a), int(max_a), (int(min_a), int(max_a)))
+                except: pass
 
-        # 3. SELECCIÓN DE ESTACIONES
-        with st.expander("🌧️ Selección de Estaciones", expanded=True):
+        # --- 3. SELECCIÓN DE ESTACIONES ---
+        with st.expander("🌧️ Selección Estaciones", expanded=False):
             mask_geo = pd.Series(True, index=gdf_stations.index)
-            
-            # Aplicar filtros geo acumulativos
             if sel_regions and col_region:
                 mask_geo &= gdf_stations[col_region].isin(sel_regions)
             if sel_munis and col_muni:
@@ -151,21 +152,15 @@ def main():
                 mask_geo &= (gdf_stations[col_alt] >= rango_alt[0]) & (gdf_stations[col_alt] <= rango_alt[1])
                 
             stations_avail = gdf_stations.loc[mask_geo, Config.STATION_NAME_COL].unique()
-            
-            st.markdown(f"**Disponibles:** {len(stations_avail)}")
+            st.caption(f"Disponibles: {len(stations_avail)}")
 
-            # Botón maestro Seleccionar/Deseleccionar
             if st.checkbox("✅ Seleccionar Todas", value=True):
-                stations_for_analysis = st.multiselect(
-                    "Estaciones:", options=stations_avail, default=stations_avail
-                )
+                stations_for_analysis = st.multiselect("Estaciones:", options=stations_avail, default=stations_avail)
             else:
-                stations_for_analysis = st.multiselect(
-                    "Estaciones:", options=stations_avail, default=[]
-                )
+                stations_for_analysis = st.multiselect("Estaciones:", options=stations_avail, default=[])
 
-        # 4. TIEMPO Y LIMPIEZA
-        with st.expander("⏳ Tiempo y Limpieza", expanded=True):
+        # --- 4. TIEMPO Y LIMPIEZA ---
+        with st.expander("⏳ Tiempo y Limpieza", expanded=False):
             min_year = int(df_long[Config.YEAR_COL].min())
             max_year = int(df_long[Config.YEAR_COL].max())
             year_range = st.slider("📅 Años:", min_year, max_year, (min_year, max_year))
@@ -179,7 +174,13 @@ def main():
             
             analysis_mode = "Anual"
 
-    # --- D. APLICAR FILTROS (PROCESAMIENTO) ---
+        # --- 5. GESTIÓN ---
+        with st.expander("📂 Gestión", expanded=False):
+            if st.button("🔄 Recargar Datos"):
+                st.cache_data.clear()
+                st.rerun()
+
+    # --- D. PROCESAMIENTO DE DATOS (FILTRADO) ---
     mask_base = (
         (df_long[Config.YEAR_COL] >= year_range[0])
         & (df_long[Config.YEAR_COL] <= year_range[1])
@@ -188,13 +189,11 @@ def main():
     
     df_monthly_filtered = df_long.loc[mask_base].copy()
     
-    # Limpieza
     if ignore_zeros:
         df_monthly_filtered = df_monthly_filtered[df_monthly_filtered[Config.PRECIPITATION_COL] != 0]
     if ignore_nulls:
         df_monthly_filtered = df_monthly_filtered.dropna(subset=[Config.PRECIPITATION_COL])
 
-    # Filtrar GDF final
     gdf_filtered = gdf_stations[gdf_stations[Config.STATION_NAME_COL].isin(stations_for_analysis)]
 
     if apply_interp:
@@ -204,31 +203,28 @@ def main():
     df_anual_melted = (
         df_monthly_filtered.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[
             Config.PRECIPITATION_COL
-        ]
-        .sum()
-        .reset_index()
+        ].sum().reset_index()
     )
 
     start_date = pd.to_datetime(f"{year_range[0]}-01-01")
     end_date = pd.to_datetime(f"{year_range[1]}-12-31")
 
-    # --- CALCULAR TENDENCIAS (NUEVO: Para Mapas Avanzados) ---
-    df_trends = None
-    if calculate_trends_mann_kendall is not None and not df_anual_melted.empty:
-        try:
-            # Calculamos tendencias silenciosamente para pasarlas a los mapas
-            trends_res = calculate_trends_mann_kendall(df_anual_melted)
-            if trends_res is not None:
-                df_trends = trends_res['trend_data']
-        except:
-            pass
-
-    # --- DEFINIR CAPAS DE COBERTURA ---
-    # Si tienes una capa específica de coberturas, cárgala aquí. 
-    # Por ahora usamos gdf_predios como proxy si el usuario no ha subido otra.
+    # Definir coberturas (Usa predios si no hay capa específica)
     gdf_coberturas = gdf_predios if gdf_predios is not None else None
 
-    # --- EMPAQUETAR ARGUMENTOS ---
+    # --- E. CÁLCULO LAZY DE TENDENCIAS (SOLO SI SE NECESITA) ---
+    # Esto evita el bloqueo al inicio. Solo se calcula si el usuario entra a módulos avanzados.
+    df_trends = None
+    if selected_module in ["🌍 Mapas Avanzados", "🌡️ Clima Futuro"]:
+        if calculate_trends_mann_kendall is not None and not df_anual_melted.empty:
+            try:
+                # with st.spinner("Calculando tendencias globales..."): # Opcional mostrar spinner
+                trends_res = calculate_trends_mann_kendall(df_anual_melted)
+                if trends_res is not None:
+                    df_trends = trends_res['trend_data']
+            except: pass
+
+    # --- F. EMPAQUETADO DE ARGUMENTOS ---
     display_args = {
         "df_long": df_monthly_filtered, "df_complete": df_monthly_filtered,
         "gdf_stations": gdf_stations, "gdf_filtered": gdf_filtered,
@@ -239,12 +235,16 @@ def main():
         "selected_regions": sel_regions, "selected_municipios": sel_munis,
         "selected_months": list(range(1, 13)), "year_range": year_range,
         "start_date": start_date, "end_date": end_date,
-        # Nuevos argumentos críticos para Mapas Avanzados
         "gdf_coberturas": gdf_coberturas,
-        "df_trends": df_trends
+        "df_trends": df_trends,
+        # Argumentos extra para visualizadores específicos
+        "interpolacion": "Si" if apply_interp else "No",
+        "user_loc": None
     }
 
-    # --- E. RENDERIZADO ---
+    # --- G. RENDERIZADO DEL CONTENIDO ---
+    
+    # 1. Resumen Superior (Siempre visible)
     try:
         display_current_filters(
             stations_sel=stations_for_analysis,
@@ -258,52 +258,58 @@ def main():
     except Exception:
         pass
 
-    tab_titles = [
-        "🏠 Inicio", "🚨 Monitoreo", "🗺️ Distribución", "📈 Gráficos", 
-        "📊 Estadísticas", "🔮 Pronóstico Climático", "📉 Tendencias", 
-        "⚠️ Anomalías", "🔗 Correlación", "🌊 Extremos", 
-        "🌍 Mapas Avanzados", "🧪 Sesgo", "🌿 Cobertura", 
-        "🌱 Zonas Vida", "🌡️ Clima Futuro", "📄 Reporte"
-    ]
-
-    tabs = st.tabs(tab_titles)
-
-    with tabs[0]: 
+    # 2. Enrutador de Módulos (Evita ejecución en cascada)
+    if selected_module == "🏠 Inicio":
         display_welcome_tab()
-    with tabs[1]: 
+        
+    elif selected_module == "🚨 Monitoreo":
         display_realtime_dashboard(df_monthly_filtered, gdf_stations, gdf_filtered)
-    with tabs[2]: 
-        display_spatial_distribution_tab(user_loc=None, interpolacion="Si" if apply_interp else "No", **display_args)
-    with tabs[3]: 
+        
+    elif selected_module == "🗺️ Distribución":
+        display_spatial_distribution_tab(**display_args)
+        
+    elif selected_module == "📈 Gráficos":
         display_graphs_tab(**display_args)
-    with tabs[4]: 
+        
+    elif selected_module == "📊 Estadísticas":
         display_stats_tab(**display_args)
         st.markdown("---")
         display_station_table_tab(**display_args)
-    with tabs[5]: 
+        
+    elif selected_module == "🔮 Pronóstico Climático":
         display_climate_forecast_tab(**display_args)
-    with tabs[6]: 
+        
+    elif selected_module == "📉 Tendencias":
         display_trends_and_forecast_tab(**display_args)
-    with tabs[7]: 
+        
+    elif selected_module == "⚠️ Anomalías":
         display_anomalies_tab(**display_args)
-    with tabs[8]: 
+        
+    elif selected_module == "🔗 Correlación":
         display_correlation_tab(**display_args)
-    with tabs[9]: 
+        
+    elif selected_module == "🌊 Extremos":
         display_drought_analysis_tab(**display_args)
-    with tabs[10]: 
+        
+    elif selected_module == "🌍 Mapas Avanzados":
         display_advanced_maps_tab(**display_args)
-    with tabs[11]:
+        
+    elif selected_module == "🧪 Sesgo":
         try:
             display_bias_correction_tab(**display_args)
         except:
-            st.info("Módulo Sesgo cargando...")
-    with tabs[12]: 
+            st.info("Módulo Sesgo cargando o no disponible.")
+            
+    elif selected_module == "🌿 Cobertura":
         display_land_cover_analysis_tab(**display_args)
-    with tabs[13]: 
+        
+    elif selected_module == "🌱 Zonas Vida":
         display_life_zones_tab(**display_args)
-    with tabs[14]: 
+        
+    elif selected_module == "🌡️ Clima Futuro":
         display_climate_scenarios_tab(**display_args)
-    with tabs[15]:
+        
+    elif selected_module == "📄 Reporte":
         st.header("Reporte PDF")
         if st.button("Generar Reporte"):
             res = {"n_estaciones": len(stations_for_analysis), "rango": f"{year_range}"}
@@ -311,6 +317,7 @@ def main():
             if pdf:
                 st.download_button("Descargar", pdf, "reporte.pdf", "application/pdf")
 
+    # Ajuste CSS para Tabs internas
     st.markdown("""<style>.stTabs [data-baseweb="tab-panel"] { padding-top: 1rem; }</style>""", unsafe_allow_html=True)
 
 if __name__ == "__main__":
