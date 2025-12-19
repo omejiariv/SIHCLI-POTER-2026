@@ -2826,15 +2826,14 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             except: 
                                 pass
 
-                            # Guardar TODO (Ahora sí existen todas las variables)
+                            # GUARDADO FINAL
                             st.session_state["basin_res"] = {
                                 "ready": True, "names": ", ".join(sel_cuencas), "bounds": [minx, maxx, miny, maxy],
                                 "gz": gz, "gx": gx, "gy": gy, "gz_ivc": gz_ivc, "gz_iv_var": gz_iv_var,
                                 "gz_cult": gz_cult, "gz_inc": gz_inc,
                                 "gdf_union": gdf_union, "gdf_vis": gdf_vis, "gdf_pts": gdf_pts, "gdf_buf": gdf_buf, "gdf_iso": gdf_iso,
-                                "df_int": df_int, 
-                                "df_raw": df_raw, # Vital para el KeyError anterior
-                                "bal": {"P": ppt_med, "ET": 0, "Q_m3s": q_m3s, "Vol": vol_hm3}, 
+                                "df_int": df_int, "df_raw": df_raw, 
+                                "bal": {"P": ppt_med, "Q": q_mm, "Q_m3s": q_m3s, "Vol": vol_hm3}, 
                                 "morph": morph, "idx": idx_c, "fdc": fdc
                             }
                         else: st.error("Insuficientes estaciones (<3).")
