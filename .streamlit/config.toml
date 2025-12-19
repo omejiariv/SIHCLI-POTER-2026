@@ -2,3 +2,11 @@
 folderWatchBlacklist = ['venv', '.*', 'data', 'assets']
 headless = true
 fileWatcherType = "poll"
+
+# --- Nuevas configuraciones recomendadas ---
+# Aumenta el límite de subida de archivos (útil para GeoJSON grandes)
+maxUploadSize = 500 
+
+[browser]
+# Esto ayuda a veces con la estabilidad de la conexión
+gatherUsageStats = false
