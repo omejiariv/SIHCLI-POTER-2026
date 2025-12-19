@@ -12,6 +12,7 @@ import base64
 import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import branca.colormap as cm
 from rasterio.transform import array_bounds
@@ -2365,8 +2366,6 @@ def display_satellite_imagery_tab(gdf_filtered):
                 f"[Haga clic aquí para verla directamente en la NOAA]({url_gif})"
             )
 
-# Configuración para evitar problemas de hilos con Matplotlib
-matplotlib.use('Agg')
 # --- FUNCIONES AUXILIARES CACHEADAS (OPTIMIZACIÓN DE RENDIMIENTO) ---
 # Las sacamos de la función principal para que Streamlit no las recargue cada vez
 
