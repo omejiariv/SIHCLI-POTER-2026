@@ -12,7 +12,6 @@ import base64
 import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import branca.colormap as cm
 from rasterio.transform import array_bounds
