@@ -2904,16 +2904,55 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                     zmin, zmax = 0, 100
 
                 # Mapa Principal Plotly
-                fig = go.Figure(go.Contour(z=z.T, x=res["gx"][:,0], y=res["gy"][0,:], colorscale=colors, zmin=zmin, zmax=zmax, contours=dict(start=zmin, end=zmax, size=(zmax-zmin)/15 if zmax>zmin else 1)))
-                try:
-                    for g in (res["gdf_vis"].geometry if res["gdf_vis"].geometry.iloc[0].geom_type != 'MultiPolygon' else res["gdf_vis"].geometry.iloc[0].geoms):
-                        xs, ys = g.exterior.xy
-                        fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=2), name="Cuenca"))
-                except: pass
+                # --- CORRECCIÓN 1: BLINDAJE CONTRA MAPAS VACÍOS ---
                 
-                fig.add_trace(go.Scatter(x=res["gdf_pts"].geometry.x, y=res["gdf_pts"].geometry.y, mode="markers", marker=dict(color="black", size=4), name="Est"))
-                fig.update_layout(title=tit, height=500, margin=dict(l=20, r=20, t=40, b=20))
-                st.plotly_chart(fig, use_container_width=True)
+                # Verificamos si z tiene datos antes de intentar graficar
+                if z is not None:
+                    # Mapa Principal Plotly
+                    try:
+                        # Nota: z.T es la transpuesta, necesaria porque Plotly interpreta x/y distinto a numpy
+                        fig = go.Figure(go.Contour(
+                            z=z.T, 
+                            x=res["gx"][:,0], 
+                            y=res["gy"][0,:], 
+                            colorscale=colors, 
+                            zmin=zmin, 
+                            zmax=zmax, 
+                            contours=dict(start=zmin, end=zmax, size=(zmax-zmin)/15 if zmax>zmin else 1),
+                            colorbar=dict(title=tit)
+                        ))
+
+                        # Agregar contorno de la cuenca (Si existe)
+                        try:
+                            # Manejo robusto de geometrías (Polygon vs MultiPolygon)
+                            geoms = res["gdf_vis"].geometry
+                            if not geoms.empty:
+                                geom_list = geoms.iloc[0].geoms if geoms.iloc[0].geom_type == 'MultiPolygon' else [geoms.iloc[0]]
+                                for g in geom_list:
+                                    xs, ys = g.exterior.xy
+                                    fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=2), name="Cuenca"))
+                        except Exception as e:
+                            print(f"No se pudo dibujar el contorno de la cuenca: {e}")
+                        
+                        # Agregar puntos de estaciones
+                        fig.add_trace(go.Scatter(
+                            x=res["gdf_pts"].geometry.x, 
+                            y=res["gdf_pts"].geometry.y, 
+                            mode="markers", 
+                            marker=dict(color="black", size=4), 
+                            name="Estaciones"
+                        ))
+                        
+                        fig.update_layout(title=tit, height=500, margin=dict(l=20, r=20, t=40, b=20))
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                    except Exception as e:
+                        st.error(f"Error al renderizar el gráfico: {e}")
+                
+                else:
+                    # Si z es None, mostramos una advertencia amigable en lugar de crashear
+                    st.warning(f"⚠️ No se pudieron generar datos para: **{sel}**.")
+                    st.info("Posible causa: La capa de cobertura (cultivos/bosques) no se superpone con la zona seleccionada o hay un error de proyección.")
 
                 if "IVC" in sel or "Variación" in sel:
                     with st.expander("ℹ️ Interpretación del IVC (Semáforo de Riesgo)", expanded=True):
