@@ -2460,9 +2460,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
     # --- HELPER MÁSCARA (MEJORADO PARA EVITAR MAPAS VACÍOS) ---
     def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
-        if gdf_mask is None or gdf_mask.empty: return grid_values 
+        if gdf_mask is None or gdf_mask.empty: return grid_values # Retorno original si no hay máscara
         try:
-            # Forzar CRS a WGS84 si es necesario
+            # Si las coordenadas no son lat/lon, convertirlas para que coincidan con la grilla
             if gdf_mask.crs and gdf_mask.crs.to_string() != "EPSG:4326":
                 gdf_mask = gdf_mask.to_crs("EPSG:4326")
 
@@ -2789,43 +2789,34 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                         gz_inc = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_b)
                                 except: pass
 
-                            # 5. Hidrología Completa
-                            gdf_iso = generate_isohyets_gdf(gx, gy, gz, levels=12, crs=gdf_stations.crs) # <--- AGREGAR ESTA LÍNEA
+                            # 5. Hidrología Completa (ORDEN CORREGIDO)
+                            # A. Primero generamos isoyetas (para que exista gdf_iso)
+                            gdf_iso = generate_isohyets_gdf(gx, gy, gz, levels=12, crs=gdf_stations.crs)
+                            
+                            # B. Calculamos precipitación media
                             ppt_med = np.nanmean(gz) if gz is not None else 0
                             
-                            try: 
-                                morph = analysis.calculate_morphometry(gdf_union)
-                            except: 
-                                morph = {"area_km2": 0, "alt_prom_m": 1500}
-                            
-                            # Definimos área explícitamente para cálculos posteriores
+                            # C. Morfometría
+                            try: morph = analysis.calculate_morphometry(gdf_union)
+                            except: morph = {"area_km2": 0, "alt_prom_m": 1500}
                             area_km2 = morph.get("area_km2", 100)
                             
-                            # Balance de Turc
+                            # D. Balance de Turc y Caudales
                             tm = max(0, 28 - 0.006 * morph.get("alt_prom_m", 1500))
-                            try: 
-                                _, q_mm = analysis.calculate_water_balance_turc(ppt_med, tm)
-                            except: 
-                                q_mm = 0
+                            try: _, q_mm = analysis.calculate_water_balance_turc(ppt_med, tm)
+                            except: q_mm = 0
                             
-                            # --- AQUÍ ESTABA EL ERROR: FALTABAN ESTOS CÁLCULOS ---
                             vol_hm3 = (q_mm * area_km2) / 1000 
                             q_m3s = (vol_hm3 * 1_000_000) / 31536000
-                            # -----------------------------------------------------
                             
-                            # Índices Climáticos
+                            # E. Índices y Curvas
                             idx_c = {}
-                            try: 
-                                idx_c = analysis.calculate_climatic_indices(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), morph.get("alt_prom_m", 1500))
-                            except: 
-                                pass
+                            try: idx_c = analysis.calculate_climatic_indices(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), morph.get("alt_prom_m", 1500))
+                            except: pass
                             
-                            # Curva FDC
                             fdc = None
-                            try: 
-                                fdc = analysis.calculate_fdc(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), q_mm/ppt_med if ppt_med>0 else 0.4, area_km2)
-                            except: 
-                                pass
+                            try: fdc = analysis.calculate_fdc(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), q_mm/ppt_med if ppt_med>0 else 0.4, area_km2)
+                            except: pass
 
                             # GUARDADO FINAL
                             st.session_state["basin_res"] = {
