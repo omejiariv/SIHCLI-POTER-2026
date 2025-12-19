@@ -2789,41 +2789,51 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                                         gz_inc = mask_grid_with_geometries(gx, gy, gz_ivc, gdf_b)
                                 except: pass
 
-                            # 4. Hidrología Completa
-                            gdf_iso = generate_isohyets_gdf(gx, gy, gz, levels=12, crs=gdf_stations.crs)
+                            # E. Hidrología Completa (Cálculo de variables faltantes)
                             ppt_med = np.nanmean(gz) if gz is not None else 0
                             
-                            try: morph = analysis.calculate_morphometry(gdf_union)
-                            except: morph = {"area_km2": 0, "alt_prom_m": 1500}
+                            try: 
+                                morph = analysis.calculate_morphometry(gdf_union)
+                            except: 
+                                morph = {"area_km2": 0, "alt_prom_m": 1500}
                             
+                            # Definimos área explícitamente para cálculos posteriores
+                            area_km2 = morph.get("area_km2", 100)
+                            
+                            # Balance de Turc
                             tm = max(0, 28 - 0.006 * morph.get("alt_prom_m", 1500))
-                            try: _, q_mm = analysis.calculate_water_balance_turc(ppt_med, tm)
-                            except: q_mm = 0
+                            try: 
+                                _, q_mm = analysis.calculate_water_balance_turc(ppt_med, tm)
+                            except: 
+                                q_mm = 0
                             
+                            # --- AQUÍ ESTABA EL ERROR: FALTABAN ESTOS CÁLCULOS ---
+                            vol_hm3 = (q_mm * area_km2) / 1000 
+                            q_m3s = (vol_hm3 * 1_000_000) / 31536000
+                            # -----------------------------------------------------
+                            
+                            # Índices Climáticos
                             idx_c = {}
-                            try: idx_c = analysis.calculate_climatic_indices(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), morph.get("alt_prom_m", 1500))
-                            except: pass
+                            try: 
+                                idx_c = analysis.calculate_climatic_indices(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), morph.get("alt_prom_m", 1500))
+                            except: 
+                                pass
                             
+                            # Curva FDC
                             fdc = None
-                            try: fdc = analysis.calculate_fdc(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), q_mm/ppt_med if ppt_med>0 else 0.4, morph.get("area_km2", 100))
-                            except: pass
+                            try: 
+                                fdc = analysis.calculate_fdc(df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean(), q_mm/ppt_med if ppt_med>0 else 0.4, area_km2)
+                            except: 
+                                pass
 
-                            # Guardar TODO
+                            # Guardar TODO (Ahora sí existen todas las variables)
                             st.session_state["basin_res"] = {
-                                "ready": True, 
-                                "names": ", ".join(sel_cuencas), 
-                                "bounds": [minx, maxx, miny, maxy],
-                                "gz": gz, "gx": gx, "gy": gy, 
-                                "gz_ivc": gz_ivc, "gz_iv_var": gz_iv_var,
+                                "ready": True, "names": ", ".join(sel_cuencas), "bounds": [minx, maxx, miny, maxy],
+                                "gz": gz, "gx": gx, "gy": gy, "gz_ivc": gz_ivc, "gz_iv_var": gz_iv_var,
                                 "gz_cult": gz_cult, "gz_inc": gz_inc,
-                                "gdf_union": gdf_union, "gdf_vis": gdf_vis, 
-                                "gdf_pts": gdf_pts, "gdf_buf": gdf_buf, "gdf_iso": gdf_iso,
+                                "gdf_union": gdf_union, "gdf_vis": gdf_vis, "gdf_pts": gdf_pts, "gdf_buf": gdf_buf, "gdf_iso": gdf_iso,
                                 "df_int": df_int, 
-                                
-                                # --- NUEVO: AGREGAR ESTA LÍNEA QUE FALTABA ---
-                                "df_raw": df_raw,  # <--- CRUCIAL PARA EVITAR EL KEYERROR
-                                # ---------------------------------------------
-                                
+                                "df_raw": df_raw, # Vital para el KeyError anterior
                                 "bal": {"P": ppt_med, "ET": 0, "Q_m3s": q_m3s, "Vol": vol_hm3}, 
                                 "morph": morph, "idx": idx_c, "fdc": fdc
                             }
