@@ -2496,12 +2496,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             with open(f"{base_zip}.zip", "rb") as f: return f.read()
 
     # --- HELPER MÁSCARA (MEJORADO PARA EVITAR MAPAS VACÍOS) ---
-# --- HELPER OPTIMIZADO: MÁSCARA RÁPIDA (RASTERIO) ---
+    # --- HELPER OPTIMIZADO: MÁSCARA RÁPIDA (CON CORRECCIÓN DE GIRO) ---
     def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
-        """
-        Usa Rasterio para 'pintar' los polígonos sobre la grilla instantáneamente.
-        Mucho más rápido y robusto que el método anterior.
-        """
         if gdf_mask is None or gdf_mask.empty or grid_values is None:
             return np.zeros_like(grid_values) if grid_values is not None else None
             
@@ -2514,46 +2510,46 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             if gdf_mask.crs.to_string() != "EPSG:4326":
                 gdf_mask = gdf_mask.to_crs("EPSG:4326")
             
-            # 2. Configurar dimensiones de la "foto" (raster)
-            # OJO: rasterio espera (filas, columnas) = (latitud, longitud) usualmente
-            # gx varía en eje 0, gy en eje 1 según np.mgrid
-            rows, cols = gx.shape
+            # 2. Configurar dimensiones
+            # OJO: grid_values viene de np.mgrid que es (X, Y)
+            # Rasterio genera imágenes (Filas=Y, Columnas=X)
+            rows, cols = gx.shape # Aquí rows es X, cols es Y en la lógica de mgrid
             
-            # Detectar límites reales de la grilla generada
             minx, maxx = gx.min(), gx.max()
             miny, maxy = gy.min(), gy.max()
             
-            # Crear transformación (Mapea píxeles a coordenadas)
-            # Nota: rasterio espera que la transformación vaya de arriba a abajo en Y, 
-            # pero np.mgrid va de menor a mayor. Ajustamos bounds.
-            transform = from_bounds(minx, miny, maxx, maxy, cols, rows)
+            # 3. Crear transformación
+            # IMPORTANTE: Intercambiamos filas/cols en from_bounds para engañar a rasterio
+            # y que genere la matriz en la orientación que coincide con mgrid (X, Y)
+            transform = from_bounds(minx, miny, maxx, maxy, rows, cols)
             
-            # 3. Rasterizar (Pintar polígonos con un 1)
-            # shapes espera una lista de (geometría, valor)
+            # 4. Rasterizar
             shapes = [(geom, 1) for geom in gdf_mask.geometry if not geom.is_empty]
             
             if not shapes: return np.zeros_like(grid_values)
             
             mask_arr = features.rasterize(
                 shapes=shapes,
-                out_shape=(rows, cols),
+                out_shape=(rows, cols), # Dimensiones invertidas
                 transform=transform,
-                fill=0,      # Fondo 0
+                fill=0,
                 default_value=1,
                 dtype='uint8'
             )
             
-            # NOTA CRÍTICA DE ALINEACIÓN:
-            # np.mgrid[minx:maxx, miny:maxy] a veces transpone ejes respecto a imágenes estándar.
-            # Si el mapa sale rotado 90 grados, simplemente usamos mask_arr.T
-            # Por la estructura de gx/gy en tu código, es probable que necesitemos transponer la máscara
-            # para que coincida con grid_values.
+            # 5. CORRECCIÓN DE GIRO (TRANSPOSE)
+            # Como mgrid es (X, Y) y rasterio suele ser (Y, X), a veces quedan rotados.
+            # Esta línea asegura que la máscara encaje si quedó rotada.
             if mask_arr.shape != grid_values.shape:
                 mask_arr = mask_arr.T
+            else:
+                # Si las dimensiones son cuadradas (150x150), el shape no nos avisa.
+                # Aplicamos la transpuesta porque sabemos que mgrid vs imagen siempre invierte ejes.
+                mask_arr = mask_arr.T
 
-            # 4. Aplicar máscara
+            # 6. Aplicar máscara
             result = grid_values.copy()
-            # Donde la máscara es 0 (no hay cobertura), ponemos NaN (Transparente)
+            # Donde no hay máscara, ponemos NaN (transparente)
             result[mask_arr == 0] = np.nan
             
             return result
