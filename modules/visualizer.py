@@ -2788,41 +2788,31 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         gdf_pts = gpd.GeoDataFrame(df_int, geometry=gpd.points_from_xy(df_int.longitude, df_int.latitude), crs=gdf_stations.crs)
 
                         if len(df_int) >= 3:
-                            # 3. Malla Base e Interpolación
-                            # Usamos los límites del buffer (Cuenca + Margen) para asegurar cobertura total
+                            # 3. Malla Base e Interpolación (CORREGIDO)
+                            # Usamos los límites del buffer para asegurar cobertura total
                             minx, miny, maxx, maxy = gdf_buf.total_bounds
                             
-                            # LLAMADA A LA FUNCIÓN MEJORADA
-                            # Esto nos devuelve gx, gy y gz ya calculados y RELLENADOS (sin huecos)
+                            # A. Interpolación de PRECIPITACIÓN (gz)
+                            # Llamamos al helper run_interp que ya incluye Extrapolación (relleno de bordes)
                             gx, gy, gz = run_interp(df_int, meth_c, [minx, maxx, miny, maxy])
                             
-                            # También interpolamos la altitud (para el IVC) usando la misma lógica
-                            # Nota: Creamos un helper rápido o reutilizamos griddata para altitud
+                            # B. Interpolación de ALTITUD (gz_alt)
+                            # Necesaria para el cálculo de IVC. La hacemos sobre la misma malla gx, gy.
+                            gz_alt = None
                             if gx is not None:
+                                # Definimos los puntos y valores aquí para evitar errores de variables no definidas
                                 pts = df_int[["longitude", "latitude"]].values
                                 vals_alt = df_int[Config.ALTITUDE_COL].values
                                 
-                                # Interpolación lineal para altitud
+                                # 1. Interpolación Lineal (precisa adentro)
                                 gz_alt = griddata(pts, vals_alt, (gx, gy), method='linear')
                                 
-                                # Rellenar altitud también (importante para IVC en los bordes)
+                                # 2. Extrapolación Nearest (para rellenar los bordes vacíos NaN)
                                 mask_nan_alt = np.isnan(gz_alt)
                                 if np.any(mask_nan_alt):
                                     gz_alt_near = griddata(pts, vals_alt, (gx, gy), method='nearest')
                                     gz_alt[mask_nan_alt] = gz_alt_near[mask_nan_alt]
-                            else:
-                                gz_alt = None
-
                             
-                            # A. Interpolación Base
-                            if "Kriging" in meth_c:
-                                rbf = Rbf(pts[:, 0], pts[:, 1], vals_p, function="thin_plate")
-                                gz = rbf(gx, gy)
-                            else:
-                                gz = griddata(pts, vals_p, (gx, gy), method="linear")
-                            
-                            gz_alt = griddata(pts, vals_alt, (gx, gy), method='linear')
-
                             # B. IVC (Física y Normalización)
                             gz_t = np.maximum(28 - (0.006 * gz_alt), 0)
                             l_t = 300 + (25 * gz_t) + (0.05 * gz_t**3)
