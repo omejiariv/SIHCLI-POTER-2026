@@ -8,7 +8,7 @@ import os
 import rasterio
 from rasterio.transform import from_origin
 import io
-from prophet import Prophet # Motor de Inteligencia Artificial para Pronósticos
+from prophet import Prophet 
 
 # --- IMPORTS MODULARES ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -94,45 +94,38 @@ if ids_seleccionados:
         with tab1:
             st.markdown(f"##### Dinámica Histórica y Proyección: {nombre_seleccion}")
             
-            # 1. Preparar Serie Temporal Agregada (Promedio de la zona)
+            # 1. Preparar Serie Temporal Agregada
             df_ts_monthly = df_full.groupby('fecha')['valor'].mean().reset_index()
-            
             df_final_ts = df_ts_monthly.copy()
             df_final_ts['tipo'] = 'Histórico'
 
             # 2. MOTOR DE PRONÓSTICO (PROPHET)
             if usar_forecast and len(df_ts_monthly) > 24:
                 with st.spinner("🧠 Entrenando modelo de IA (Prophet) para proyección climática..."):
-                    # Preparar formato para Prophet (ds, y)
-                    df_prophet = df_ts_monthly.rename(columns={'fecha': 'ds', 'valor': 'y'})
-                    
-                    # Entrenar Modelo
-                    m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True)
-                    m.fit(df_prophet)
-                    
-                    # Crear fechas futuras
-                    future = m.make_future_dataframe(periods=meses_forecast, freq='MS')
-                    forecast = m.predict(future)
-                    
-                    # Filtrar solo la parte futura para unirla
-                    last_date = df_ts_monthly['fecha'].max()
-                    df_future = forecast[forecast['ds'] > last_date][['ds', 'yhat']].rename(columns={'ds': 'fecha', 'yhat': 'valor'})
-                    df_future['tipo'] = 'Pronóstico'
-                    
-                    # Unir Historia + Futuro
-                    df_final_ts = pd.concat([df_final_ts, df_future])
-                    
-                    st.success(f"✅ Proyección generada hasta {df_future['fecha'].max().date()}")
+                    try:
+                        df_prophet = df_ts_monthly.rename(columns={'fecha': 'ds', 'valor': 'y'})
+                        m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True)
+                        m.fit(df_prophet)
+                        
+                        future = m.make_future_dataframe(periods=meses_forecast, freq='MS')
+                        forecast = m.predict(future)
+                        
+                        last_date = df_ts_monthly['fecha'].max()
+                        df_future = forecast[forecast['ds'] > last_date][['ds', 'yhat']].rename(columns={'ds': 'fecha', 'yhat': 'valor'})
+                        df_future['tipo'] = 'Pronóstico'
+                        df_future['valor'] = df_future['valor'].clip(lower=0) # Evitar lluvias negativas
+                        
+                        df_final_ts = pd.concat([df_final_ts, df_future])
+                        st.success(f"✅ Proyección generada hasta {df_future['fecha'].max().date()}")
+                    except Exception as e:
+                        st.error(f"Error en pronóstico: {e}")
 
-            # 3. Calcular Balance Hídrico (Turc) sobre la serie extendida
-            # Agrupamos por año para Turc, pero mantenemos la distinción de Tipo
+            # 3. Calcular Balance Hídrico (Turc)
             df_final_ts['año'] = df_final_ts['fecha'].dt.year
             
-            # Cálculo Anual
-            df_anual = df_final_ts.groupby(['año', 'tipo'])['valor'].sum().reset_index() # Suma de meses para el total anual
-            # Filtrar años incompletos en el histórico (opcional, pero mejora la gráfica)
+            # Agrupamos por año y tipo para mantener la etiqueta
+            df_anual = df_final_ts.groupby(['año', 'tipo'])['valor'].sum().reset_index()
             
-            # Aplicar Turc
             turc_res = df_anual.apply(
                 lambda x: analysis.calculate_water_balance_turc(x['valor'], temp_estimada), axis=1
             )
@@ -158,9 +151,18 @@ if ids_seleccionados:
             fig_t.update_layout(title="Balance Hídrico: Historia + Proyección", hovermode="x unified", legend=dict(orientation="h", y=1.1))
             st.plotly_chart(fig_t, use_container_width=True)
             
-            # TABLA DE DATOS (SOLICITUD 1)
+            # TABLA DE DATOS (CORREGIDA)
             with st.expander("📄 Ver Tabla de Datos Detallada", expanded=False):
-                st.dataframe(df_anual.style.format("{:.1f}"))
+                # Aplicamos formato SOLO a las columnas numéricas
+                format_dict = {
+                    'valor': "{:,.1f}", 
+                    'etr': "{:,.1f}", 
+                    'excedente': "{:,.1f}", 
+                    'recarga': "{:,.1f}"
+                }
+                # Mostramos dataframe estilizado
+                st.dataframe(df_anual.style.format(format_dict))
+                
                 csv = df_anual.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     "💾 Descargar Tabla (CSV)",
@@ -172,11 +174,10 @@ if ids_seleccionados:
 
         # === TAB 2: MAPA DISTRIBUIDO ===
         with tab2:
-            # SOLICITUD 2: Nombre en el título
             st.markdown(f"##### Modelo Espacial de Recarga: {nombre_seleccion}")
             
             if 'longitude' in df_full.columns and gdf_zona is not None:
-                # Mapa basado solo en históricos (para precisión espacial)
+                # Mapa basado solo en históricos
                 df_spatial = df_full.groupby(['id_estacion', 'nom_est', 'longitude', 'latitude', 'municipio', 'alt_est'])['valor'].mean().reset_index()
                 df_spatial['valor_anual'] = df_spatial['valor'] * 12
                 
@@ -188,7 +189,6 @@ if ids_seleccionados:
                 
                 df_spatial['etr_pt'], df_spatial['rec_pt'] = zip(*df_spatial['valor_anual'].apply(calc_pt))
                 
-                # Popup Estaciones
                 df_spatial['hover_txt'] = df_spatial.apply(
                     lambda r: f"<b>{r['nom_est']}</b><br>🌧️ P: {r['valor_anual']:.0f}<br>💧 R: {r['rec_pt']:.0f}", axis=1
                 )
@@ -211,7 +211,7 @@ if ids_seleccionados:
                             colorbar=dict(title="mm/año")
                         ))
                         
-                        # SOLICITUD 3: Hover en Cuencas
+                        # Contorno Cuencas (Hover Dinámico)
                         for geom in gdf_zona.geometry:
                             if geom.geom_type in ['Polygon', 'MultiPolygon']:
                                 if geom.geom_type == 'Polygon': polys = [geom]
@@ -223,8 +223,8 @@ if ids_seleccionados:
                                         x=list(x), y=list(y),
                                         mode='lines', line=dict(color='black', width=2),
                                         name='Límite Cuenca',
-                                        text=f"Cuenca: {nombre_seleccion}", # <--- AQUÍ EL NOMBRE
-                                        hoverinfo='text' # Solo muestra el texto
+                                        text=f"Cuenca: {nombre_seleccion}", 
+                                        hoverinfo='text'
                                     ))
 
                         # Capa Estaciones
@@ -238,7 +238,6 @@ if ids_seleccionados:
                         fig_map.update_layout(height=600, margin=dict(t=20, b=0, l=0, r=0), xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"))
                         st.plotly_chart(fig_map, use_container_width=True)
                         
-                        # Descargas
                         c1, c2 = st.columns(2)
                         tiff = get_geotiff_bytes(np.flipud(grid_R.T), from_origin(gx[0,0], gy[0,-1], gx[1,0]-gx[0,0], gy[0,0]-gy[0,1]), "EPSG:4326")
                         c1.download_button("💾 Raster (TIF)", tiff, f"recarga_{nombre_seleccion}.tif")
