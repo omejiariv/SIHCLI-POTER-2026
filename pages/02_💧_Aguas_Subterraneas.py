@@ -225,7 +225,7 @@ if ids_seleccionados:
             df_anual['etr'] = [x[0] for x in turc_res]
             df_anual['recarga'] = np.array([x[1] for x in turc_res]) * coef_final
             
-            # --- GRÁFICO (SOLICITUD 1: LÍNEAS CONTINUAS) ---
+            # --- GRÁFICO ---
             fig_t = go.Figure()
             
             hist = df_anual[df_anual['tipo'] == 'Histórico']
@@ -240,23 +240,35 @@ if ids_seleccionados:
                     line=dict(color='rgba(255,255,255,0)'), name='Rango Incertidumbre'
                 ))
 
-            # Histórico (Barras)
+            # Histórico
             fig_t.add_trace(go.Bar(x=hist['año'], y=hist['valor'], name='Precipitación Histórica', marker_color='#87CEEB'))
             
-            # Pronóstico (LÍNEAS SUAVIZADAS SPLINE - SOLICITUD 1)
+            # Pronóstico
             if not pred.empty:
                 fig_t.add_trace(go.Scatter(
                     x=pred['año'], y=pred['valor'], 
                     mode='lines+markers',
                     name='Precipitación Proyectada', 
-                    line=dict(color='#00BFFF', width=3, shape='spline', smoothing=0.3), # <--- AQUÍ ESTÁ EL CAMBIO
+                    line=dict(color='#00BFFF', width=3, shape='spline', smoothing=0.3),
                     marker=dict(size=6)
                 ))
 
-            # Líneas Balance
+            # Líneas Balance (AQUÍ ESTÁ LA CORRECCIÓN DE LOS DIENTES DE SIERRA)
             full_years = df_anual.sort_values('año')
-            fig_t.add_trace(go.Scatter(x=full_years['año'], y=full_years['etr'], name='ETR', line=dict(color='#FFA500', width=2, dash='dot')))
-            fig_t.add_trace(go.Scatter(x=full_years['año'], y=full_years['recarga'], name='Recarga', line=dict(color='#00008B', width=3)))
+            
+            # ETR Suavizada
+            fig_t.add_trace(go.Scatter(
+                x=full_years['año'], y=full_years['etr'], 
+                name='ETR', 
+                line=dict(color='#FFA500', width=2, dash='dot', shape='spline', smoothing=1.3) # <--- FIX
+            ))
+            
+            # Recarga Suavizada
+            fig_t.add_trace(go.Scatter(
+                x=full_years['año'], y=full_years['recarga'], 
+                name='Recarga', 
+                line=dict(color='#00008B', width=3, shape='spline', smoothing=1.3) # <--- FIX
+            ))
 
             fig_t.update_layout(title="Dinámica Hidrológica", hovermode="x unified", legend=dict(orientation="h", y=1.1))
             st.plotly_chart(fig_t, use_container_width=True)
