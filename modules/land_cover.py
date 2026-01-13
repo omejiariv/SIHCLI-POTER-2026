@@ -300,3 +300,87 @@ def get_land_cover_at_point(lat, lon, raster_path):
                 
     except Exception as e:
         return f"Error: {str(e)}"
+
+# --- AGREGAR AL FINAL DE modules/land_cover.py ---
+
+def calculate_cover_stats(gdf_geom, raster_path):
+    """
+    Calcula el porcentaje de cada tipo de cobertura dentro de una geometría.
+    Retorna: Diccionario { "Nombre Cobertura": Porcentaje }
+    """
+    if gdf_geom is None or gdf_geom.empty or not os.path.exists(raster_path):
+        return {}
+    
+    try:
+        with rasterio.open(raster_path) as src:
+            # Asegurar CRS
+            if gdf_geom.crs != src.crs:
+                gdf_geom = gdf_geom.to_crs(src.crs)
+            
+            # Recortar el raster con la geometría
+            out_image, _ = mask(src, gdf_geom.geometry, crop=True, nodata=src.nodata)
+            data = out_image[0]
+            
+            # Contar pixeles válidos
+            valid_pixels = data[data != src.nodata]
+            total_pixels = valid_pixels.size
+            
+            if total_pixels == 0:
+                return {}
+            
+            # Contar por categorías
+            unique, counts = np.unique(valid_pixels, return_counts=True)
+            stats = {}
+            
+            for val, count in zip(unique, counts):
+                # Usar el diccionario LAND_COVER_LEGEND que ya tienes arriba
+                # Si el valor no está en la leyenda, usa 'Otro'
+                name = LAND_COVER_LEGEND.get(int(val), f"Clase {int(val)}")
+                pct = (count / total_pixels) * 100
+                stats[name] = pct
+                
+            return stats
+    except Exception as e:
+        print(f"Error calculando estadísticas de cobertura: {e}")
+        return {}
+
+def get_infiltration_suggestion(stats):
+    """
+    Calcula un coeficiente de infiltración ponderado basado en las estadísticas.
+    """
+    if not stats:
+        return 0.30, "Sin información (Default)"
+    
+    # Coeficientes típicos de infiltración (0.0 a 1.0)
+    # Ajusta estos valores según la hidrogeología local de Antioquia
+    coef_map = {
+        "Bosque": 0.50,
+        "Vegetación": 0.40,  # Herbácea/Arbustiva
+        "Cultivos": 0.30,
+        "Pastos": 0.25,
+        "Urbano": 0.05,
+        "Agua": 1.00,        # Infiltración directa (simplificación)
+        "Suelo": 0.15        # Suelo desnudo/Degradado
+    }
+    
+    weighted_sum = 0
+    total_pct = 0
+    
+    for cover_name, pct in stats.items():
+        # Buscar palabra clave en el nombre (ej: "Bosque denso" -> "Bosque")
+        coef = 0.20 # Valor por defecto para clases desconocidas
+        for key, val in coef_map.items():
+            if key.lower() in cover_name.lower():
+                coef = val
+                break
+        
+        weighted_sum += coef * pct
+        total_pct += pct
+        
+    final_coef = weighted_sum / total_pct if total_pct > 0 else 0.30
+    
+    # Texto explicativo
+    top_cover = max(stats, key=stats.get)
+    reason = f"Predomina {top_cover} ({stats[top_cover]:.1f}%)"
+    
+    return final_coef, reason
