@@ -247,18 +247,20 @@ if ids_seleccionados:
                     line=dict(color='rgba(255,255,255,0)'), name='Rango Incertidumbre'
                 ))
 
-            # 2. Barras (Mantienen distinción de color)
+            # 2. Barras Históricas
             fig_t.add_trace(go.Bar(x=hist['año'], y=hist['valor'], name='Precipitación Histórica', marker_color='#87CEEB'))
             
+            # 3. Barras Pronóstico (RESTAURADO A BARRAS)
             if not pred.empty:
-                fig_t.add_trace(go.Scatter(
+                fig_t.add_trace(go.Bar(
                     x=pred['año'], y=pred['valor'], 
-                    mode='lines+markers', name='Precipitación Proyectada', 
-                    line=dict(color='#00BFFF', width=3, shape='spline', smoothing=0.3),
-                    marker=dict(size=6)
+                    name='Precipitación Proyectada', 
+                    marker_color='#ADD8E6', 
+                    marker_line_color='#4682B4', 
+                    marker_line_width=1.5, 
+                    opacity=0.7
                 ))
-
-            # 3. Líneas Balance (USANDO df_lines UNIFICADO = NO MÁS SIERRA)
+            # 4. Líneas Balance (USANDO df_lines UNIFICADO = NO MÁS SIERRA)
             fig_t.add_trace(go.Scatter(
                 x=df_lines['año'], y=df_lines['etr'], 
                 name='ETR', 
