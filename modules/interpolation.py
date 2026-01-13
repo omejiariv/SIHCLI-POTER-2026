@@ -493,3 +493,51 @@ def create_kriging_by_basin(gdf_points, grid_lon, grid_lat, value_col="Valor"):
         variance = np.zeros_like(grid_z)
 
     return grid_z, variance
+
+
+from scipy.interpolate import Rbf, griddata
+
+def generate_grid_coordinates(bounds, resolution=100j):
+    """
+    Genera las coordenadas X, Y para la malla de interpolación.
+    bounds: (minx, maxx, miny, maxy)
+    resolution: número complejo (ej: 100j) para cantidad de celdas
+    """
+    minx, maxx, miny, maxy = bounds
+    gx, gy = np.mgrid[minx:maxx:resolution, miny:maxy:resolution]
+    return gx, gy
+
+def interpolate_spatial(df_points, val_col, gx, gy, method='linear'):
+    """
+    Interpola valores puntuales sobre la malla gx, gy.
+    Combina Rbf/Linear para el centro y Nearest para rellenar bordes.
+    """
+    # Eliminar duplicados espaciales
+    df_unique = df_points.drop_duplicates(subset=["longitude", "latitude"])
+    pts = df_unique[["longitude", "latitude"]].values
+    vals = df_unique[val_col].values
+    
+    if len(pts) < 3: return None
+    
+    gz = None
+    
+    # 1. Interpolación Principal
+    if method == 'kriging' or method == 'rbf':
+        try:
+            # Thin Plate Spline es excelente para topografía suave
+            rbf = Rbf(pts[:, 0], pts[:, 1], vals, function="thin_plate")
+            gz = rbf(gx, gy)
+        except:
+            pass # Fallback a linear
+            
+    if gz is None:
+        gz = griddata(pts, vals, (gx, gy), method='linear')
+        
+    # 2. Relleno de Bordes (Extrapolación)
+    # Griddata linear deja NaNs fuera del casco convexo. Los llenamos con el vecino más cercano.
+    mask_nan = np.isnan(gz)
+    if np.any(mask_nan):
+        gz_nearest = griddata(pts, vals, (gx, gy), method='nearest')
+        gz[mask_nan] = gz_nearest[mask_nan]
+        
+    return gz

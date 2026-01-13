@@ -1,124 +1,128 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
 import sys
 import os
 
-# --- IMPORTS MODULARES ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from modules import analysis      
-from modules import selectors     
-from modules import land_cover as lc # Importamos el módulo de coberturas
-from modules.config import Config    # Para la ruta del raster
+from modules import analysis, selectors, interpolation #
+from modules import land_cover as lc
+from modules.config import Config
 
 st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
-
 st.title("💧 Estimación de Recarga (Modelo Turc)")
-st.markdown("Balance hídrico integrado (Lluvia - ETR) para estimación de recarga de acuíferos.")
 
-# --- 1. BARRA LATERAL (SELECTOR + INTELIGENCIA) ---
+# --- 1. CONFIGURACIÓN ---
 ids_seleccionados, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
 
 with st.sidebar:
     st.divider()
-    st.subheader("Propiedades del Suelo")
+    st.subheader("Parametrización")
     
-    # --- LÓGICA DE COEFICIENTE INTELIGENTE ---
+    # Coeficiente Inteligente
     coef_default = 0.30
-    mensaje_sugerencia = "Selección manual"
-    
-    # Si tenemos una zona válida (Cuenca/Municipio), calculamos coberturas
     if gdf_zona is not None and not gdf_zona.empty:
         try:
-            with st.spinner("Analizando cobertura del suelo..."):
-                # 1. Calcular porcentajes de cobertura (Bosque, Pasto, etc.)
-                stats = lc.calculate_cover_stats(gdf_zona, Config.LAND_COVER_RASTER_PATH)
-                
-                if stats:
-                    # 2. Obtener sugerencia ponderada
-                    coef_sugerido, razon = lc.get_infiltration_suggestion(stats)
-                    coef_default = coef_sugerido
-                    mensaje_sugerencia = f"✨ Sugerido por IA: {razon}"
-                    
-                    # Mostrar desglose visual
-                    st.caption("Distribución de Cobertura Detectada:")
-                    df_stats = pd.DataFrame(list(stats.items()), columns=["Tipo", "%"])
-                    st.dataframe(df_stats.set_index("Tipo").sort_values("%", ascending=False).head(3), height=100)
-                else:
-                    mensaje_sugerencia = "⚠️ No hay datos de cobertura (Raster no cubre zona)"
-        except Exception as e:
-            print(f"Error land cover: {e}")
+            stats = lc.calculate_cover_stats(gdf_zona, Config.LAND_COVER_RASTER_PATH)
+            if stats:
+                c_sug, razon = lc.get_infiltration_suggestion(stats)
+                coef_default = c_sug
+                st.caption(f"✨ IA: {razon}")
+        except: pass
 
-    # Slider con el valor sugerido por defecto
-    coef_final = st.slider(
-        "Coeficiente Infiltración (%)", 
-        0.0, 1.0, 
-        float(coef_default), # Valor dinámico
-        help="Porcentaje del Excedente Hídrico que se convierte en recarga."
-    )
-    st.info(mensaje_sugerencia)
-    
-    # Datos Climáticos
+    coef_final = st.slider("Coef. Infiltración", 0.0, 1.0, float(coef_default))
     temp_estimada = analysis.estimate_temperature(altitud_ref)
-    st.divider()
-    st.caption(f"📍 Zona: {nombre_seleccion}")
-    st.caption(f"🌡️ Temp. Base: {temp_estimada:.1f}°C")
 
-# --- 2. CÁLCULOS Y VISUALIZACIÓN ---
+# --- 2. MOTOR DE CÁLCULO ---
 if ids_seleccionados:
-    try:
-        engine = create_engine(st.secrets["DATABASE_URL"])
+    engine = create_engine(st.secrets["DATABASE_URL"])
+    ids_sql = str(tuple(ids_seleccionados)).replace(',)', ')')
+    
+    # Traemos también coordenadas para poder interpolar
+    q = f"""
+        SELECT p.fecha_mes_año AS fecha, p.precipitation AS valor, 
+               e.longitude, e.latitude, e.alt_est
+        FROM precipitacion_mensual p
+        JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+        WHERE p.id_estacion_fk IN {ids_sql}
+        ORDER BY fecha
+    """
+    
+    with engine.connect() as conn:
+        df_full = pd.read_sql(text(q), conn)
         
-        # Convertir lista a tuple SQL
-        ids_sql = str(tuple(ids_seleccionados)).replace(',)', ')')
+    if not df_full.empty:
+        df_full['fecha'] = pd.to_datetime(df_full['fecha'])
         
-        query = f"""
-            SELECT fecha_mes_año AS fecha, precipitation AS valor 
-            FROM precipitacion_mensual 
-            WHERE id_estacion_fk IN {ids_sql} 
-            ORDER BY fecha_mes_año
-        """
+        # --- PESTAÑAS DE ANÁLISIS ---
+        tab1, tab2 = st.tabs(["📉 Análisis Temporal (Rápido)", "🗺️ Análisis Espacial Distribuido (Avanzado)"])
         
-        with engine.connect() as conn:
-            df_data = pd.read_sql(text(query), conn)
+        # === TAB 1: SERIE DE TIEMPO (LO QUE YA TENÍAS) ===
+        with tab1:
+            df_ts = df_full.groupby('fecha')['valor'].mean().reset_index()
+            df_ts['etr'], df_ts['excedente'] = zip(*df_ts.apply(
+                lambda x: analysis.calculate_water_balance_turc(x['valor'], temp_estimada), axis=1
+            ))
+            df_ts['recarga'] = df_ts['excedente'] * coef_final
             
-        if not df_data.empty:
-            df_data['fecha'] = pd.to_datetime(df_data['fecha'])
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Lluvia Promedio Año", f"{df_ts['valor'].mean()*12:,.0f} mm")
+            c2.metric("Recarga Promedio Año", f"{df_ts['recarga'].mean()*12:,.0f} mm")
+            c3.metric("Eficiencia", f"{(df_ts['recarga'].sum()/df_ts['valor'].sum())*100:.1f}%")
             
-            # Agrupación Areal
-            df_procesado = df_data.groupby('fecha')['valor'].mean().reset_index()
-            
-            # Modelo Turc
-            def aplicar_turc(row):
-                etr, q = analysis.calculate_water_balance_turc(row['valor'], temp_estimada)
-                return pd.Series([etr, q])
+            st.area_chart(df_ts.set_index('fecha')[['valor', 'recarga']], color=["#87CEEB", "#00008B"])
 
-            df_procesado[['etr', 'excedente']] = df_procesado.apply(aplicar_turc, axis=1)
+        # === TAB 2: MODELO ESPACIAL (LO NUEVO) ===
+        with tab2:
+            st.markdown("##### Interpolación de Balance Hídrico Anual")
+            st.info("Este modelo genera una superficie continua usando las estaciones internas y vecinas (Buffer).")
             
-            # Recarga usando el coeficiente (que puede venir de la IA)
-            df_procesado['recarga'] = df_procesado['excedente'] * coef_final
-            
-            # --- DASHBOARD ---
-            st.subheader(f"Balance Hídrico: {nombre_seleccion}")
-            
-            c1, c2, c3, c4 = st.columns(4)
-            ppt_total = df_procesado['valor'].sum()
-            recarga_total = df_procesado['recarga'].sum()
-            
-            c1.metric("Lluvia (Media Areal)", f"{ppt_total:,.0f} mm")
-            c2.metric("ETR (Evaporación)", f"{df_procesado['etr'].sum():,.0f} mm", delta="Pérdida", delta_color="inverse")
-            c3.metric("Recarga Potencial", f"{recarga_total:,.0f} mm", delta="Ganancia Acuífero")
-            c4.metric("Tasa de Recarga", f"{(recarga_total/ppt_total)*100:.1f}%")
-            
-            st.area_chart(
-                df_procesado.set_index('fecha')[['valor', 'recarga']],
-                color=["#87CEEB", "#00008B"]
-            )
-            
-        else:
-            st.warning("Las estaciones seleccionadas no tienen datos históricos.")
-            
-    except Exception as e:
-        st.error(f"Error procesando datos: {e}")
-else:
-    st.info("👈 Seleccione una zona en el menú lateral.")
+            if gdf_zona is not None:
+                # 1. Preparar Datos: Promedio Anual por Estación
+                df_annual_st = df_full.groupby(['longitude', 'latitude'])['valor'].mean().reset_index()
+                df_annual_st['valor'] = df_annual_st['valor'] * 12 # Llevar a anual
+                
+                if len(df_annual_st) >= 3:
+                    # 2. Generar Malla (Grid)
+                    bounds = gdf_zona.total_bounds # (minx, miny, maxx, maxy)
+                    # Ojo: total_bounds es (x_min, y_min, x_max, y_max)
+                    # interpolation espera (minx, maxx, miny, maxy)
+                    bbox = (bounds[0], bounds[2], bounds[1], bounds[3]) 
+                    
+                    gx, gy = interpolation.generate_grid_coordinates(bbox, resolution=100j)
+                    
+                    # 3. Interpolar Lluvia (P)
+                    grid_P = interpolation.interpolate_spatial(df_annual_st, 'valor', gx, gy, method='rbf')
+                    
+                    # 4. Calcular Balance Distribuido (Turc en cada pixel)
+                    # Asumimos T constante por ahora (se podría interpolar T también si hay datos)
+                    # L(t) es constante para la zona en esta versión simplificada
+                    L_t = 300 + 25*temp_estimada + 0.05*(temp_estimada**3)
+                    
+                    # Fórmula Turc matricial: P / sqrt(0.9 + (P/L)^2)
+                    grid_ETR = grid_P / np.sqrt(0.9 + (grid_P/L_t)**2)
+                    grid_Recarga = (grid_P - grid_ETR) * coef_final
+                    
+                    # 5. Visualizar Mapa de Recarga
+                    st.write(f"Balance Espacial (Media Anual):")
+                    
+                    fig = go.Figure(data=go.Contour(
+                        z=grid_Recarga.T, # Transpuesta necesaria para plotly
+                        x=gx[:,0], # Eje X
+                        y=gy[0,:], # Eje Y
+                        colorscale="Blues",
+                        colorbar=dict(title="Recarga (mm/año)")
+                    ))
+                    fig.update_layout(height=500, margin=dict(l=0, r=0, t=0, b=0))
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Botón descarga raster (Opcional futuro)
+                else:
+                    st.warning("Se necesitan al menos 3 estaciones (incluyendo vecinas) para interpolar.")
+            else:
+                st.warning("Seleccione una Cuenca para activar el modo espacial.")
+
+    else:
+        st.warning("No hay datos.")
