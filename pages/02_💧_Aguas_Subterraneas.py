@@ -20,17 +20,34 @@ from modules.config import Config
 
 st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
 
-# --- METODOLOGÍA ---
-with st.expander("ℹ️ Metodología y Conceptos", expanded=False):
+# --- METODOLOGÍA COMPLETA (SOLICITUD 3) ---
+with st.expander("ℹ️ Metodología, Conceptos e Interpretación (Detallado)", expanded=False):
     st.markdown("""
-    ### 🧠 Modelo Híbrido: Turc + Prophet Estocástico
-    Este sistema combina balance físico con inteligencia artificial para proyectar escenarios:
+    ### 1. Marco Conceptual
+    Este módulo estima la **Recarga Potencial de Acuíferos**, definida como la lámina de agua que logra infiltrarse a través del suelo y llegar a la zona saturada, convirtiéndose en agua subterránea renovable.
+
+    ### 2. Metodología de Cálculo
+    Se utiliza un enfoque de **Balance Hídrico Mensual** agregados anualmente, basado en la fórmula de **Turc (1954)** modificado para zonas tropicales:
     
-    1.  **Balance Hídrico (Turc):** $Recarga = (P - ETR) \times C_{inf}$.
-    2.  **Pronóstico IA (Prophet):**
-        * **Tendencia:** Detecta cambios a largo plazo.
-        * **Estacionalidad:** Aprende los patrones de lluvia bimodal (dos inviernos/año).
-        * **Volatilidad:** Usa simulación estocástica para evitar pronósticos "planos", inyectando la varianza histórica para crear escenarios realistas de extremos.
+    * **P (Precipitación):** Variable de entrada principal (mm).
+    * **T (Temperatura):** Estimada mediante gradiente altitudinal (-0.6°C / 100m) o datos directos.
+    * **L(t) (Capacidad Evaporante):** $L(t) = 300 + 25T + 0.05T^3$.
+    * **ETR (Evapotranspiración Real):** $ETR = \frac{P}{\sqrt{0.9 + (P/L)^2}}$. Representa el agua que regresa a la atmósfera por evaporación del suelo y transpiración de plantas.
+    * **Excedente Hídrico (Q):** $Q = P - ETR$. Es el agua líquida disponible en superficie.
+    * **Recarga (R):** $R = Q \times C_{inf}$. Donde $C_{inf}$ es el Coeficiente de Infiltración, que depende de la cobertura del suelo (Bosque, Pastos, Urbano) y la permeabilidad geológica.
+
+    ### 3. Pronóstico Hidrológico (Inteligencia Artificial)
+    Para proyectar la serie hacia el futuro, se utiliza el modelo **Prophet (Meta AI)** con configuración avanzada:
+    * **Estacionalidad:** Modelo multiplicativo anual (captura bimodalidad de lluvias andinas).
+    * **Regresores Externos:** El modelo se entrena considerando índices climáticos globales (**ONI/Niño, SOI, IOD**) para capturar la variabilidad macroclimática.
+    * **Simulación Estocástica:** Se inyecta ruido estadístico basado en la varianza histórica para simular escenarios realistas de extremos (no solo promedios).
+
+    ### 4. Modelo Espacial (Geoestadística)
+    La distribución espacial se realiza mediante interpolación **RBF (Radial Basis Functions)** sobre las estaciones monitoreadas, generando una superficie continua (Raster) de precipitación y recarga, corregida por topografía y cobertura del suelo.
+    
+    ### 5. Interpretación
+    * **Mapas Azules Oscuros:** Zonas de alta recarga (Estratégicas para protección).
+    * **Brecha P vs ETR:** En años secos (Niño), la ETR puede consumir casi toda la precipitación, llevando la recarga a cero.
     """)
 
 st.title("💧 Estimación de Recarga (Modelo Turc + Escenarios)")
@@ -49,10 +66,10 @@ with st.sidebar:
     if usar_forecast:
         meses_futuros = st.selectbox("Horizonte (meses):", [12, 24, 36, 60], index=1)
         st.markdown("**Configuración del Modelo:**")
-        usar_estocastico = st.checkbox("🎲 Simular Variabilidad Real", value=True, help="Si se activa, añade 'ruido' estadístico basado en la historia para simular picos y valles realistas.")
+        usar_estocastico = st.checkbox("🎲 Simular Variabilidad Real", value=True, help="Añade ruido estadístico para simular picos y valles.")
         
         if usar_estocastico:
-            nivel_ruido = st.slider("Intensidad Variabilidad:", 0.5, 1.5, 1.0, help="1.0 = Misma variabilidad que la historia.")
+            nivel_ruido = st.slider("Intensidad Variabilidad:", 0.5, 1.5, 1.0)
 
     st.divider()
     st.subheader("Parametrización Suelo")
@@ -100,7 +117,7 @@ if ids_seleccionados:
     if not df_precip.empty:
         df_precip['fecha'] = pd.to_datetime(df_precip['fecha'])
         
-        # --- CARGA CLIMA ---
+        # --- CARGA CLIMA Y METADATOS ---
         try:
             all_data = data_processor.load_and_process_all_data()
             gdf_stations = all_data[0]
@@ -108,6 +125,7 @@ if ids_seleccionados:
             if not df_climatico.empty:
                 df_climatico['fecha_mes_año'] = pd.to_datetime(df_climatico['fecha_mes_año'])
             
+            # MERGE COMPLETO (SOLICITUD 2 - Asegurar columnas)
             cols_meta = ['id_estacion', 'latitude', 'longitude', 'nom_est', 'municipio', 'alt_est']
             cols_existentes = [c for c in cols_meta if c in gdf_stations.columns]
             df_full = pd.merge(df_precip, gdf_stations[cols_existentes], on='id_estacion', how='left')
@@ -132,7 +150,7 @@ if ids_seleccionados:
                 if cols_clima_presentes:
                     df_ts_monthly[cols_clima_presentes] = df_ts_monthly[cols_clima_presentes].fillna(0)
             
-            # Filtro Calidad (<50% promedio)
+            # Filtro Calidad
             df_ts_monthly['año_temp'] = df_ts_monthly['fecha'].dt.year
             annual_stats = df_ts_monthly.groupby('año_temp')['valor'].sum()
             threshold = annual_stats.mean() * 0.5
@@ -147,7 +165,7 @@ if ids_seleccionados:
             df_final_ts['yhat_lower'] = df_final_ts['valor']
             df_final_ts['yhat_upper'] = df_final_ts['valor']
 
-            # 2. PROPHET + ESTOCÁSTICO
+            # 2. PROPHET
             if usar_forecast and len(df_train) > 24:
                 with st.spinner("🧠 Generando escenarios hidrológicos..."):
                     try:
@@ -157,8 +175,7 @@ if ids_seleccionados:
                         m = Prophet(
                             seasonality_mode='multiplicative', 
                             yearly_seasonality=True,
-                            changepoint_prior_scale=0.5, 
-                            seasonality_prior_scale=10.0
+                            changepoint_prior_scale=0.5
                         )
                         
                         cols_clima_usadas = []
@@ -175,87 +192,73 @@ if ids_seleccionados:
                         
                         if cols_clima_usadas:
                             last_indices = df_ts_monthly.sort_values('fecha').iloc[-1][cols_clima_usadas]
-                            for col in cols_clima_usadas:
-                                future[col] = last_indices[col]
+                            for col in cols_clima_usadas: future[col] = last_indices[col]
                         
                         forecast = m.predict(future)
                         
-                        # Filtrar futuro
                         df_future = forecast[forecast['ds'] > last_hist_date][['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(columns={'ds': 'fecha', 'yhat': 'valor'})
                         df_future['tipo'] = 'Pronóstico'
                         
-                        # Simulación Estocástica
                         if usar_estocastico:
                             residuals = df_prophet['y'] - forecast.loc[forecast['ds'].isin(df_prophet['ds']), 'yhat']
                             std_resid = residuals.std()
                             np.random.seed(42)
                             noise = np.random.normal(0, std_resid * nivel_ruido, len(df_future))
-                            
-                            df_future['valor'] = df_future['valor'] + noise
-                            df_future['yhat_upper'] = df_future['yhat_upper'] + (std_resid * nivel_ruido)
-                            df_future['yhat_lower'] = df_future['yhat_lower'] - (std_resid * nivel_ruido)
+                            df_future['valor'] += noise
+                            df_future['yhat_upper'] += (std_resid * nivel_ruido)
+                            df_future['yhat_lower'] -= (std_resid * nivel_ruido)
 
                         df_future['valor'] = df_future['valor'].clip(lower=0)
                         df_future['yhat_lower'] = df_future['yhat_lower'].clip(lower=0)
-                        
                         for col in cols_clima_usadas: df_future[col] = 0
 
                         df_final_ts = pd.concat([df_final_ts, df_future], ignore_index=True)
                         st.success(f"✅ Escenario generado hasta {fecha_objetivo.date()}.")
-                        
                     except Exception as e:
                         st.error(f"Error: {e}")
 
             # 3. Balance Anual
             df_final_ts['año'] = df_final_ts['fecha'].dt.year
+            df_anual = df_final_ts.groupby(['año', 'tipo']).agg({'valor': 'sum', 'yhat_lower': 'sum', 'yhat_upper': 'sum'}).reset_index()
             
-            df_anual = df_final_ts.groupby(['año', 'tipo']).agg({
-                'valor': 'sum',
-                'yhat_lower': 'sum', 
-                'yhat_upper': 'sum'
-            }).reset_index()
-            
-            # Turc (CORRECCIÓN APLICADA AQUÍ)
             turc_res = df_anual.apply(lambda x: analysis.calculate_water_balance_turc(x['valor'], temp_estimada), axis=1)
             df_anual['etr'] = [x[0] for x in turc_res]
-            # Convertimos a numpy array para multiplicar vectorialmente
             df_anual['recarga'] = np.array([x[1] for x in turc_res]) * coef_final
             
-            # --- GRÁFICO AVANZADO ---
+            # --- GRÁFICO (SOLICITUD 1: LÍNEAS CONTINUAS) ---
             fig_t = go.Figure()
             
             hist = df_anual[df_anual['tipo'] == 'Histórico']
             pred = df_anual[df_anual['tipo'] == 'Pronóstico']
             
-            # 1. Intervalo de Confianza
+            # Intervalo Confianza
             if not pred.empty:
                 fig_t.add_trace(go.Scatter(
                     x=pd.concat([pred['año'], pred['año'][::-1]]),
                     y=pd.concat([pred['yhat_upper'], pred['yhat_lower'][::-1]]),
-                    fill='toself',
-                    fillcolor='rgba(173, 216, 230, 0.2)',
-                    line=dict(color='rgba(255,255,255,0)'),
-                    name='Rango Incertidumbre',
-                    showlegend=True
+                    fill='toself', fillcolor='rgba(173, 216, 230, 0.2)',
+                    line=dict(color='rgba(255,255,255,0)'), name='Rango Incertidumbre'
                 ))
 
-            # 2. Barras Históricas
+            # Histórico (Barras)
             fig_t.add_trace(go.Bar(x=hist['año'], y=hist['valor'], name='Precipitación Histórica', marker_color='#87CEEB'))
             
-            # 3. Barras Pronóstico
+            # Pronóstico (LÍNEAS SUAVIZADAS SPLINE - SOLICITUD 1)
             if not pred.empty:
-                fig_t.add_trace(go.Bar(
+                fig_t.add_trace(go.Scatter(
                     x=pred['año'], y=pred['valor'], 
+                    mode='lines+markers',
                     name='Precipitación Proyectada', 
-                    marker_color='#ADD8E6', marker_line_color='#4682B4', marker_line_width=1.5, opacity=0.7
+                    line=dict(color='#00BFFF', width=3, shape='spline', smoothing=0.3), # <--- AQUÍ ESTÁ EL CAMBIO
+                    marker=dict(size=6)
                 ))
 
-            # 4. Líneas de Balance
+            # Líneas Balance
             full_years = df_anual.sort_values('año')
             fig_t.add_trace(go.Scatter(x=full_years['año'], y=full_years['etr'], name='ETR', line=dict(color='#FFA500', width=2, dash='dot')))
             fig_t.add_trace(go.Scatter(x=full_years['año'], y=full_years['recarga'], name='Recarga', line=dict(color='#00008B', width=3)))
 
-            fig_t.update_layout(title="Dinámica Hidrológica: Historia + Escenarios", hovermode="x unified", legend=dict(orientation="h", y=1.1))
+            fig_t.update_layout(title="Dinámica Hidrológica", hovermode="x unified", legend=dict(orientation="h", y=1.1))
             st.plotly_chart(fig_t, use_container_width=True)
             
             with st.expander("📄 Tabla de Datos", expanded=False):
@@ -263,13 +266,15 @@ if ids_seleccionados:
                 st.dataframe(df_anual[['año', 'tipo', 'valor', 'etr', 'recarga']].style.format(format_dict))
                 st.download_button("💾 Descargar CSV", df_anual.to_csv(index=False).encode('utf-8'), f"balance_{nombre_seleccion}.csv")
 
-        # === TAB 2: MAPA (Igual) ===
+        # === TAB 2: MAPA ===
         with tab2:
             st.markdown(f"##### Modelo Espacial: {nombre_seleccion}")
             if 'longitude' in df_full.columns and gdf_zona is not None:
+                # SOLICITUD 2: Agrupación explícita con Municipio/Altura para que no se pierdan
                 cols_grp = ['id_estacion', 'nom_est', 'longitude', 'latitude']
-                if 'municipio' in df_full.columns: cols_grp.append('municipio')
-                if 'alt_est' in df_full.columns: cols_grp.append('alt_est')
+                # Verificamos y agregamos columnas opcionales al groupby
+                for col in ['municipio', 'alt_est']:
+                    if col in df_full.columns: cols_grp.append(col)
                 
                 df_spatial = df_full.groupby(cols_grp)['valor'].mean().reset_index()
                 df_spatial['valor_anual'] = df_spatial['valor'] * 12
@@ -281,9 +286,18 @@ if ids_seleccionados:
                 
                 df_spatial['etr_pt'], df_spatial['rec_pt'] = zip(*df_spatial['valor_anual'].apply(calc_pt))
                 
-                df_spatial['hover_txt'] = df_spatial.apply(
-                    lambda r: f"<b>{r['nom_est']}</b><br>🌧️ P: {r['valor_anual']:.0f}<br>💧 R: {r['rec_pt']:.0f}", axis=1
-                )
+                # Popup Restaurado
+                def build_popup(row):
+                    muni = row['municipio'] if 'municipio' in row else 'N/D'
+                    alt = f"{row['alt_est']:.0f}" if 'alt_est' in row and pd.notnull(row['alt_est']) else "N/D"
+                    return (
+                        f"<b>{row['nom_est']}</b><br>"
+                        f"🏙️ {muni} | ⛰️ {alt} msnm<br>"
+                        f"🌧️ P: {row['valor_anual']:.0f}<br>"
+                        f"☀️ ETR: {row['etr_pt']:.0f}<br>"
+                        f"💧 <b>R: {row['rec_pt']:.0f}</b>"
+                    )
+                df_spatial['hover_txt'] = df_spatial.apply(build_popup, axis=1)
 
                 if len(df_spatial) >= 3:
                     bounds = gdf_zona.total_bounds
