@@ -49,8 +49,7 @@ with st.sidebar:
     if usar_forecast:
         meses_futuros = st.selectbox("Horizonte (meses):", [12, 24, 36, 60], index=1)
         st.markdown("**Configuración del Modelo:**")
-        # Opción para añadir realismo
-        usar_estocastico = st.checkbox("🎲 Simular Variabilidad Real", value=True, help="Si se activa, añade 'ruido' estadístico basado en la historia para simular picos y valles realistas en lugar de una línea promedia suave.")
+        usar_estocastico = st.checkbox("🎲 Simular Variabilidad Real", value=True, help="Si se activa, añade 'ruido' estadístico basado en la historia para simular picos y valles realistas.")
         
         if usar_estocastico:
             nivel_ruido = st.slider("Intensidad Variabilidad:", 0.5, 1.5, 1.0, help="1.0 = Misma variabilidad que la historia.")
@@ -145,7 +144,6 @@ if ids_seleccionados:
             
             df_final_ts = df_ts_monthly.drop(columns=['año_temp', 'fecha_mes_año'], errors='ignore').copy()
             df_final_ts['tipo'] = 'Histórico'
-            # Columnas de incertidumbre para histórico (son 0)
             df_final_ts['yhat_lower'] = df_final_ts['valor']
             df_final_ts['yhat_upper'] = df_final_ts['valor']
 
@@ -156,9 +154,6 @@ if ids_seleccionados:
                         last_hist_date = df_train['fecha'].max()
                         df_prophet = df_train.rename(columns={'fecha': 'ds', 'valor': 'y'})
                         
-                        # --- MEJORA 1: HIPERPARÁMETROS AGRESIVOS ---
-                        # changepoint_prior_scale=0.5 (vs 0.05 default): Hace el modelo más sensible a cambios rápidos
-                        # seasonality_prior_scale=10.0: Permite estacionalidad más fuerte
                         m = Prophet(
                             seasonality_mode='multiplicative', 
                             yearly_seasonality=True,
@@ -178,41 +173,31 @@ if ids_seleccionados:
                         future = m.make_future_dataframe(periods=300, freq='MS')
                         future = future[future['ds'] <= fecha_objetivo]
                         
-                        # Regresores futuros (Persistencia + Ruido leve para ONI)
                         if cols_clima_usadas:
                             last_indices = df_ts_monthly.sort_values('fecha').iloc[-1][cols_clima_usadas]
                             for col in cols_clima_usadas:
                                 future[col] = last_indices[col]
                         
-                        # Predicción Base
                         forecast = m.predict(future)
                         
                         # Filtrar futuro
                         df_future = forecast[forecast['ds'] > last_hist_date][['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(columns={'ds': 'fecha', 'yhat': 'valor'})
                         df_future['tipo'] = 'Pronóstico'
                         
-                        # --- MEJORA 2: SIMULACIÓN ESTOCÁSTICA (AÑADIR RUIDO) ---
+                        # Simulación Estocástica
                         if usar_estocastico:
-                            # Calculamos la desviación estándar de los residuos históricos
                             residuals = df_prophet['y'] - forecast.loc[forecast['ds'].isin(df_prophet['ds']), 'yhat']
                             std_resid = residuals.std()
-                            
-                            # Generamos ruido aleatorio
-                            np.random.seed(42) # Semilla para reproducibilidad
+                            np.random.seed(42)
                             noise = np.random.normal(0, std_resid * nivel_ruido, len(df_future))
                             
-                            # Añadimos ruido al pronóstico central
                             df_future['valor'] = df_future['valor'] + noise
-                            
-                            # Ajustamos los intervalos de confianza para que envuelvan el nuevo ruido
                             df_future['yhat_upper'] = df_future['yhat_upper'] + (std_resid * nivel_ruido)
                             df_future['yhat_lower'] = df_future['yhat_lower'] - (std_resid * nivel_ruido)
 
-                        # Limpieza final (no negativos)
                         df_future['valor'] = df_future['valor'].clip(lower=0)
                         df_future['yhat_lower'] = df_future['yhat_lower'].clip(lower=0)
                         
-                        # Rellenar regresores para consistencia
                         for col in cols_clima_usadas: df_future[col] = 0
 
                         df_final_ts = pd.concat([df_final_ts, df_future], ignore_index=True)
@@ -224,17 +209,17 @@ if ids_seleccionados:
             # 3. Balance Anual
             df_final_ts['año'] = df_final_ts['fecha'].dt.year
             
-            # Agrupar: Suma para valores, Promedio para Intervalos de Confianza
             df_anual = df_final_ts.groupby(['año', 'tipo']).agg({
                 'valor': 'sum',
-                'yhat_lower': 'sum', # La incertidumbre mensual se suma (aprox)
+                'yhat_lower': 'sum', 
                 'yhat_upper': 'sum'
             }).reset_index()
             
-            # Turc
+            # Turc (CORRECCIÓN APLICADA AQUÍ)
             turc_res = df_anual.apply(lambda x: analysis.calculate_water_balance_turc(x['valor'], temp_estimada), axis=1)
             df_anual['etr'] = [x[0] for x in turc_res]
-            df_anual['recarga'] = [x[1] for x in turc_res] * coef_final
+            # Convertimos a numpy array para multiplicar vectorialmente
+            df_anual['recarga'] = np.array([x[1] for x in turc_res]) * coef_final
             
             # --- GRÁFICO AVANZADO ---
             fig_t = go.Figure()
@@ -242,22 +227,22 @@ if ids_seleccionados:
             hist = df_anual[df_anual['tipo'] == 'Histórico']
             pred = df_anual[df_anual['tipo'] == 'Pronóstico']
             
-            # 1. Intervalo de Confianza (Sombra de Fondo)
+            # 1. Intervalo de Confianza
             if not pred.empty:
                 fig_t.add_trace(go.Scatter(
                     x=pd.concat([pred['año'], pred['año'][::-1]]),
                     y=pd.concat([pred['yhat_upper'], pred['yhat_lower'][::-1]]),
                     fill='toself',
-                    fillcolor='rgba(173, 216, 230, 0.2)', # Azul muy claro
+                    fillcolor='rgba(173, 216, 230, 0.2)',
                     line=dict(color='rgba(255,255,255,0)'),
-                    name='Rango de Incertidumbre',
+                    name='Rango Incertidumbre',
                     showlegend=True
                 ))
 
             # 2. Barras Históricas
             fig_t.add_trace(go.Bar(x=hist['año'], y=hist['valor'], name='Precipitación Histórica', marker_color='#87CEEB'))
             
-            # 3. Barras Pronóstico (Con borde para distinguir)
+            # 3. Barras Pronóstico
             if not pred.empty:
                 fig_t.add_trace(go.Bar(
                     x=pred['año'], y=pred['valor'], 
@@ -266,7 +251,6 @@ if ids_seleccionados:
                 ))
 
             # 4. Líneas de Balance
-            # Unimos historia y predicción para líneas continuas
             full_years = df_anual.sort_values('año')
             fig_t.add_trace(go.Scatter(x=full_years['año'], y=full_years['etr'], name='ETR', line=dict(color='#FFA500', width=2, dash='dot')))
             fig_t.add_trace(go.Scatter(x=full_years['año'], y=full_years['recarga'], name='Recarga', line=dict(color='#00008B', width=3)))
