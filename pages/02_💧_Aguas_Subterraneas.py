@@ -8,6 +8,7 @@ import os
 import rasterio
 from rasterio.transform import from_origin
 import io
+from prophet import Prophet # Motor de Inteligencia Artificial para Pronósticos
 
 # --- IMPORTS MODULARES ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -16,14 +17,22 @@ from modules import land_cover as lc
 from modules.config import Config
 
 st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
-st.title("💧 Estimación de Recarga (Modelo Turc)")
+st.title("💧 Estimación de Recarga (Modelo Turc + Pronóstico)")
 
 # --- 1. CONFIGURACIÓN ---
 ids_seleccionados, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
 
 with st.sidebar:
     st.divider()
-    st.subheader("Parametrización")
+    st.subheader("🤖 Pronóstico Hidrológico")
+    usar_forecast = st.checkbox("Activar Proyección IA", value=False)
+    meses_forecast = 12
+    if usar_forecast:
+        meses_forecast = st.selectbox("Horizonte de proyección:", [6, 12, 18, 24, 36], index=1)
+        st.caption(f"Proyectando hasta {meses_forecast} meses en el futuro usando Prophet.")
+
+    st.divider()
+    st.subheader("Parametrización Suelo")
     
     # Coeficiente Inteligente
     coef_default = 0.30
@@ -33,7 +42,7 @@ with st.sidebar:
             if stats:
                 c_sug, razon = lc.get_infiltration_suggestion(stats)
                 coef_default = c_sug
-                st.caption(f"✨ IA: {razon}")
+                st.caption(f"✨ IA Cobertura: {razon}")
         except: pass
 
     coef_final = st.slider("Coef. Infiltración", 0.0, 1.0, float(coef_default), help="Fracción del excedente hídrico que infiltra.")
@@ -69,168 +78,171 @@ if ids_seleccionados:
         df_precip['fecha'] = pd.to_datetime(df_precip['fecha'])
         df_precip['año'] = df_precip['fecha'].dt.year
         
-        # --- MERGE DE METADATOS (AMPLIADO) ---
+        # Merge Metadatos
         try:
             all_data = data_processor.load_and_process_all_data()
             gdf_stations = all_data[0]
-            # Ahora traemos municipio y altitud también para el popup
             cols_meta = ['id_estacion', 'latitude', 'longitude', 'nom_est', 'municipio', 'alt_est']
             cols_meta = [c for c in cols_meta if c in gdf_stations.columns]
             df_full = pd.merge(df_precip, gdf_stations[cols_meta], on='id_estacion', how='left')
         except:
             df_full = df_precip
 
-        tab1, tab2 = st.tabs(["📉 Análisis Temporal", "🗺️ Mapa de Recarga Distribuida"])
+        tab1, tab2 = st.tabs(["📉 Análisis Temporal y Pronóstico", "🗺️ Mapa de Recarga Distribuida"])
         
-        # === TAB 1: ANÁLISIS TEMPORAL ===
+        # === TAB 1: ANÁLISIS TEMPORAL + PRONÓSTICO ===
         with tab1:
-            st.markdown("##### Balance Hídrico Anual (Promedio Areal)")
+            st.markdown(f"##### Dinámica Histórica y Proyección: {nombre_seleccion}")
             
-            df_anual = df_full.groupby('año')['valor'].mean().reset_index()
-            df_anual['valor_anual'] = df_anual['valor'] * 12
+            # 1. Preparar Serie Temporal Agregada (Promedio de la zona)
+            df_ts_monthly = df_full.groupby('fecha')['valor'].mean().reset_index()
             
+            df_final_ts = df_ts_monthly.copy()
+            df_final_ts['tipo'] = 'Histórico'
+
+            # 2. MOTOR DE PRONÓSTICO (PROPHET)
+            if usar_forecast and len(df_ts_monthly) > 24:
+                with st.spinner("🧠 Entrenando modelo de IA (Prophet) para proyección climática..."):
+                    # Preparar formato para Prophet (ds, y)
+                    df_prophet = df_ts_monthly.rename(columns={'fecha': 'ds', 'valor': 'y'})
+                    
+                    # Entrenar Modelo
+                    m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True)
+                    m.fit(df_prophet)
+                    
+                    # Crear fechas futuras
+                    future = m.make_future_dataframe(periods=meses_forecast, freq='MS')
+                    forecast = m.predict(future)
+                    
+                    # Filtrar solo la parte futura para unirla
+                    last_date = df_ts_monthly['fecha'].max()
+                    df_future = forecast[forecast['ds'] > last_date][['ds', 'yhat']].rename(columns={'ds': 'fecha', 'yhat': 'valor'})
+                    df_future['tipo'] = 'Pronóstico'
+                    
+                    # Unir Historia + Futuro
+                    df_final_ts = pd.concat([df_final_ts, df_future])
+                    
+                    st.success(f"✅ Proyección generada hasta {df_future['fecha'].max().date()}")
+
+            # 3. Calcular Balance Hídrico (Turc) sobre la serie extendida
+            # Agrupamos por año para Turc, pero mantenemos la distinción de Tipo
+            df_final_ts['año'] = df_final_ts['fecha'].dt.year
+            
+            # Cálculo Anual
+            df_anual = df_final_ts.groupby(['año', 'tipo'])['valor'].sum().reset_index() # Suma de meses para el total anual
+            # Filtrar años incompletos en el histórico (opcional, pero mejora la gráfica)
+            
+            # Aplicar Turc
             turc_res = df_anual.apply(
-                lambda x: analysis.calculate_water_balance_turc(x['valor_anual'], temp_estimada), axis=1
+                lambda x: analysis.calculate_water_balance_turc(x['valor'], temp_estimada), axis=1
             )
             df_anual['etr'] = [x[0] for x in turc_res]
             df_anual['excedente'] = [x[1] for x in turc_res]
             df_anual['recarga'] = df_anual['excedente'] * coef_final
             
-            c1, c2, c3, c4 = st.columns(4)
-            ppt_avg = df_anual['valor_anual'].mean()
-            recarga_avg = df_anual['recarga'].mean()
-            
-            c1.metric("Precipitación Media", f"{ppt_avg:,.0f} mm/año")
-            c2.metric("ETR (Evaporación)", f"{df_anual['etr'].mean():,.0f} mm/año")
-            c3.metric("Recarga Total", f"{recarga_avg:,.0f} mm/año")
-            c4.metric("Tasa de Recarga", f"{(recarga_avg/ppt_avg)*100:.1f}%")
-            
+            # GRÁFICO
             fig_t = go.Figure()
-            fig_t.add_trace(go.Bar(x=df_anual['año'], y=df_anual['valor_anual'], name='Precipitación', marker_color='#87CEEB', opacity=0.6))
-            fig_t.add_trace(go.Scatter(x=df_anual['año'], y=df_anual['etr'], name='Evapotranspiración (ETR)', line=dict(color='#FFA500', width=2, dash='dot')))
-            fig_t.add_trace(go.Scatter(x=df_anual['año'], y=df_anual['recarga'], name='Recarga Efectiva', line=dict(color='#00008B', width=3), fill='tozeroy'))
             
-            fig_t.update_layout(title="Dinámica Histórica Anual", yaxis_title="Lámina de Agua (mm)", hovermode="x unified", legend=dict(orientation="h", y=1.1))
+            # Datos Históricos
+            hist = df_anual[df_anual['tipo'] == 'Histórico']
+            fig_t.add_trace(go.Bar(x=hist['año'], y=hist['valor'], name='Precipitación Histórica', marker_color='#87CEEB'))
+            fig_t.add_trace(go.Scatter(x=hist['año'], y=hist['recarga'], name='Recarga Histórica', line=dict(color='#00008B', width=3)))
+            
+            # Datos Pronosticados
+            if usar_forecast:
+                pred = df_anual[df_anual['tipo'] == 'Pronóstico']
+                if not pred.empty:
+                    fig_t.add_trace(go.Bar(x=pred['año'], y=pred['valor'], name='Lluvia Proyectada', marker_color='#ADD8E6', opacity=0.5))
+                    fig_t.add_trace(go.Scatter(x=pred['año'], y=pred['recarga'], name='Recarga Proyectada', line=dict(color='#00008B', width=3, dash='dot')))
+
+            fig_t.update_layout(title="Balance Hídrico: Historia + Proyección", hovermode="x unified", legend=dict(orientation="h", y=1.1))
             st.plotly_chart(fig_t, use_container_width=True)
+            
+            # TABLA DE DATOS (SOLICITUD 1)
+            with st.expander("📄 Ver Tabla de Datos Detallada", expanded=False):
+                st.dataframe(df_anual.style.format("{:.1f}"))
+                csv = df_anual.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "💾 Descargar Tabla (CSV)",
+                    csv,
+                    f"balance_anual_{nombre_seleccion}.csv",
+                    "text/csv",
+                    key='download-csv'
+                )
 
         # === TAB 2: MAPA DISTRIBUIDO ===
         with tab2:
-            st.markdown("##### Modelo Espacial de Recarga")
+            # SOLICITUD 2: Nombre en el título
+            st.markdown(f"##### Modelo Espacial de Recarga: {nombre_seleccion}")
             
             if 'longitude' in df_full.columns and gdf_zona is not None:
-                # 1. Agrupar por Estación (Promedios Históricos)
-                # Incluimos metadatos para el popup
-                cols_grp = ['id_estacion', 'nom_est', 'longitude', 'latitude']
-                if 'municipio' in df_full.columns: cols_grp.append('municipio')
-                if 'alt_est' in df_full.columns: cols_grp.append('alt_est')
-                
-                df_spatial = df_full.groupby(cols_grp)['valor'].mean().reset_index()
+                # Mapa basado solo en históricos (para precisión espacial)
+                df_spatial = df_full.groupby(['id_estacion', 'nom_est', 'longitude', 'latitude', 'municipio', 'alt_est'])['valor'].mean().reset_index()
                 df_spatial['valor_anual'] = df_spatial['valor'] * 12
                 
-                # 2. CÁLCULO PUNTUAL (TURC EN CADA ESTACIÓN PARA EL POPUP)
-                L_t_global = 300 + 25*temp_estimada + 0.05*(temp_estimada**3)
+                # Cálculo puntual para Popups
+                L_t = 300 + 25*temp_estimada + 0.05*(temp_estimada**3)
+                def calc_pt(ppt):
+                    with np.errstate(divide='ignore'): etr = ppt / np.sqrt(0.9 + (ppt/L_t)**2)
+                    return min(etr, ppt), (ppt - min(etr, ppt)) * coef_final
                 
-                def calc_station_turc(ppt):
-                    with np.errstate(divide='ignore'):
-                        etr = ppt / np.sqrt(0.9 + (ppt/L_t_global)**2)
-                    etr = min(etr, ppt)
-                    rec = (ppt - etr) * coef_final
-                    return etr, rec
+                df_spatial['etr_pt'], df_spatial['rec_pt'] = zip(*df_spatial['valor_anual'].apply(calc_pt))
+                
+                # Popup Estaciones
+                df_spatial['hover_txt'] = df_spatial.apply(
+                    lambda r: f"<b>{r['nom_est']}</b><br>🌧️ P: {r['valor_anual']:.0f}<br>💧 R: {r['rec_pt']:.0f}", axis=1
+                )
 
-                df_spatial['etr_pt'], df_spatial['rec_pt'] = zip(*df_spatial['valor_anual'].apply(calc_station_turc))
-                
-                # 3. Construir texto del Popup
-                def build_hover(row):
-                    muni = row.get('municipio', 'N/D')
-                    alt = f"{row.get('alt_est', 0):.0f}"
-                    return (
-                        f"<b>{row['nom_est']}</b><br>" +
-                        f"📍 {muni} | ⛰️ {alt} msnm<br>" +
-                        f"🌧️ P: {row['valor_anual']:.0f} mm<br>" +
-                        f"☀️ ETR: {row['etr_pt']:.0f} mm<br>" +
-                        f"💧 <b>Recarga: {row['rec_pt']:.0f} mm</b>"
-                    )
-                
-                df_spatial['hover_txt'] = df_spatial.apply(build_hover, axis=1)
-
-                # 4. Interpolación (Grid)
                 if len(df_spatial) >= 3:
                     bounds = gdf_zona.total_bounds
-                    bbox = (bounds[0], bounds[2], bounds[1], bounds[3])
-                    gx, gy = interpolation.generate_grid_coordinates(bbox, resolution=100j)
-                    
+                    gx, gy = interpolation.generate_grid_coordinates((bounds[0], bounds[2], bounds[1], bounds[3]), resolution=100j)
                     grid_P = interpolation.interpolate_spatial(df_spatial, 'valor_anual', gx, gy, method='rbf')
                     
                     if grid_P is not None:
-                        grid_ETR = grid_P / np.sqrt(0.9 + (grid_P/L_t_global)**2)
-                        grid_Recarga = (grid_P - grid_ETR) * coef_final
-                        grid_Recarga = np.nan_to_num(grid_Recarga, nan=0.0)
+                        grid_R = (grid_P - (grid_P / np.sqrt(0.9 + (grid_P/L_t)**2))) * coef_final
+                        grid_R = np.nan_to_num(grid_R, nan=0.0)
                         
                         fig_map = go.Figure()
                         
-                        # CAPA 1: Heatmap (Contornos)
+                        # Capa Heatmap
                         fig_map.add_trace(go.Contour(
-                            z=grid_Recarga.T, x=gx[:,0], y=gy[0,:],
-                            colorscale="Blues",
-                            colorbar=dict(title="Recarga (mm/año)"),
-                            contours=dict(start=0, end=np.nanmax(grid_Recarga), size=50),
-                            name="Recarga Interpolada",
-                            hoverinfo='z'
+                            z=grid_R.T, x=gx[:,0], y=gy[0,:],
+                            colorscale="Blues", name="Recarga",
+                            colorbar=dict(title="mm/año")
                         ))
                         
-                        # CAPA 2: Contorno de la Cuenca (Línea Negra)
-                        # Iteramos sobre las geometrías (Polygon o MultiPolygon)
+                        # SOLICITUD 3: Hover en Cuencas
                         for geom in gdf_zona.geometry:
-                            if geom.geom_type == 'Polygon':
-                                x, y = geom.exterior.xy
-                                fig_map.add_trace(go.Scatter(
-                                    x=list(x), y=list(y), 
-                                    mode='lines', line=dict(color='black', width=2),
-                                    name='Límite Cuenca', hoverinfo='skip'
-                                ))
-                            elif geom.geom_type == 'MultiPolygon':
-                                for poly in geom.geoms:
+                            if geom.geom_type in ['Polygon', 'MultiPolygon']:
+                                if geom.geom_type == 'Polygon': polys = [geom]
+                                else: polys = geom.geoms
+                                
+                                for poly in polys:
                                     x, y = poly.exterior.xy
                                     fig_map.add_trace(go.Scatter(
-                                        x=list(x), y=list(y), 
+                                        x=list(x), y=list(y),
                                         mode='lines', line=dict(color='black', width=2),
-                                        name='Límite Cuenca', hoverinfo='skip', showlegend=False
+                                        name='Límite Cuenca',
+                                        text=f"Cuenca: {nombre_seleccion}", # <--- AQUÍ EL NOMBRE
+                                        hoverinfo='text' # Solo muestra el texto
                                     ))
 
-                        # CAPA 3: Estaciones (Puntos con Popup Rico)
+                        # Capa Estaciones
                         fig_map.add_trace(go.Scatter(
                             x=df_spatial['longitude'], y=df_spatial['latitude'],
-                            mode='markers',
-                            marker=dict(color='black', size=7, line=dict(width=1, color='white')),
-                            text=df_spatial['hover_txt'], # Usamos el texto HTML generado
-                            hoverinfo='text',             # Forzar a usar solo nuestro texto
+                            mode='markers', marker=dict(color='black', size=6),
+                            text=df_spatial['hover_txt'], hoverinfo='text',
                             name="Estaciones"
                         ))
                         
-                        fig_map.update_layout(
-                            height=600, 
-                            margin=dict(l=0, r=0, t=10, b=0),
-                            xaxis=dict(visible=False, scaleanchor="y", scaleratio=1),
-                            yaxis=dict(visible=False),
-                            legend=dict(orientation="h", y=0, x=0)
-                        )
+                        fig_map.update_layout(height=600, margin=dict(t=20, b=0, l=0, r=0), xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"))
                         st.plotly_chart(fig_map, use_container_width=True)
                         
                         # Descargas
-                        c_dl1, c_dl2 = st.columns(2)
-                        transform = from_origin(gx[0,0], gy[0,-1], (gx[1,0]-gx[0,0]), (gy[0,0]-gy[0,1]))
-                        tiff_bytes = get_geotiff_bytes(np.flipud(grid_Recarga.T), transform, "EPSG:4326")
-                        
-                        with c_dl1:
-                            st.download_button("💾 Descargar Raster (GeoTIFF)", tiff_bytes, f"recarga_{nombre_seleccion}.tif", "image/tiff")
-                        with c_dl2:
-                            csv = df_spatial.drop(columns=['hover_txt']).to_csv(index=False)
-                            st.download_button("📄 Descargar Tabla Estaciones", csv, f"estaciones_{nombre_seleccion}.csv", "text/csv")
-                    else:
-                        st.warning("Error en interpolación.")
-                else:
-                    st.warning("Insuficientes estaciones para el mapa (Mínimo 3).")
-            else:
-                st.info("Seleccione una zona válida.")
-    else:
-        st.warning("No hay datos históricos.")
+                        c1, c2 = st.columns(2)
+                        tiff = get_geotiff_bytes(np.flipud(grid_R.T), from_origin(gx[0,0], gy[0,-1], gx[1,0]-gx[0,0], gy[0,0]-gy[0,1]), "EPSG:4326")
+                        c1.download_button("💾 Raster (TIF)", tiff, f"recarga_{nombre_seleccion}.tif")
+                        c2.download_button("📄 Estaciones (CSV)", df_spatial.drop(columns=['hover_txt']).to_csv(index=False), f"estaciones_{nombre_seleccion}.csv")
+                    else: st.warning("Error interpolando.")
+                else: st.warning("Mínimo 3 estaciones requeridas.")
+    else: st.warning("Sin datos.")
