@@ -225,13 +225,20 @@ if ids_seleccionados:
             df_anual['etr'] = [x[0] for x in turc_res]
             df_anual['recarga'] = np.array([x[1] for x in turc_res]) * coef_final
             
+# --- SOLUCIÓN SIERRA: UNIFICAR DATOS PARA LÍNEAS ---
+            # Agrupamos SOLO por año para tener una serie continua sin duplicados de transición
+            df_lines = df_anual.groupby('año').agg({
+                'etr': 'sum',
+                'recarga': 'sum'
+            }).reset_index().sort_values('año')
+            
             # --- GRÁFICO ---
             fig_t = go.Figure()
             
             hist = df_anual[df_anual['tipo'] == 'Histórico']
             pred = df_anual[df_anual['tipo'] == 'Pronóstico']
             
-            # Intervalo Confianza
+            # 1. Intervalo Confianza
             if not pred.empty:
                 fig_t.add_trace(go.Scatter(
                     x=pd.concat([pred['año'], pred['año'][::-1]]),
@@ -240,34 +247,28 @@ if ids_seleccionados:
                     line=dict(color='rgba(255,255,255,0)'), name='Rango Incertidumbre'
                 ))
 
-            # Histórico
+            # 2. Barras (Mantienen distinción de color)
             fig_t.add_trace(go.Bar(x=hist['año'], y=hist['valor'], name='Precipitación Histórica', marker_color='#87CEEB'))
             
-            # Pronóstico
             if not pred.empty:
                 fig_t.add_trace(go.Scatter(
                     x=pred['año'], y=pred['valor'], 
-                    mode='lines+markers',
-                    name='Precipitación Proyectada', 
+                    mode='lines+markers', name='Precipitación Proyectada', 
                     line=dict(color='#00BFFF', width=3, shape='spline', smoothing=0.3),
                     marker=dict(size=6)
                 ))
 
-            # Líneas Balance (AQUÍ ESTÁ LA CORRECCIÓN DE LOS DIENTES DE SIERRA)
-            full_years = df_anual.sort_values('año')
-            
-            # ETR Suavizada
+            # 3. Líneas Balance (USANDO df_lines UNIFICADO = NO MÁS SIERRA)
             fig_t.add_trace(go.Scatter(
-                x=full_years['año'], y=full_years['etr'], 
+                x=df_lines['año'], y=df_lines['etr'], 
                 name='ETR', 
-                line=dict(color='#FFA500', width=2, dash='dot', shape='spline', smoothing=1.3) # <--- FIX
+                line=dict(color='#FFA500', width=2, dash='dot', shape='spline', smoothing=1.3)
             ))
             
-            # Recarga Suavizada
             fig_t.add_trace(go.Scatter(
-                x=full_years['año'], y=full_years['recarga'], 
+                x=df_lines['año'], y=df_lines['recarga'], 
                 name='Recarga', 
-                line=dict(color='#00008B', width=3, shape='spline', smoothing=1.3) # <--- FIX
+                line=dict(color='#00008B', width=3, shape='spline', smoothing=1.3)
             ))
 
             fig_t.update_layout(title="Dinámica Hidrológica", hovermode="x unified", legend=dict(orientation="h", y=1.1))
