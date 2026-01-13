@@ -4,33 +4,38 @@ from sqlalchemy import create_engine, text
 import sys
 import os
 
-# Agregar path de módulos
+# --- IMPORTACIÓN DE TU MOTOR DE CÁLCULO ---
+# Aseguramos que Python encuentre la carpeta modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from modules import hydrogeo_utils
+from modules import analysis  # <--- Aquí importamos tu archivo analysis.py
 
+# Configuración de la página
 st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
 
-st.title("💧 Estimación de Recarga: Escala Multiescalar")
-st.markdown("Análisis de infiltración y recarga de acuíferos desde nivel de estación hasta escala regional.")
+st.title("💧 Estimación de Recarga (Modelo Turc)")
+st.markdown("""
+Este módulo estima la recarga potencial calculando primero el **Balance Hídrico de Turc**.
+Se descuenta la **Evapotranspiración Real (ETR)** antes de calcular la infiltración.
+""")
 
-# --- 1. CONEXIÓN Y CARGA DE LISTAS ---
+# --- 1. CONEXIÓN Y CARGA DE DATOS ---
 try:
     db_url = st.secrets["DATABASE_URL"]
     engine = create_engine(db_url)
     
-    # Consultamos las listas para los filtros
+    # Consultamos las estaciones INCLUYENDO LA ALTITUD (alt_est)
+    # Necesaria para estimar la temperatura con analysis.py
+    query_est = """
+        SELECT id_estacion AS codigo, nom_est AS nombre, alt_est AS altitud, municipio, depto_region 
+        FROM estaciones 
+        ORDER BY nom_est
+    """
     with engine.connect() as conn:
-        # Lista de Estaciones
-        q_est = "SELECT id_estacion AS codigo, nom_est AS nombre FROM estaciones ORDER BY nom_est"
-        df_estaciones = pd.read_sql(text(q_est), conn)
+        df_estaciones = pd.read_sql(text(query_est), conn)
         
-        # Lista de Municipios (Agrupación Espacial)
-        q_mun = "SELECT DISTINCT municipio FROM estaciones WHERE municipio IS NOT NULL ORDER BY municipio"
-        df_municipios = pd.read_sql(text(q_mun), conn)
-
-        # Lista de Regiones (Agrupación Regional)
-        q_reg = "SELECT DISTINCT depto_region FROM estaciones WHERE depto_region IS NOT NULL ORDER BY depto_region"
-        df_regiones = pd.read_sql(text(q_reg), conn)
+    # Listas para filtros
+    lista_municipios = sorted(df_estaciones['municipio'].dropna().unique())
+    lista_regiones = sorted(df_estaciones['depto_region'].dropna().unique())
 
 except Exception as e:
     st.error(f"Error conectando a BD: {e}")
@@ -38,121 +43,117 @@ except Exception as e:
 
 # --- 2. BARRA LATERAL (CONTROLES) ---
 with st.sidebar:
-    st.header("⚙️ Configuración del Análisis")
+    st.header("⚙️ Configuración")
     
-    # INTERRUPTOR DE ESCALA
+    # Selector de Escala
     tipo_analisis = st.radio(
-        "Nivel de Agregación:",
-        ["📍 Por Estación (Puntual)", "🏙️ Por Municipio", "🌍 Por Región"]
+        "Nivel de Análisis:",
+        ["📍 Por Estación", "🏙️ Por Municipio"]
     )
     
     st.divider()
     
-    # SELECTOR DINÁMICO
-    seleccion_id = None
+    seleccion_ids = []
     seleccion_nombre = ""
+    altitud_promedio = 1500 # Valor por defecto
     
-    if tipo_analisis == "📍 Por Estación (Puntual)":
-        seleccion_id = st.selectbox(
+    if tipo_analisis == "📍 Por Estación":
+        cod_sel = st.selectbox(
             "Seleccione Estación:", 
             options=df_estaciones['codigo'],
             format_func=lambda x: df_estaciones[df_estaciones['codigo'] == x]['nombre'].values[0]
         )
-        seleccion_nombre = df_estaciones[df_estaciones['codigo'] == seleccion_id]['nombre'].values[0]
+        seleccion_ids = [cod_sel]
+        # Obtenemos datos de la estación seleccionada
+        fila_est = df_estaciones[df_estaciones['codigo'] == cod_sel].iloc[0]
+        seleccion_nombre = fila_est['nombre']
+        altitud_promedio = fila_est['altitud'] if pd.notnull(fila_est['altitud']) else 1500
         
     elif tipo_analisis == "🏙️ Por Municipio":
-        seleccion_id = st.selectbox("Seleccione Municipio:", options=df_municipios['municipio'])
-        seleccion_nombre = f"Municipio de {seleccion_id}"
-        
-    elif tipo_analisis == "🌍 Por Región":
-        seleccion_id = st.selectbox("Seleccione Región:", options=df_regiones['depto_region'])
-        seleccion_nombre = f"Región {seleccion_id}"
+        mun_sel = st.selectbox("Seleccione Municipio:", options=lista_municipios)
+        # Filtramos todas las estaciones de ese municipio
+        estaciones_mun = df_estaciones[df_estaciones['municipio'] == mun_sel]
+        seleccion_ids = estaciones_mun['codigo'].tolist()
+        seleccion_nombre = f"Municipio de {mun_sel}"
+        altitud_promedio = estaciones_mun['altitud'].mean() if not estaciones_mun['altitud'].isnull().all() else 1500
+
+    st.info(f"📍 **Altitud ref:** {altitud_promedio:.0f} msnm")
+    
+    # Calculamos Temperatura estimada usando TU librería analysis.py
+    temp_estimada = analysis.estimate_temperature(altitud_promedio)
+    st.info(f"🌡️ **Temp. estimada:** {temp_estimada:.1f} °C")
 
     st.divider()
     
-    # PARÁMETROS DE SUELO (Aplican a toda la selección)
     st.subheader("Propiedades del Suelo")
     tipo_suelo = st.selectbox(
-        "Tipo de Suelo Dominante:",
-        ["Arenoso (Alta Infiltración)", "Franco (Media Infiltración)", "Arcilloso (Baja Infiltración)", "Urbano/Impermeable"]
+        "Tipo de Suelo / Permeabilidad:",
+        ["Arenoso (Alta)", "Franco (Media)", "Arcilloso (Baja)", "Rocoso/Fracturado"]
     )
-    coef_sugerido = hydrogeo_utils.obtener_clasificacion_suelo(tipo_suelo)
-    coef_final = st.slider("Coeficiente de Infiltración (%)", 0.0, 1.0, coef_sugerido)
-    st.info(f"Se asume infiltración del **{coef_final*100:.0f}%**.")
-
-# --- 3. LÓGICA DE CONSULTA Y ANÁLISIS ---
-if seleccion_id:
     
-    # Construcción de la Query según el tipo de análisis
-    if tipo_analisis == "📍 Por Estación (Puntual)":
-        # Query Simple (la que ya tenías)
-        query = f"""
-            SELECT fecha_mes_año AS fecha, precipitation AS valor 
-            FROM precipitacion_mensual 
-            WHERE id_estacion_fk = '{seleccion_id}' 
-            ORDER BY fecha_mes_año
-        """
-        metric_label = "Estación"
-        
-    else:
-        # Query Agregada (El promedio regional)
-        # Hacemos JOIN entre tablas para filtrar por municipio/región
-        filtro_col = "municipio" if "Municipio" in tipo_analisis else "depto_region"
-        
-        query = f"""
-            SELECT 
-                p.fecha_mes_año AS fecha, 
-                AVG(p.precipitation) AS valor 
-            FROM precipitacion_mensual p
-            JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-            WHERE e.{filtro_col} = '{seleccion_id}'
-            GROUP BY p.fecha_mes_año
-            ORDER BY p.fecha_mes_año
-        """
-        metric_label = "Promedio Areal"
+    # Mapeo simple de coeficientes (podrías mejorarlo luego con mapas reales)
+    mapa_coef = {"Arenoso (Alta)": 0.50, "Franco (Media)": 0.30, "Arcilloso (Baja)": 0.10, "Rocoso/Fracturado": 0.05}
+    coef_final = st.slider("Coeficiente Infiltración (%)", 0.0, 1.0, mapa_coef[tipo_suelo])
 
-    # --- EJECUCIÓN ---
+# --- 3. PROCESAMIENTO ---
+if seleccion_ids:
+    # Convertimos lista a formato SQL tuple
+    ids_sql = str(tuple(seleccion_ids)).replace(',)', ')') 
+    
+    query_datos = f"""
+        SELECT fecha_mes_año AS fecha, precipitation AS valor 
+        FROM precipitacion_mensual 
+        WHERE id_estacion_fk IN {ids_sql} 
+        ORDER BY fecha_mes_año
+    """
+    
     try:
         with engine.connect() as conn:
-            df_data = pd.read_sql(text(query), conn)
+            df_data = pd.read_sql(text(query_datos), conn)
             
         if not df_data.empty:
             df_data['fecha'] = pd.to_datetime(df_data['fecha'])
             
-            # Cálculo de Recarga
-            df_resultado = hydrogeo_utils.calcular_recarga_simple(df_data, coef_final)
+            # Si es regional, agrupamos por fecha (promedio de todas las estaciones)
+            df_procesado = df_data.groupby('fecha')['valor'].mean().reset_index()
             
-            # --- DASHBOARD DE RESULTADOS ---
-            st.subheader(f"Resultados para: {seleccion_nombre}")
+            # --- AQUÍ OCURRE LA MAGIA CON analysis.py ---
+            # Aplicamos la función Turc fila por fila
+            def aplicar_turc(row):
+                ppt = row['valor']
+                # Llamamos a tu función existente en analysis.py
+                etr, q = analysis.calculate_water_balance_turc(ppt, temp_estimada)
+                return pd.Series([etr, q])
+
+            df_procesado[['etr', 'excedente_hídrico']] = df_procesado.apply(aplicar_turc, axis=1)
+            
+            # Calculamos Recarga sobre el excedente (Agua que sobra)
+            df_procesado['recarga'] = df_procesado['excedente_hídrico'] * coef_final
+            
+            # --- VISUALIZACIÓN ---
+            st.subheader(f"Balance Hídrico: {seleccion_nombre}")
             
             # KPIs
-            col1, col2, col3 = st.columns(3)
-            total_lluvia = df_resultado['valor'].sum()
-            total_recarga = df_resultado['recarga_estimada'].sum()
+            c1, c2, c3, c4 = st.columns(4)
+            sum_ppt = df_procesado['valor'].sum()
+            sum_etr = df_procesado['etr'].sum()
+            sum_recarga = df_procesado['recarga'].sum()
             
-            with col1:
-                st.metric("Lluvia Acumulada (Serie)", f"{total_lluvia:,.0f} mm")
-            with col2:
-                st.metric("Recarga Potencial Total", f"{total_recarga:,.0f} mm")
-            with col3:
-                st.metric("Eficiencia de Recarga", f"{coef_final*100:.0f}%", help="Porcentaje de lluvia que se convierte en agua subterránea")
-
-            # Gráficas
-            tab1, tab2 = st.tabs(["📉 Serie Temporal", "📊 Análisis Anual"])
+            c1.metric("Lluvia Total", f"{sum_ppt:,.0f} mm")
+            c2.metric("Evapotranspiración (ETR)", f"{sum_etr:,.0f} mm", delta="- Pérdida", delta_color="inverse")
+            c3.metric("Recarga Estimada", f"{sum_recarga:,.0f} mm", delta="Agua Subterránea")
+            c4.metric("Eficiencia Real", f"{(sum_recarga/sum_ppt)*100:.1f}%", help="% de lluvia que llega al acuífero")
             
-            with tab1:
-                st.markdown("##### Dinámica Mensual Histórica")
-                st.line_chart(df_resultado.set_index('fecha')[['valor', 'recarga_estimada']], color=["#87CEEB", "#00008B"])
+            # Gráfica
+            st.markdown("##### Dinámica del Balance (Turc)")
+            st.line_chart(
+                df_procesado.set_index('fecha')[['valor', 'etr', 'recarga']],
+                color=["#87CEEB", "#FFA500", "#00008B"] # Celeste (Lluvia), Naranja (ETR), Azul Oscuro (Recarga)
+            )
+            st.caption("Celeste: Lluvia | Naranja: Evaporación | Azul Oscuro: Recarga")
             
-            with tab2:
-                # Agregación por año para ver tendencias macro
-                df_anual = df_resultado.resample('YE', on='fecha').sum()
-                st.markdown("##### Recarga Total por Año")
-                st.bar_chart(df_anual['recarga_estimada'], color="#00008B")
-
         else:
-            st.warning(f"No se encontraron datos de precipitación para {seleccion_nombre}.")
-
+            st.warning("No hay datos de precipitación para la selección.")
+            
     except Exception as e:
-        st.error("Error procesando los datos.")
-        st.write(e)
+        st.error(f"Error en el cálculo: {e}")
