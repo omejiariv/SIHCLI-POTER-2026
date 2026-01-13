@@ -18,14 +18,21 @@ def render_selector_espacial():
     """
     st.sidebar.header("📍 Filtros Geográficos")
     
-    # 1. CARGAR DATOS CENTRALIZADOS (Usamos tu data_processor existente)
+    # 1. CARGAR DATOS CENTRALIZADOS
     try:
-        # Recuperamos los GeoDataFrames ya procesados y cacheados
-        gdf_stations, gdf_municipios, gdf_subcuencas, _, _ = data_processor.load_and_process_all_data()
+        # CORRECCIÓN: Recibimos todo en una tupla y sacamos lo que necesitamos por índice
+        # Esto evita el error si en el futuro agregas más cosas al procesador de datos.
+        all_data = data_processor.load_and_process_all_data()
+        
+        gdf_stations = all_data[0]   # El primero siempre son las estaciones
+        gdf_municipios = all_data[1] # El segundo son municipios
+        gdf_subcuencas = all_data[2] # El tercero son cuencas
+        
+        # El resto (predios, enso, etc.) no lo necesitamos aquí, así que lo ignoramos.
+        
     except Exception as e:
         st.sidebar.error(f"Error cargando datos espaciales: {e}")
         return [], "Error Datos", 1500, None
-
     # 2. SELECTOR DE MODO
     opciones_modo = ["📍 Por Estación", "🏙️ Por Municipio", "🌍 Por Región"]
     
