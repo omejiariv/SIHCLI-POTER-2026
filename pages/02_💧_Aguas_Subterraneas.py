@@ -18,9 +18,13 @@ try:
     db_url = st.secrets["DATABASE_URL"]
     engine = create_engine(db_url)
     
-    # Consulta a la tabla 'estaciones'
-    # Asumimos columnas: codigo, nombre
-    query_estaciones = "SELECT codigo, nombre FROM estaciones ORDER BY nombre" 
+    # CORRECCIÓN 1: Usamos los nombres reales de la tabla 'estaciones'
+    # Renombramos 'id_estacion' -> 'codigo' y 'nom_est' -> 'nombre' al vuelo
+    query_estaciones = """
+        SELECT id_estacion AS codigo, nom_est AS nombre 
+        FROM estaciones 
+        ORDER BY nom_est
+    """
     
     with engine.connect() as conn:
         df_estaciones = pd.read_sql(text(query_estaciones), conn)
@@ -54,13 +58,13 @@ with st.sidebar:
 
 # --- 3. ANÁLISIS ---
 if estacion_selec:
-    # Consulta a la tabla 'precipitacion_mensual'
-    # Asumimos columnas: codigo, fecha, valor
+    # CORRECCIÓN 2: Usamos nombres reales de 'precipitacion_mensual'
+    # 'id_estacion_fk' es el enlace. 'precipitation' es el dato.
     query_datos = f"""
-        SELECT fecha, valor 
+        SELECT fecha_mes_año AS fecha, precipitation AS valor 
         FROM precipitacion_mensual 
-        WHERE codigo = '{estacion_selec}' 
-        ORDER BY fecha
+        WHERE id_estacion_fk = '{estacion_selec}' 
+        ORDER BY fecha_mes_año
     """
     
     try:
@@ -70,7 +74,7 @@ if estacion_selec:
         if not df_lluvia.empty:
             df_lluvia['fecha'] = pd.to_datetime(df_lluvia['fecha'])
             
-            # Cálculo
+            # Cálculo (ahora sí funcionará porque df_lluvia tiene columna 'valor')
             df_resultado = hydrogeo_utils.calcular_recarga_simple(df_lluvia, coef_final)
             
             # Métricas
@@ -85,14 +89,13 @@ if estacion_selec:
                           delta=f"{(total_recarga/total_lluvia)*100:.1f}% Eficiencia")
             
             # Gráfica
-            st.subheader("Dinámica Mensual")
+            st.subheader("Dinámica Mensual: Lluvia vs. Recarga")
             st.line_chart(df_resultado.set_index('fecha')[['valor', 'recarga_estimada']], color=["#87CEEB", "#00008B"])
-            st.caption("Azul Claro: Lluvia | Azul Oscuro: Recarga")
+            st.caption("Azul Claro: Lluvia | Azul Oscuro: Recarga al Acuífero")
             
         else:
-            st.warning("No se encontraron datos para esta estación en la tabla 'precipitacion_mensual'.")
+            st.warning(f"La estación seleccionada ({estacion_selec}) no tiene datos en la tabla 'precipitacion_mensual'.")
             
     except Exception as e:
-        st.error("Hubo un error en la consulta. Verifica los nombres de las columnas.")
-        st.code(query_datos, language="sql")
-        st.error(f"Detalle del error: {e}")
+        st.error("Error en la consulta de datos.")
+        st.error(f"Detalle: {e}")
