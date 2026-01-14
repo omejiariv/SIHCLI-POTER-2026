@@ -10,7 +10,7 @@ st.set_page_config(page_title="Monitor de Biodiversidad", page_icon="🍃", layo
 try:
     import pandas as pd
     import geopandas as gpd
-    import plotly.graph_objects as go # Usamos Graph Objects para control total de capas
+    import plotly.graph_objects as go
     from sqlalchemy import create_engine, text
     
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -21,27 +21,22 @@ except Exception as e:
 
 st.title("🍃 Biodiversidad y Servicios Ecosistémicos")
 
-# 2. SELECTOR (Ahora con Municipios/Regiones funcionales)
+# 2. SELECTOR
 try:
     ids_seleccionados, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
 except Exception as e:
     st.error(f"Error en selector: {e}")
     st.stop()
 
-# Funciones Auxiliares DB
+# Funciones Auxiliares
 def get_db_engine():
     return create_engine(st.secrets["DATABASE_URL"])
 
 def save_to_db(df, table_name="biodiversidad_registros"):
-    """Guarda el dataframe en la base de datos local."""
     engine = get_db_engine()
-    # Limpieza antes de guardar (eliminar columnas geométricas complejas si las hay)
     df_save = df.drop(columns=['geometry'], errors='ignore').copy()
-    
-    # Agregar timestamp de descarga
     df_save['fecha_descarga'] = pd.Timestamp.now()
     df_save['origen'] = 'GBIF_API'
-    
     try:
         df_save.to_sql(table_name, engine, if_exists='append', index=False)
         return True, len(df_save)
@@ -49,31 +44,17 @@ def save_to_db(df, table_name="biodiversidad_registros"):
         return False, str(e)
 
 def load_context_layer(layer_name, gdf_clip_zone=None):
-    """Carga capas de contexto (Municipios, Predios) recortadas a la zona actual."""
     engine = get_db_engine()
-    table_map = {
-        "Municipios": "municipios",
-        "Cuencas": "cuencas",
-        "Predios": "predios" # Cuidado: Puede ser pesado
-    }
-    
+    table_map = {"Municipios": "municipios", "Cuencas": "cuencas", "Predios": "predios"}
     if layer_name not in table_map: return None
     
     table = table_map[layer_name]
-    
-    # Si es 'Predios', hacemos una query espacial estricta para no traernos toda la base
     if layer_name == "Predios" and gdf_clip_zone is not None:
-        # Obtenemos el BBOX para filtrar en SQL (Más rápido)
         minx, miny, maxx, maxy = gdf_clip_zone.total_bounds
-        q = text(f"""
-            SELECT * FROM {table} 
-            WHERE geometry && ST_MakeEnvelope(:minx, :miny, :maxx, :maxy, 4326)
-            LIMIT 2000 -- Límite de seguridad
-        """)
+        q = text(f"SELECT * FROM {table} WHERE geometry && ST_MakeEnvelope(:minx, :miny, :maxx, :maxy, 4326) LIMIT 2000")
         params = {"minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy}
         return gpd.read_postgis(q, engine, params=params, geom_col="geometry")
     
-    # Para capas ligeras (Municipios/Cuencas)
     return gpd.read_postgis(f"SELECT * FROM {table}", engine, geom_col="geometry")
 
 # 3. LÓGICA PRINCIPAL
@@ -90,14 +71,11 @@ if gdf_zona is not None:
         c1.metric("Registros GBIF", f"{len(gdf_bio):,.0f}")
         c2.metric("Especies", f"{gdf_bio['Nombre Científico'].nunique():,.0f}")
         
-        # Botón de Guardado (Requerimiento 1)
         if c4.button("💾 Guardar en Base de Datos Local"):
             with st.spinner("Escribiendo en base de datos..."):
                 success, msg = save_to_db(gdf_bio)
-                if success:
-                    st.toast(f"✅ ¡Éxito! {msg} registros guardados.", icon="💾")
-                else:
-                    st.error(f"Error al guardar: {msg}")
+                if success: st.toast(f"✅ ¡Éxito! {msg} registros guardados.", icon="💾")
+                else: st.error(f"Error al guardar: {msg}")
 
         # --- PESTAÑAS ---
         tab1, tab2 = st.tabs(["🗺️ Mapa Multicapa & Predios", "📊 Análisis Taxonómico"])
@@ -105,65 +83,60 @@ if gdf_zona is not None:
         with tab1:
             st.markdown("##### Visor Territorial Integrado")
             
-            # Selector de Capas (Requerimiento 3)
             col_layers, col_map = st.columns([1, 4])
             
             with col_layers:
                 st.subheader("Capas")
                 show_munis = st.checkbox("🏛️ Municipios", value=True)
                 show_cuencas = st.checkbox("💧 Cuencas", value=True)
-                show_predios = st.checkbox("🏡 Predios (Catastro)", value=False, help="Muestra los predios dentro de la zona (Máx 2000).")
-                
-                st.caption("Los puntos de colores son la biodiversidad.")
+                show_predios = st.checkbox("🏡 Predios (Catastro)", value=False)
+                st.caption("Puntos verdes: Biodiversidad")
 
             with col_map:
-                # Construcción del Mapa con Graph Objects (Más flexible)
                 fig = go.Figure()
 
-                # 1. Capa Base: Zona Seleccionada (Borde Rojo)
+                # 1. Capa Base: Zona Seleccionada (CORREGIDO MULTIPOLYGON)
                 if gdf_zona is not None:
-                    for geom in gdf_zona.geometry:
-                        if geom.geom_type == 'Polygon': x, y = geom.exterior.xy
-                        else: x, y = geom.exterior.xy # Simplificado para demo
-                        fig.add_trace(go.Scattermapbox(
-                            lon=list(x), lat=list(y), mode='lines', 
-                            line=dict(width=2, color='red'), name='Zona Selección'
-                        ))
+                    # Iteramos sobre cada fila del GeoDataFrame
+                    for idx, row in gdf_zona.iterrows():
+                        geom = row.geometry
+                        # Lista de polígonos a dibujar (sea 1 o N)
+                        polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
+                        
+                        for poly in polys:
+                            x, y = poly.exterior.xy
+                            fig.add_trace(go.Scattermapbox(
+                                lon=list(x), lat=list(y), mode='lines', 
+                                line=dict(width=2, color='red'), name='Zona Selección', hoverinfo='skip'
+                            ))
 
-                # 2. Capas de Contexto (Municipios/Cuencas/Predios)
+                # 2. Contexto
                 if show_munis:
                     gdf_muni = load_context_layer("Municipios")
                     if gdf_muni is not None and not gdf_muni.empty:
-                        # Dibujamos líneas grises
                         for _, row in gdf_muni.iterrows():
                             geom = row.geometry
-                            if geom.geom_type in ['Polygon', 'MultiPolygon']:
-                                # Simplificación rápida para visualización
-                                if geom.geom_type == 'Polygon': polys = [geom]
-                                else: polys = geom.geoms
-                                for poly in polys:
-                                    x, y = poly.exterior.xy
-                                    fig.add_trace(go.Scattermapbox(
-                                        lon=list(x), lat=list(y), mode='lines',
-                                        line=dict(width=1, color='gray'), 
-                                        name=f"Mpio: {row.get('nombre', 'Mpio')}",
-                                        hoverinfo='text'
-                                    ))
+                            polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
+                            for poly in polys:
+                                x, y = poly.exterior.xy
+                                fig.add_trace(go.Scattermapbox(
+                                    lon=list(x), lat=list(y), mode='lines',
+                                    line=dict(width=1, color='gray'), 
+                                    name=f"Mpio: {row.get('nombre', 'Mpio')}", hoverinfo='text'
+                                ))
 
                 if show_cuencas:
                     gdf_cuenca = load_context_layer("Cuencas")
                     if gdf_cuenca is not None and not gdf_cuenca.empty:
                          for _, row in gdf_cuenca.iterrows():
                             geom = row.geometry
-                            if geom.geom_type == 'Polygon': polys = [geom]
-                            else: polys = geom.geoms
+                            polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
                             for poly in polys:
                                 x, y = poly.exterior.xy
                                 fig.add_trace(go.Scattermapbox(
                                     lon=list(x), lat=list(y), mode='lines',
                                     line=dict(width=1, color='blue', dash='dot'), 
-                                    name=f"Cuenca: {row.get('nombre', 'Cuenca')}",
-                                    hoverinfo='text'
+                                    name=f"Cuenca: {row.get('nombre', 'Cuenca')}", hoverinfo='text'
                                 ))
 
                 if show_predios:
@@ -171,20 +144,19 @@ if gdf_zona is not None:
                     if gdf_predios is not None and not gdf_predios.empty:
                         for _, row in gdf_predios.iterrows():
                             geom = row.geometry
-                            if geom.geom_type == 'Polygon': polys = [geom]
-                            else: polys = geom.geoms
+                            polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
                             for poly in polys:
                                 x, y = poly.exterior.xy
                                 fig.add_trace(go.Scattermapbox(
                                     lon=list(x), lat=list(y), mode='lines',
-                                    fill='toself', fillcolor='rgba(255, 165, 0, 0.1)', # Naranja muy transparente
+                                    fill='toself', fillcolor='rgba(255, 165, 0, 0.1)',
                                     line=dict(width=0.5, color='orange'), 
                                     name='Predio', hoverinfo='none', showlegend=False
                                 ))
                     else:
-                        st.warning("No se encontraron predios en esta zona o capa vacía.")
+                        st.warning("No se encontraron predios.")
 
-                # 3. Capa Biodiversidad (Puntos)
+                # 3. Biodiversidad
                 fig.add_trace(go.Scattermapbox(
                     lon=gdf_bio['lon'], lat=gdf_bio['lat'],
                     mode='markers',
@@ -193,7 +165,7 @@ if gdf_zona is not None:
                     name='Biodiversidad (GBIF)'
                 ))
 
-                # Ajustes Finales Mapa
+                # Centrado
                 center_lat = gdf_zona.geometry.centroid.y.mean()
                 center_lon = gdf_zona.geometry.centroid.x.mean()
                 
