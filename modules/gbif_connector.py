@@ -16,18 +16,19 @@ def get_gbif_occurrences(minx, miny, maxx, maxy, limit=1000):
         'decimalLongitude': f"{minx},{maxx}",
         'hasCoordinate': 'true',
         'limit': limit,
-        'basisOfRecord': 'HUMAN_OBSERVATION,OBSERVATION,MACHINE_OBSERVATION'
+        # Incluimos Especímenes preservados además de observaciones humanas
+        'basisOfRecord': 'HUMAN_OBSERVATION,OBSERVATION,MACHINE_OBSERVATION,PRESERVED_SPECIMEN'
     }
     
     try:
-        response = requests.get(api_url, params=params, timeout=10)
+        response = requests.get(api_url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
         
         if 'results' in data and data['results']:
             df = pd.DataFrame(data['results'])
             
-            # Mapeo de columnas (inglés API -> español App)
+            # Mapeo de columnas
             cols_map = {
                 'key': 'gbif_id',
                 'scientificName': 'Nombre Científico',
@@ -38,11 +39,10 @@ def get_gbif_occurrences(minx, miny, maxx, maxy, limit=1000):
                 'iucnRedListCategory': 'Amenaza IUCN'
             }
             
-            # Filtrar solo columnas existentes
             existing_cols = [c for c in cols_map.keys() if c in df.columns]
             df = df[existing_cols].rename(columns=cols_map)
             
-            # Limpieza básica
+            # Limpieza
             if 'Nombre Común' in df.columns:
                 df['Nombre Común'] = df['Nombre Común'].fillna(df['Nombre Científico'])
             if 'Amenaza IUCN' in df.columns:
@@ -56,15 +56,25 @@ def get_gbif_occurrences(minx, miny, maxx, maxy, limit=1000):
         return pd.DataFrame()
 
 def get_biodiversity_in_polygon(gdf_zona, limit=2000):
-    """Obtiene datos de GBIF y los recorta con la forma exacta de la cuenca."""
+    """
+    Obtiene datos de GBIF.
+    CRÍTICO: Convierte a EPSG:4326 ANTES de consultar.
+    """
     if gdf_zona is None or gdf_zona.empty:
         return gpd.GeoDataFrame()
     
-    # 1. Bounding Box
-    minx, miny, maxx, maxy = gdf_zona.total_bounds
+    # --- CORRECCIÓN CLAVE: FORZAR LAT/LON ---
+    # GBIF solo entiende EPSG:4326. Si la cuenca viene en metros, convertimos primero.
+    gdf_wgs84 = gdf_zona.to_crs("EPSG:4326")
+    
+    # 1. Bounding Box (Ahora sí en Grados Decimales)
+    minx, miny, maxx, maxy = gdf_wgs84.total_bounds
+    
+    # Pequeño buffer (0.01 grados ~ 1km) para asegurar bordes
+    buffer = 0.01
     
     # 2. API Call
-    df_raw = get_gbif_occurrences(minx, miny, maxx, maxy, limit)
+    df_raw = get_gbif_occurrences(minx-buffer, miny-buffer, maxx+buffer, maxy+buffer, limit)
     
     if df_raw.empty:
         return gpd.GeoDataFrame()
@@ -77,11 +87,19 @@ def get_biodiversity_in_polygon(gdf_zona, limit=2000):
     )
     
     # 4. Clip Espacial (Recorte)
-    if gdf_zona.crs != gdf_points.crs:
-        gdf_zona = gdf_zona.to_crs(gdf_points.crs)
-        
+    # Intentamos recortar exactamente con la forma de la cuenca
     try:
-        gdf_final = gpd.clip(gdf_points, gdf_zona)
-        return gdf_final
-    except:
-        return gdf_points # Si falla el clip, devolvemos los puntos del cuadro
+        gdf_final = gpd.clip(gdf_points, gdf_wgs84)
+        
+        # RED DE SEGURIDAD:
+        # Si el clip borra todo (a veces pasa por bordes complejos), 
+        # devolvemos los puntos del cuadro (gdf_points) para no dejar el mapa vacío.
+        if len(gdf_final) > 0:
+            return gdf_final
+        else:
+            print("Clip retornó vacío, mostrando Bounding Box")
+            return gdf_points 
+            
+    except Exception as e:
+        print(f"Error en clip: {e}, devolviendo puntos sin recortar")
+        return gdf_points
