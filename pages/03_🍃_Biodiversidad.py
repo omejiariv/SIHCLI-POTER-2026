@@ -4,7 +4,7 @@ import streamlit as st
 import sys
 import os
 
-# 1. CONFIGURACIÓN
+# 1. CONFIGURATION
 st.set_page_config(page_title="Monitor de Biodiversidad", page_icon="🍃", layout="wide")
 
 try:
@@ -16,7 +16,7 @@ try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
     from modules import selectors, config, gbif_connector
 except Exception as e:
-    st.error(f"Error crítico de importación: {e}")
+    st.error(f"Critical import error: {e}")
     st.stop()
 
 st.title("🍃 Biodiversidad y Servicios Ecosistémicos")
@@ -25,10 +25,10 @@ st.title("🍃 Biodiversidad y Servicios Ecosistémicos")
 try:
     ids_seleccionados, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
 except Exception as e:
-    st.error(f"Error en selector: {e}")
+    st.error(f"Selector error: {e}")
     st.stop()
 
-# Funciones Auxiliares
+# Helper Functions
 def get_db_engine():
     return create_engine(st.secrets["DATABASE_URL"])
 
@@ -45,14 +45,13 @@ def save_to_db(df, table_name="biodiversidad_registros"):
 
 def load_context_layer(layer_name, gdf_clip_zone=None):
     """
-    Carga capas HÍBRIDAS: 
-    - Archivos Locales: Cuencas, Municipios
+    Loads HYBRID layers: 
+    - Local Files: Cuencas, Municipios
     - SQL: Predios
     """
     engine = get_db_engine()
     
-    # --- A. CAPAS BASADAS EN ARCHIVOS (GeoJSON) ---
-    # Diccionario: Nombre Capa -> Nombre Archivo en carpeta 'data'
+    # --- A. FILE-BASED LAYERS (GeoJSON) ---
     file_map = {
         "Cuencas": "SubcuencasAinfluencia.geojson",
         "Municipios": "MunicipiosAntioquia.geojson"
@@ -61,30 +60,25 @@ def load_context_layer(layer_name, gdf_clip_zone=None):
     if layer_name in file_map:
         try:
             filename = file_map[layer_name]
-            # Ruta relativa a la carpeta data/
             file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', filename))
             
             if os.path.exists(file_path):
-                # Cargar archivo
                 gdf = gpd.read_file(file_path)
-                
-                # Asegurar proyección web (Lat/Lon)
                 if gdf.crs and gdf.crs != "EPSG:4326":
                     gdf = gdf.to_crs("EPSG:4326")
                 return gdf
             else:
-                st.toast(f"⚠️ Archivo no encontrado: {filename}", icon="📂")
+                st.toast(f"⚠️ File not found: {filename}", icon="📂")
                 return None
         except Exception as e:
-            print(f"Error cargando archivo {layer_name}: {e}")
+            print(f"Error loading file {layer_name}: {e}")
             return None
 
-    # --- B. CAPAS BASADAS EN SQL (Predios) ---
+    # --- B. SQL-BASED LAYERS (Predios) ---
     if layer_name == "Predios":
         try:
             table = "predios"
             if gdf_clip_zone is not None:
-                # Filtro espacial para no traer millones de predios
                 minx, miny, maxx, maxy = gdf_clip_zone.total_bounds
                 q = text(f"SELECT * FROM {table} WHERE geometry && ST_MakeEnvelope(:minx, :miny, :maxx, :maxy, 4326) LIMIT 2000")
                 params = {"minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy}
@@ -92,49 +86,48 @@ def load_context_layer(layer_name, gdf_clip_zone=None):
             else:
                 return gpd.read_postgis(f"SELECT * FROM {table} LIMIT 100", engine, geom_col="geometry")
         except Exception as e:
-            print(f"⚠️ Advertencia SQL ({layer_name}): {e}")
+            print(f"⚠️ SQL Warning ({layer_name}): {e}")
             return None
             
     return None
 
-# 3. LÓGICA PRINCIPAL
+# 3. MAIN LOGIC
 if gdf_zona is not None:
     st.divider()
     
-    # --- A. DESCARGA GBIF ---
-    with st.spinner(f"📡 Escaneando biodiversidad en {nombre_seleccion}..."):
+    # --- A. GBIF DOWNLOAD ---
+    with st.spinner(f"📡 Scanning biodiversity in {nombre_seleccion}..."):
         gdf_bio = gbif_connector.get_biodiversity_in_polygon(gdf_zona, limit=5000)
 
     if not gdf_bio.empty:
-        # Métricas
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Registros GBIF", f"{len(gdf_bio):,.0f}")
-        c2.metric("Especies", f"{gdf_bio['Nombre Científico'].nunique():,.0f}")
+        c1.metric("GBIF Records", f"{len(gdf_bio):,.0f}")
+        c2.metric("Species", f"{gdf_bio['Nombre Científico'].nunique():,.0f}")
         
-        if c4.button("💾 Guardar en Base de Datos Local"):
-            with st.spinner("Escribiendo..."):
+        if c4.button("💾 Save to Local DB"):
+            with st.spinner("Writing..."):
                 success, msg = save_to_db(gdf_bio)
-                if success: st.toast(f"✅ Guardado: {msg} registros.", icon="💾")
+                if success: st.toast(f"✅ Saved: {msg} records.", icon="💾")
                 else: st.error(f"Error: {msg}")
 
-        # --- PESTAÑAS ---
-        tab1, tab2 = st.tabs(["🗺️ Mapa Multicapa & Predios", "📊 Análisis Taxonómico"])
+        # --- TABS ---
+        tab1, tab2 = st.tabs(["🗺️ Multilayer Map & Parcels", "📊 Taxonomic Analysis"])
         
         with tab1:
-            st.markdown("##### Visor Territorial Integrado")
+            st.markdown("##### Integrated Territorial Viewer")
             col_layers, col_map = st.columns([1, 4])
             
             with col_layers:
-                st.subheader("Capas")
-                show_munis = st.checkbox("🏛️ Municipios (GeoJSON)", value=True)
-                show_cuencas = st.checkbox("💧 Cuencas (GeoJSON)", value=True)
-                show_predios = st.checkbox("🏡 Predios (Catastro)", value=False)
-                st.caption("Puntos verdes: Biodiversidad")
+                st.subheader("Layers")
+                show_munis = st.checkbox("🏛️ Municipalities (GeoJSON)", value=True)
+                show_cuencas = st.checkbox("💧 Basins (GeoJSON)", value=True)
+                show_predios = st.checkbox("🏡 Parcels (Cadastre)", value=False)
+                st.caption("Green points: Biodiversity")
 
             with col_map:
                 fig = go.Figure()
 
-                # 1. Base: Zona Seleccionada
+                # 1. Base: Selected Zone
                 if gdf_zona is not None:
                     for idx, row in gdf_zona.iterrows():
                         geom = row.geometry
@@ -143,14 +136,13 @@ if gdf_zona is not None:
                             x, y = poly.exterior.xy
                             fig.add_trace(go.Scattermapbox(
                                 lon=list(x), lat=list(y), mode='lines', 
-                                line=dict(width=2, color='red'), name='Zona Selección', hoverinfo='skip'
+                                line=dict(width=2, color='red'), name='Selection Zone', hoverinfo='skip'
                             ))
 
-                # 2. Contexto (Municipios - GeoJSON)
+                # 2. Context (Municipalities - GeoJSON)
                 if show_munis:
                     gdf_muni = load_context_layer("Municipios")
                     if gdf_muni is not None and not gdf_muni.empty:
-                        # Buscamos nombre columna
                         name_col = next((c for c in ['MPIO_CNMBR', 'nombre', 'NOMBRE', 'municipio'] if c in gdf_muni.columns), 'Municipio')
                         
                         for _, row in gdf_muni.iterrows():
@@ -165,7 +157,7 @@ if gdf_zona is not None:
                                     name=str(row.get(name_col, 'Mpio')), hoverinfo='text'
                                 ))
 
-                # 3. Contexto (Cuencas - GeoJSON)
+                # 3. Context (Basins - GeoJSON)
                 if show_cuencas:
                     gdf_cuenca = load_context_layer("Cuencas")
                     if gdf_cuenca is not None and not gdf_cuenca.empty:
@@ -178,15 +170,16 @@ if gdf_zona is not None:
                             
                             for poly in polys:
                                 x, y = poly.exterior.xy
+                                # FIXED: Removed dash='dot' (not supported by Scattermapbox)
                                 fig.add_trace(go.Scattermapbox(
                                     lon=list(x), lat=list(y), mode='lines',
-                                    line=dict(width=1.5, color='blue', dash='dot'), 
+                                    line=dict(width=1.5, color='blue'), 
                                     name=str(row.get(name_col, 'Subcuenca')), hoverinfo='text'
                                 ))
                     elif show_cuencas:
-                        st.toast("⚠️ Archivo de Cuencas no encontrado.", icon="📂")
+                        st.toast("⚠️ Basins file not found.", icon="📂")
 
-                # 4. Contexto (Predios - SQL)
+                # 4. Context (Parcels - SQL)
                 if show_predios:
                     gdf_predios = load_context_layer("Predios", gdf_zona)
                     if gdf_predios is not None and not gdf_predios.empty:
@@ -199,18 +192,18 @@ if gdf_zona is not None:
                                     lon=list(x), lat=list(y), mode='lines',
                                     fill='toself', fillcolor='rgba(255, 165, 0, 0.1)',
                                     line=dict(width=0.5, color='orange'), 
-                                    name='Predio', hoverinfo='none', showlegend=False
+                                    name='Parcel', hoverinfo='none', showlegend=False
                                 ))
                     else:
-                        st.warning("No se encontraron predios.")
+                        st.warning("No parcels found.")
 
-                # 5. Biodiversidad
+                # 5. Biodiversity
                 fig.add_trace(go.Scattermapbox(
                     lon=gdf_bio['lon'], lat=gdf_bio['lat'],
                     mode='markers',
                     marker=dict(size=7, color='rgb(0, 200, 100)', opacity=0.8),
                     text=gdf_bio['Nombre Común'],
-                    name='Biodiversidad (GBIF)'
+                    name='Biodiversity (GBIF)'
                 ))
 
                 center_lat = gdf_zona.geometry.centroid.y.mean()
@@ -229,6 +222,6 @@ if gdf_zona is not None:
             st.dataframe(gdf_bio.drop(columns='geometry'))
 
     else:
-        st.warning("⚠️ No se encontraron registros en GBIF.")
+        st.warning("⚠️ No records found in GBIF.")
 else:
-    st.info("👈 Seleccione una zona.")
+    st.info("👈 Select a zone.")
