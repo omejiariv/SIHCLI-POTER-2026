@@ -3,6 +3,22 @@ import pandas as pd
 import geopandas as gpd
 import os
 
+# --- OPTIMIZACIÓN DE VELOCIDAD (CACHÉ) ---
+# Esta función carga los archivos UNA sola vez y los guarda en memoria.
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_geodata_cached(file_path):
+    if os.path.exists(file_path):
+        try:
+            # Leemos el archivo
+            gdf = gpd.read_file(file_path)
+            # Optimizamos proyecciones de una vez
+            if gdf.crs and gdf.crs != "EPSG:4326":
+                gdf = gdf.to_crs("EPSG:4326")
+            return gdf
+        except Exception as e:
+            return None
+    return None
+
 def render_selector_espacial():
     st.sidebar.header("📍 Filtros Geográficos")
     
@@ -25,26 +41,25 @@ def render_selector_espacial():
     try:
         # --- LÓGICA CUENCAS ---
         if nivel == "Por Cuenca":
-            if os.path.exists(path_cuencas):
-                gdf_all = gpd.read_file(path_cuencas)
-                
-                # LISTA AMPLIADA DE POSIBLES NOMBRES DE COLUMNA
+            # Usamos la carga optimizada
+            gdf_all = load_geodata_cached(path_cuencas)
+            
+            if gdf_all is not None:
+                # LISTA DE CANDIDATOS (Agrega aquí el nombre si lo ves en la lista de abajo)
                 posibles_nombres = [
-                    'nombre', 'Name', 'NAME', 'NOM_CUENCA', 'subcuenca', 'SBC_CNMBR', 
-                    'NOMBRE_SUB', 'NOMBRE', 'nom_subcue', 'Cuenca', 'CUENCA', 'Label'
+                    'NOM_SBC', 'NOM_SUBCUENCA', 'NOMBRE_SBC', 'SBC_CNMBR', # Nombres técnicos comunes
+                    'nombre', 'Name', 'NAME', 'NOM_CUENCA', 'subcuenca', 
+                    'NOMBRE_SUB', 'nom_subcue', 'Cuenca', 'CUENCA', 'Label'
                 ]
                 
-                # Buscar la primera coincidencia
+                # Buscar coincidencia exacta
                 name_col = next((c for c in posibles_nombres if c in gdf_all.columns), None)
                 
-                # Si falla, usar la primera columna de texto como fallback
-                if not name_col:
-                    object_cols = gdf_all.select_dtypes(include=['object']).columns
-                    if not object_cols.empty:
-                        name_col = object_cols[0]
+                # --- DIAGNÓSTICO DE COLUMNAS ---
+                # Si sigue saliendo mal, descomenta la siguiente línea para ver las columnas:
+                # st.sidebar.write("Columnas encontradas:", list(gdf_all.columns))
                 
                 if name_col:
-                    # Ordenar y limpiar
                     opciones = sorted(gdf_all[name_col].astype(str).unique())
                     sel = st.sidebar.selectbox("Seleccione Cuenca:", opciones)
                     
@@ -52,16 +67,18 @@ def render_selector_espacial():
                         nombre_seleccion = f"Cuenca {sel}"
                         gdf_zona = gdf_all[gdf_all[name_col] == sel]
                 else:
-                    st.sidebar.error(f"Error: No se identificó columna de nombre. Columnas disponibles: {list(gdf_all.columns)}")
+                    # SI FALLA: Muestra las columnas disponibles para que sepas cuál es
+                    st.sidebar.error("⚠️ No encontré la columna 'Nombre'.")
+                    st.sidebar.info(f"Las columnas en el archivo son: {list(gdf_all.columns)}")
+                    st.sidebar.markdown("**Avísame cuál de estas es el nombre de la cuenca.**")
             else:
-                st.sidebar.error(f"Archivo no encontrado: {path_cuencas}")
+                st.sidebar.error(f"Archivo no encontrado o corrupto: {path_cuencas}")
 
         # --- LÓGICA MUNICIPIOS ---
         elif nivel == "Por Municipio":
-            if os.path.exists(path_munis):
-                gdf_all = gpd.read_file(path_munis)
-                
-                # Buscar nombre
+            gdf_all = load_geodata_cached(path_munis)
+            
+            if gdf_all is not None:
                 posibles_nombres = ['MPIO_CNMBR', 'nombre', 'NOMBRE', 'municipio', 'MPIO_NOMBRE']
                 name_col = next((c for c in posibles_nombres if c in gdf_all.columns), None)
                 
@@ -80,17 +97,16 @@ def render_selector_espacial():
         # --- LÓGICA DEPTO ---
         elif nivel == "Departamento (Antioquia)":
             nombre_seleccion = "Antioquia"
-            if os.path.exists(path_munis):
-                gdf_all = gpd.read_file(path_munis)
-                gdf_zona = gdf_all.dissolve() # Disolver para obtener el contorno de Antioquia
+            gdf_all = load_geodata_cached(path_munis)
+            if gdf_all is not None:
+                # Dissolve es lento, intentamos cachearlo también si fuera necesario, 
+                # pero por ahora lo hacemos al vuelo (solo una vez)
+                gdf_zona = gdf_all.dissolve() 
             else:
                 st.sidebar.warning("No se pudo cargar geometría de Antioquia.")
 
         # --- CONFIGURACIÓN ESPACIAL ---
         if gdf_zona is not None and not gdf_zona.empty:
-            if gdf_zona.crs and gdf_zona.crs != "EPSG:4326":
-                gdf_zona = gdf_zona.to_crs("EPSG:4326")
-                
             buffer_km = st.sidebar.slider("Radio Buffer (km):", 0, 50, 0)
             if buffer_km > 0:
                 gdf_metros = gdf_zona.to_crs("EPSG:3116")
