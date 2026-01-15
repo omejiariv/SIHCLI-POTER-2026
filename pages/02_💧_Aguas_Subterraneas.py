@@ -22,6 +22,10 @@ st.title("💧 Estimación de Recarga (Modelo Turc + Escenarios)")
 def calculate_turc_model(df):
     """Calcula balance hídrico usando el método de Turc."""
     df = df.copy()
+    # Asegurar que sean floats
+    df['alt_est'] = pd.to_numeric(df['alt_est'], errors='coerce')
+    df['p_anual'] = pd.to_numeric(df['p_anual'], errors='coerce')
+    
     df['temp_est'] = 30 - (0.0065 * df['alt_est'])
     t = df['temp_est']
     l_t = 300 + 25*t + 0.05*(t**3)
@@ -63,7 +67,7 @@ if gdf_zona is not None and not gdf_zona.empty:
     
     minx, miny, maxx, maxy = gdf_zona.total_bounds
     
-    # 1. BÚSQUEDA ESPACIAL (Usando ST_X/ST_Y para evitar errores de columnas)
+    # BÚSQUEDA ESPACIAL
     q_spatial = text("""
         SELECT 
             id_estacion, 
@@ -80,13 +84,10 @@ if gdf_zona is not None and not gdf_zona.empty:
         df_estaciones = pd.read_sql(q_spatial, engine, params={"minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy})
         
         if not df_estaciones.empty:
-            # --- CORRECCIÓN CRÍTICA DE TIPOS (TEXT vs INTEGER) ---
-            # Convertimos los IDs a string y les ponemos comillas simples: '123'
             ids_lista = df_estaciones['id_estacion'].unique()
             ids_sql = ",".join([f"'{str(x)}'" for x in ids_lista])
             
             if ids_sql:
-                # 2. Traer Datos Climáticos
                 q_clima = text(f"""
                     SELECT id_estacion_fk as id_estacion, AVG(precipitation)*12 as p_anual 
                     FROM precipitacion_mensual 
@@ -95,19 +96,15 @@ if gdf_zona is not None and not gdf_zona.empty:
                 """)
                 df_clima = pd.read_sql(q_clima, engine)
                 
-                # Asegurar tipos iguales para el cruce (ambos string)
                 df_estaciones['id_estacion'] = df_estaciones['id_estacion'].astype(str)
                 df_clima['id_estacion'] = df_clima['id_estacion'].astype(str)
                 
-                # Unir todo
                 df_full = pd.merge(df_estaciones, df_clima, on='id_estacion', how='inner')
                 df_full['alt_est'] = df_full['alt_est'].fillna(altitud_ref)
                 
                 if not df_full.empty:
-                    # 3. Calcular Modelo
                     df_res = calculate_turc_model(df_full)
                     
-                    # --- VISUALIZACIÓN ---
                     tab1, tab2 = st.tabs(["📊 Balance Hídrico Actual", "🔮 Proyección Futura"])
                     
                     with tab1:
@@ -116,8 +113,13 @@ if gdf_zona is not None and not gdf_zona.empty:
                         c2.metric("ETR Estimada", f"{df_res['etr_mm'].mean():.0f} mm")
                         c3.metric("Recarga Potencial", f"{df_res['recarga_mm'].mean():.0f} mm", delta="Oferta Hídrica")
                         
+                        # CORRECCIÓN DE FORMATO: Usamos diccionario para formatear solo columnas numéricas
                         st.dataframe(
-                            df_res[['nom_est', 'alt_est', 'p_anual', 'recarga_mm']].style.format("{:.1f}"),
+                            df_res[['nom_est', 'alt_est', 'p_anual', 'recarga_mm']].style.format({
+                                'alt_est': '{:.1f}',
+                                'p_anual': '{:.1f}',
+                                'recarga_mm': '{:.1f}'
+                            }),
                             use_container_width=True 
                         )
                     
@@ -131,13 +133,13 @@ if gdf_zona is not None and not gdf_zona.empty:
                             fig.add_trace(go.Scatter(x=df_proy['Fecha'], y=df_proy['Neutro (Tendencial)'], mode='lines', name='Tendencia', line=dict(color='blue')))
                             
                             fig.update_layout(title="Proyección de Recarga", yaxis_title="mm/mes", hovermode="x unified")
-                            st.plotly_chart(fig, use_container_width=True) # width="stretch" si da warning
+                            st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.warning("Estaciones encontradas pero sin datos de precipitación.")
             else:
-                 st.warning("Error procesando IDs de estaciones.")
+                 st.warning("Error procesando IDs.")
         else:
-            st.warning("No se encontraron estaciones en esta zona. Aumenta el Radio Buffer.")
+            st.warning("No se encontraron estaciones en esta zona.")
             
     except Exception as e:
         st.error(f"Error técnico: {e}")
