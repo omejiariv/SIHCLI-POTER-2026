@@ -6,154 +6,157 @@ from sqlalchemy import create_engine, text
 import sys
 import os
 
-# --- CONFIGURACIÓN INICIAL ---
-st.set_page_config(
-    page_title="Aguas Subterráneas",
-    page_icon="💧",
-    layout="wide"
-)
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
 
-# Importar módulos propios
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-    from modules import selectors, models, scenarios
-except ImportError as e:
-    st.error(f"Error al importar módulos: {e}")
+    from modules import selectors # Solo importamos selectores, el resto lo hacemos aquí
+except ImportError:
+    st.error("Error al importar módulos base.")
     st.stop()
 
 st.title("💧 Estimación de Recarga (Modelo Turc + Escenarios)")
 
-# --- 1. BARRA LATERAL Y SELECTORES ---
-# Usamos el selector espacial moderno
-ids_seleccionados_dummy, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
+# --- FUNCIONES MATEMÁTICAS INTEGRADAS (Para evitar errores de importación) ---
+def calculate_turc_model(df):
+    """Calcula balance hídrico usando el método de Turc."""
+    df = df.copy()
+    # Temperatura estimada por altitud (Gradiente térmico)
+    df['temp_est'] = 30 - (0.0065 * df['alt_est'])
+    
+    # Capacidad evaporativa del aire L(t)
+    # L(t) = 300 + 25T + 0.05T^3
+    t = df['temp_est']
+    l_t = 300 + 25*t + 0.05*(t**3)
+    
+    # Evapotranspiración Real (ETR)
+    # ETR = P / sqrt(0.9 + (P/L(t))^2)
+    p = df['p_anual']
+    df['etr_mm'] = p / np.sqrt(0.9 + (p / l_t)**2)
+    
+    # Recarga Potencial (R = P - ETR)
+    df['recarga_mm'] = df['p_anual'] - df['etr_mm']
+    df['recarga_mm'] = df['recarga_mm'].clip(lower=0) # No puede haber recarga negativa
+    
+    # Coeficiente de Escorrentía simple (Referencial)
+    df['coef_escorrentia'] = df['recarga_mm'] / df['p_anual']
+    
+    return df
 
-# --- SECCIÓN DE ESCENARIOS ---
+def generate_simple_scenarios(df_turc, meses=12, ruido=1.0):
+    """Genera proyecciones estocásticas simples basadas en los datos actuales."""
+    recarga_base = df_turc['recarga_mm'].mean()
+    if np.isnan(recarga_base): recarga_base = 0
+    
+    fechas = pd.date_range(start=pd.Timestamp.today(), periods=meses, freq='M')
+    
+    # Tendencia estacional simulada (senoidal)
+    x = np.linspace(0, 4*np.pi, meses)
+    estacionalidad = np.sin(x) * (recarga_base * 0.2)
+    
+    # Escenarios
+    neutro = np.full(meses, recarga_base) + estacionalidad
+    
+    # Ruido aleatorio
+    np.random.seed(42)
+    ruido_arr = np.random.normal(0, recarga_base * 0.1 * ruido, meses)
+    
+    optimista = neutro * 1.2 + ruido_arr
+    pesimista = neutro * 0.8 - ruido_arr
+    
+    # Dataframe resultado
+    df_res = pd.DataFrame({
+        'Fecha': fechas,
+        'Neutro (Tendencial)': neutro.clip(min=0),
+        'Optimista (Húmedo)': optimista.clip(min=0),
+        'Pesimista (Seco)': pesimista.clip(min=0)
+    })
+    return df_res
+
+# --- INTERFAZ ---
+ids_seleccionados, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
+
 st.sidebar.divider()
-st.sidebar.subheader("⚙️ Pronóstico & Escenarios")
+st.sidebar.subheader("⚙️ Pronóstico")
 activar_proyeccion = st.sidebar.checkbox("Activar Proyección", value=True)
-horizonte_meses = st.sidebar.selectbox("Horizonte (meses):", [12, 24, 60], index=1)
-st.sidebar.write("**Configuración del Modelo:**")
-usar_sarima = st.sidebar.checkbox("Simular Variabilidad Real", value=True, help="Usa SARIMA para añadir patrones estacionales complejos.")
-intensidad_ruido = st.sidebar.slider("Intensidad Variabilidad:", 0.0, 2.0, 1.0, 0.1)
+horizonte = st.sidebar.selectbox("Horizonte (meses):", [12, 24, 60], index=1)
+ruido = st.sidebar.slider("Variabilidad Climática:", 0.0, 2.0, 0.5)
 
 # --- LÓGICA PRINCIPAL ---
-# CORRECCIÓN CLAVE: Dependemos de gdf_zona, no de ids_seleccionados
 if gdf_zona is not None and not gdf_zona.empty:
-    
     engine = create_engine(st.secrets["DATABASE_URL"])
     
-    # 1. BÚSQUEDA ESPACIAL: Encontrar estaciones dentro de la zona seleccionada
-    with st.spinner(f"🔍 Buscando estaciones en {nombre_seleccion}..."):
-        minx, miny, maxx, maxy = gdf_zona.total_bounds
+    # 1. Búsqueda Espacial (Bounding Box)
+    minx, miny, maxx, maxy = gdf_zona.total_bounds
+    
+    # Buscamos estaciones en el rectángulo de la zona
+    q_spatial = text("""
+        SELECT id_estacion, nom_est, alt_est, latitud, longitud
+        FROM estaciones 
+        WHERE longitud BETWEEN :minx AND :maxx 
+          AND latitud BETWEEN :miny AND :maxy
+    """)
+    
+    try:
+        df_estaciones = pd.read_sql(q_spatial, engine, params={"minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy})
         
-        # Consulta optimizada usando el bounding box y ST_X/ST_Y por si las dudas con los nombres
-        q_spatial = text("""
-            SELECT id_estacion 
-            FROM estaciones 
-            WHERE ST_X(geom::geometry) BETWEEN :minx AND :maxx 
-              AND ST_Y(geom::geometry) BETWEEN :miny AND :maxy
-        """)
-        
-        try:
-            df_ids = pd.read_sql(q_spatial, engine, params={"minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy})
-            ids_en_zona = df_ids['id_estacion'].unique().tolist()
+        if not df_estaciones.empty:
+            ids = tuple(df_estaciones['id_estacion'].unique())
+            ids_sql = str(ids).replace(',)', ')') if len(ids) > 1 else f"({ids[0]})"
             
-        except Exception as e:
-            st.error(f"Error en búsqueda espacial: {e}")
-            ids_en_zona = []
-
-    # 2. SI ENCONTRAMOS ESTACIONES, PROCEDEMOS CON EL MODELO TURC
-    if ids_en_zona:
-        with st.spinner("⏳ Procesando datos históricos y climáticos..."):
-            try:
-                # Cargar datos históricos
-                df_historico = models.get_data_for_turc(ids_en_zona, engine)
+            # 2. Traer Datos Climáticos
+            q_clima = text(f"""
+                SELECT id_estacion_fk as id_estacion, AVG(precipitation)*12 as p_anual 
+                FROM precipitacion_mensual 
+                WHERE id_estacion_fk IN {ids_sql} 
+                GROUP BY id_estacion_fk
+            """)
+            df_clima = pd.read_sql(q_clima, engine)
+            
+            # Unir todo
+            df_full = pd.merge(df_estaciones, df_clima, on='id_estacion', how='inner')
+            df_full['alt_est'] = df_full['alt_est'].fillna(altitud_ref)
+            
+            if not df_full.empty:
+                # 3. Calcular Modelo
+                df_res = calculate_turc_model(df_full)
                 
-                if not df_historico.empty:
-                    # Calcular Turc Histórico
-                    df_turc_hist = models.calculate_turc_model(df_historico)
+                # --- VISUALIZACIÓN ---
+                tab1, tab2 = st.tabs(["📊 Balance Hídrico Actual", "🔮 Proyección Futura"])
+                
+                with tab1:
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Precipitación Media", f"{df_res['p_anual'].mean():.0f} mm")
+                    c2.metric("ETR Estimada", f"{df_res['etr_mm'].mean():.0f} mm")
+                    c3.metric("Recarga Potencial", f"{df_res['recarga_mm'].mean():.0f} mm", delta="Oferta Hídrica")
                     
-                    # Agregar datos de referencia (Altitud y Nombre)
-                    q_ref = text(f"SELECT id_estacion, nom_est, alt_est FROM estaciones WHERE id_estacion IN ({','.join(map(str, ids_en_zona))})")
-                    df_ref = pd.read_sql(q_ref, engine)
-                    df_turc_hist = pd.merge(df_turc_hist, df_ref, left_on='id_estacion', right_on='id_estacion', how='left')
-                    
-                    # --- PESTAÑAS DE RESULTADOS ---
-                    tab_hist, tab_proy = st.tabs(["🏛️ Histórico & Balance", "🔮 Proyección a Futuro"])
-                    
-                    with tab_hist:
-                        # Resumen KPI
-                        recarga_prom = df_turc_hist['recarga_mm'].mean()
-                        st.metric("Recarga Potencial Promedio (Histórica)", f"{recarga_prom:.1f} mm/año")
+                    st.dataframe(
+                        df_res[['nom_est', 'alt_est', 'p_anual', 'recarga_mm']].style.format("{:.1f}"),
+                        use_container_width=True
+                    )
+                
+                with tab2:
+                    if activar_proyeccion:
+                        df_proy = generate_simple_scenarios(df_res, meses=horizonte, ruido=ruido)
                         
-                        st.subheader("Balance Hídrico por Estación")
-                        st.dataframe(
-                            df_turc_hist[['nom_est', 'alt_est', 'p_anual', 'etr_mm', 'recarga_mm', 'coef_escorrentia']]
-                            .rename(columns={'nom_est':'Estación', 'alt_est':'Altitud', 'p_anual':'Precipitación', 'etr_mm':'ETR', 'recarga_mm':'Recarga', 'coef_escorrentia':'Coef. Escorrentía'})
-                            .style.format("{:.1f}", subset=['Altitud', 'Precipitación', 'ETR', 'Recarga']).format("{:.2f}", subset=['Coef. Escorrentía']),
-                            use_container_width=True
-                        )
-
-                    with tab_proy:
-                        if activar_proyeccion:
-                            st.subheader(f"Escenarios de Recarga a {horizonte_meses} meses")
-                            
-                            # Generar escenarios
-                            with st.spinner("💡 Generando futuros posibles..."):
-                                df_proyecciones = scenarios.generate_scenarios(
-                                    df_turc_hist, 
-                                    horizonte_meses=horizonte_meses, 
-                                    usar_sarima=usar_sarima, 
-                                    ruido_factor=intensidad_ruido
-                                )
-                            
-                            # Visualización
-                            if not df_proyecciones.empty:
-                                df_plot = df_proyecciones.melt('Fecha', var_name='Escenario', value_name='Recarga_mm')
-                                
-                                fig = go.Figure()
-                                
-                                # Áreas sombreadas para escenarios extremos
-                                fig.add_trace(go.Scatter(
-                                    x=df_plot[df_plot['Escenario']=='Optimista (Húmedo)']['Fecha'],
-                                    y=df_plot[df_plot['Escenario']=='Optimista (Húmedo)']['Recarga_mm'],
-                                    mode='lines', line=dict(width=0), showlegend=False, name='Max'
-                                ))
-                                fig.add_trace(go.Scatter(
-                                    x=df_plot[df_plot['Escenario']=='Pesimista (Seco)']['Fecha'],
-                                    y=df_plot[df_plot['Escenario']=='Pesimista (Seco)']['Recarga_mm'],
-                                    mode='lines', line=dict(width=0), fill='tonexty', fillcolor='rgba(0,100,255,0.1)', showlegend=False, name='Min'
-                                ))
-
-                                # Líneas principales
-                                colors = {'Neutro (Tendencial)': 'blue', 'Optimista (Húmedo)': 'green', 'Pesimista (Seco)': 'red'}
-                                for escenario, color in colors.items():
-                                    subset = df_plot[df_plot['Escenario'] == escenario]
-                                    fig.add_trace(go.Scatter(
-                                        x=subset['Fecha'], y=subset['Recarga_mm'],
-                                        mode='lines', name=escenario, line=dict(color=color, width=3 if escenario == 'Neutro (Tendencial)' else 2)
-                                    ))
-
-                                fig.update_layout(
-                                    title="Proyección Agregada de Recarga Potencial",
-                                    yaxis_title="Recarga Mensual (mm)", hovermode="x unified",
-                                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                with st.expander("Ver datos de proyección"):
-                                    st.dataframe(df_proyecciones.style.format("{:.1f}"), use_container_width=True)
-                            else:
-                                st.warning("No se pudieron generar proyecciones.")
-                        else:
-                            st.info("Active la casilla 'Activar Proyección' en la barra lateral.")
-                else:
-                    st.warning("No hay suficientes datos históricos de precipitación para las estaciones de esta zona.")
-            except Exception as e:
-                st.error(f"Error en el cálculo del modelo: {e}")
-    else:
-        st.warning(f"No se encontraron estaciones monitoreadas dentro de la zona '{nombre_seleccion}'. Pruebe aumentando el Radio Buffer.")
+                        fig = go.Figure()
+                        # Optimista
+                        fig.add_trace(go.Scatter(x=df_proy['Fecha'], y=df_proy['Optimista (Húmedo)'], mode='lines', line=dict(width=0), showlegend=False))
+                        # Pesimista (Relleno)
+                        fig.add_trace(go.Scatter(x=df_proy['Fecha'], y=df_proy['Pesimista (Seco)'], mode='lines', line=dict(width=0), fill='tonexty', fillcolor='rgba(0,100,255,0.1)', name='Rango Incertidumbre'))
+                        # Neutro
+                        fig.add_trace(go.Scatter(x=df_proy['Fecha'], y=df_proy['Neutro (Tendencial)'], mode='lines', name='Tendencia', line=dict(color='blue')))
+                        
+                        fig.update_layout(title="Proyección de Recarga", yaxis_title="mm/mes", hovermode="x unified")
+                        st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("Estaciones encontradas pero sin datos de precipitación.")
+        else:
+            st.warning("No se encontraron estaciones en esta zona. Aumenta el Radio Buffer.")
+            
+    except Exception as e:
+        st.error(f"Error técnico: {e}")
 
 else:
-    # Mensaje de bienvenida cuando no hay nada seleccionado
-    st.info("👈 Seleccione una Cuenca, Municipio o el Departamento en la barra lateral para comenzar el análisis.")
+    st.info("👈 Seleccione una zona.")
