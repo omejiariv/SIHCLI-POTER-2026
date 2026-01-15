@@ -55,7 +55,7 @@ if gdf_zona is not None and not gdf_zona.empty:
             df_estaciones_all = pd.read_csv(
                 csv_path, 
                 sep=';',            
-                decimal=',',        # <--- IMPORTANTE: Maneja "6,25" como número, no texto
+                decimal=',',        
                 encoding='latin-1', 
                 usecols=['Id_estacio', 'Longitud_geo', 'Latitud_geo', 'alt_est', 'Nom_Est']
             )
@@ -68,8 +68,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 'Nom_Est': 'nombre'
             }, inplace=True)
             
-            # LIMPIEZA AGRESIVA DE DATOS (Convertir texto a número a la fuerza)
-            # Si algo no es número, se convierte en NaN y luego lo borramos
+            # LIMPIEZA AGRESIVA DE DATOS
             df_estaciones_all['latitude'] = pd.to_numeric(df_estaciones_all['latitude'], errors='coerce')
             df_estaciones_all['longitude'] = pd.to_numeric(df_estaciones_all['longitude'], errors='coerce')
             df_estaciones_all['alt_est'] = pd.to_numeric(df_estaciones_all['alt_est'], errors='coerce')
@@ -90,29 +89,38 @@ if gdf_zona is not None and not gdf_zona.empty:
             
             # C. TRAER PRECIPITACIÓN DESDE SQL
             if not df_filtrada.empty:
-                ids_validos = tuple(df_filtrada['id_estacion'].unique())
+                # Obtener IDs únicos como lista
+                ids_validos = df_filtrada['id_estacion'].unique()
                 
-                if len(ids_validos) == 1:
-                    ids_sql = f"({ids_validos[0]})"
+                # --- CORRECCIÓN DE TIPO ---
+                # Formatear IDs como strings con comillas simples: 'ID1', 'ID2'
+                # Esto soluciona el error "operator does not exist: text = integer"
+                ids_sql = ",".join([f"'{str(x)}'" for x in ids_validos])
+                
+                if ids_sql: # Solo ejecutar si hay IDs
+                    q_ppt = f"""
+                        SELECT id_estacion_fk as id_estacion, AVG(precipitation) * 12 as p_anual
+                        FROM precipitacion_mensual
+                        WHERE id_estacion_fk IN ({ids_sql})
+                        GROUP BY id_estacion_fk
+                    """
+                    df_ppt = pd.read_sql(q_ppt, engine)
+                    
+                    # Asegurar tipos consistentes para el merge (ambos string o ambos int)
+                    # Convertimos a string para asegurar match con lo que viene de SQL (si allí es texto)
+                    df_filtrada['id_estacion'] = df_filtrada['id_estacion'].astype(str)
+                    df_ppt['id_estacion'] = df_ppt['id_estacion'].astype(str)
+                    
+                    df_data = pd.merge(df_filtrada, df_ppt, on='id_estacion', how='inner')
+                    
+                    # Clip Geométrico
+                    gdf_pts = gpd.GeoDataFrame(
+                        df_data, geometry=gpd.points_from_xy(df_data.longitude, df_data.latitude), crs="EPSG:4326"
+                    )
+                    gdf_pts = gpd.clip(gdf_pts, gdf_zona)
+                    df_data = pd.DataFrame(gdf_pts.drop(columns='geometry'))
                 else:
-                    ids_sql = str(ids_validos)
-                
-                q_ppt = f"""
-                    SELECT id_estacion_fk as id_estacion, AVG(precipitation) * 12 as p_anual
-                    FROM precipitacion_mensual
-                    WHERE id_estacion_fk IN {ids_sql}
-                    GROUP BY id_estacion_fk
-                """
-                df_ppt = pd.read_sql(q_ppt, engine)
-                
-                df_data = pd.merge(df_filtrada, df_ppt, on='id_estacion', how='inner')
-                
-                # Clip Geométrico
-                gdf_pts = gpd.GeoDataFrame(
-                    df_data, geometry=gpd.points_from_xy(df_data.longitude, df_data.latitude), crs="EPSG:4326"
-                )
-                gdf_pts = gpd.clip(gdf_pts, gdf_zona)
-                df_data = pd.DataFrame(gdf_pts.drop(columns='geometry'))
+                    df_data = pd.DataFrame()
             else:
                 df_data = pd.DataFrame()
 
