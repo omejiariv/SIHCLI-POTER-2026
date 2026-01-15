@@ -11,68 +11,42 @@ st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="w
 
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-    from modules import selectors # Solo importamos selectores, el resto lo hacemos aquí
+    from modules import selectors 
 except ImportError:
     st.error("Error al importar módulos base.")
     st.stop()
 
 st.title("💧 Estimación de Recarga (Modelo Turc + Escenarios)")
 
-# --- FUNCIONES MATEMÁTICAS INTEGRADAS (Para evitar errores de importación) ---
+# --- FUNCIONES MATEMÁTICAS ---
 def calculate_turc_model(df):
     """Calcula balance hídrico usando el método de Turc."""
     df = df.copy()
-    # Temperatura estimada por altitud (Gradiente térmico)
     df['temp_est'] = 30 - (0.0065 * df['alt_est'])
-    
-    # Capacidad evaporativa del aire L(t)
-    # L(t) = 300 + 25T + 0.05T^3
     t = df['temp_est']
     l_t = 300 + 25*t + 0.05*(t**3)
-    
-    # Evapotranspiración Real (ETR)
-    # ETR = P / sqrt(0.9 + (P/L(t))^2)
     p = df['p_anual']
     df['etr_mm'] = p / np.sqrt(0.9 + (p / l_t)**2)
-    
-    # Recarga Potencial (R = P - ETR)
-    df['recarga_mm'] = df['p_anual'] - df['etr_mm']
-    df['recarga_mm'] = df['recarga_mm'].clip(lower=0) # No puede haber recarga negativa
-    
-    # Coeficiente de Escorrentía simple (Referencial)
-    df['coef_escorrentia'] = df['recarga_mm'] / df['p_anual']
-    
+    df['recarga_mm'] = (df['p_anual'] - df['etr_mm']).clip(lower=0)
     return df
 
 def generate_simple_scenarios(df_turc, meses=12, ruido=1.0):
-    """Genera proyecciones estocásticas simples basadas en los datos actuales."""
     recarga_base = df_turc['recarga_mm'].mean()
     if np.isnan(recarga_base): recarga_base = 0
-    
     fechas = pd.date_range(start=pd.Timestamp.today(), periods=meses, freq='M')
-    
-    # Tendencia estacional simulada (senoidal)
     x = np.linspace(0, 4*np.pi, meses)
     estacionalidad = np.sin(x) * (recarga_base * 0.2)
-    
-    # Escenarios
     neutro = np.full(meses, recarga_base) + estacionalidad
-    
-    # Ruido aleatorio
     np.random.seed(42)
     ruido_arr = np.random.normal(0, recarga_base * 0.1 * ruido, meses)
-    
     optimista = neutro * 1.2 + ruido_arr
     pesimista = neutro * 0.8 - ruido_arr
-    
-    # Dataframe resultado
-    df_res = pd.DataFrame({
+    return pd.DataFrame({
         'Fecha': fechas,
         'Neutro (Tendencial)': neutro.clip(min=0),
         'Optimista (Húmedo)': optimista.clip(min=0),
         'Pesimista (Seco)': pesimista.clip(min=0)
     })
-    return df_res
 
 # --- INTERFAZ ---
 ids_seleccionados, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
@@ -87,15 +61,20 @@ ruido = st.sidebar.slider("Variabilidad Climática:", 0.0, 2.0, 0.5)
 if gdf_zona is not None and not gdf_zona.empty:
     engine = create_engine(st.secrets["DATABASE_URL"])
     
-    # 1. Búsqueda Espacial (Bounding Box)
     minx, miny, maxx, maxy = gdf_zona.total_bounds
     
-    # Buscamos estaciones en el rectángulo de la zona
+    # 1. CORRECCIÓN SQL: Usamos ST_X y ST_Y para extraer coordenadas de 'geom'
+    # Esto soluciona el error "column latitud does not exist"
     q_spatial = text("""
-        SELECT id_estacion, nom_est, alt_est, latitud, longitud
+        SELECT 
+            id_estacion, 
+            nom_est, 
+            alt_est, 
+            ST_Y(geom::geometry) as latitud, 
+            ST_X(geom::geometry) as longitud
         FROM estaciones 
-        WHERE longitud BETWEEN :minx AND :maxx 
-          AND latitud BETWEEN :miny AND :maxy
+        WHERE ST_X(geom::geometry) BETWEEN :minx AND :maxx 
+          AND ST_Y(geom::geometry) BETWEEN :miny AND :maxy
     """)
     
     try:
@@ -103,7 +82,11 @@ if gdf_zona is not None and not gdf_zona.empty:
         
         if not df_estaciones.empty:
             ids = tuple(df_estaciones['id_estacion'].unique())
-            ids_sql = str(ids).replace(',)', ')') if len(ids) > 1 else f"({ids[0]})"
+            # Formateo seguro de IDs para SQL
+            if len(ids) == 1:
+                ids_sql = f"({ids[0]})"
+            else:
+                ids_sql = str(ids)
             
             # 2. Traer Datos Climáticos
             q_clima = text(f"""
@@ -133,7 +116,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                     
                     st.dataframe(
                         df_res[['nom_est', 'alt_est', 'p_anual', 'recarga_mm']].style.format("{:.1f}"),
-                        use_container_width=True
+                        use_container_width=True # Mantenemos compatibility standard
                     )
                 
                 with tab2:
@@ -141,15 +124,13 @@ if gdf_zona is not None and not gdf_zona.empty:
                         df_proy = generate_simple_scenarios(df_res, meses=horizonte, ruido=ruido)
                         
                         fig = go.Figure()
-                        # Optimista
                         fig.add_trace(go.Scatter(x=df_proy['Fecha'], y=df_proy['Optimista (Húmedo)'], mode='lines', line=dict(width=0), showlegend=False))
-                        # Pesimista (Relleno)
                         fig.add_trace(go.Scatter(x=df_proy['Fecha'], y=df_proy['Pesimista (Seco)'], mode='lines', line=dict(width=0), fill='tonexty', fillcolor='rgba(0,100,255,0.1)', name='Rango Incertidumbre'))
-                        # Neutro
                         fig.add_trace(go.Scatter(x=df_proy['Fecha'], y=df_proy['Neutro (Tendencial)'], mode='lines', name='Tendencia', line=dict(color='blue')))
                         
                         fig.update_layout(title="Proyección de Recarga", yaxis_title="mm/mes", hovermode="x unified")
-                        st.plotly_chart(fig, use_container_width=True)
+                        # CORRECCIÓN DEPRECACIÓN: width="stretch"
+                        st.plotly_chart(fig, width="stretch")
             else:
                 st.warning("Estaciones encontradas pero sin datos de precipitación.")
         else:
@@ -157,6 +138,5 @@ if gdf_zona is not None and not gdf_zona.empty:
             
     except Exception as e:
         st.error(f"Error técnico: {e}")
-
 else:
     st.info("👈 Seleccione una zona.")
