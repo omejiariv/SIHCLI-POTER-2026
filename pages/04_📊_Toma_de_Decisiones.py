@@ -6,7 +6,7 @@ import pandas as pd
 import geopandas as gpd
 import plotly.graph_objects as go
 from sqlalchemy import create_engine
-from scipy.interpolate import griddata # <--- NUEVA IMPORTACIÓN CLAVE
+from scipy.interpolate import griddata
 import sys
 import os
 
@@ -15,15 +15,56 @@ st.set_page_config(page_title="Matriz de Decisiones", page_icon="🎯", layout="
 
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-    from modules import selectors # Mantenemos selectores, pero haremos la interpolación aquí mismo
+    from modules import selectors
 except Exception as e:
     st.error(f"Error de sistema: {e}")
     st.stop()
 
 st.title("🎯 Priorización de Áreas de Intervención")
-st.markdown("""
-**Análisis Multicriterio:** Identificación de lotes prioritarios cruzando oferta hídrica (Lluvia/Turc) y valor ecosistémico (Altitud/Biodiversidad).
-""")
+
+# --- DOCUMENTACIÓN TÉCNICA (NUEVO) ---
+with st.expander("📘 Documentación Técnica: Metodología, Ecuaciones y Fuentes", expanded=False):
+    st.markdown("""
+    ### 1. Marco Conceptual
+    Este módulo implementa un **Análisis Multicriterio Espacial (SMCA)** simplificado, diseñado para apoyar la toma de decisiones en la gestión de cuencas. Se basa en la superposición ponderada de dos dimensiones críticas:
+    * **Oferta Hídrica (Recarga Potencial):** Identifica zonas clave para el ciclo hidrológico.
+    * **Valor Ecosistémico:** Identifica zonas de importancia biológica (basado en altitud y humedad como proxis).
+
+    ### 2. Metodología de Cálculo
+    El proceso se ejecuta en tiempo real siguiendo estos pasos:
+    1.  **Ingesta Híbrida:** Se georreferencian las estaciones mediante catálogo oficial (CSV) y se consultan sus series históricas de precipitación en base de datos SQL.
+    2.  **Interpolación Robusta:** Se genera una superficie continua utilizando un método híbrido:
+        * *Linear Interpolation:* Para suavidad en zonas con alta densidad de estaciones.
+        * *Nearest Neighbor:* Para rellenar vacíos en los bordes y evitar zonas sin datos (NaN).
+    3.  **Modelación Hidro-Climática:** Se aplica el método de Turc para estimar el balance hídrico.
+    4.  **Normalización y Ponderación:** Las variables se escalan de 0 a 1 y se combinan según los pesos definidos por el usuario.
+
+    ### 3. Ecuaciones Principales
+    
+    **A. Estimación de Temperatura (Gradiente Altitudinal)**
+    $$ T_{est} = 30 - (0.0065 \times Altitud) $$
+    
+    **B. Evapotranspiración Real (Fórmula de Turc)**
+    Capacidad evaporativa del aire $L(t)$:
+    $$ L(t) = 300 + 25T + 0.05T^3 $$
+    
+    Evapotranspiración Real ($ETR$):
+    $$ ETR = \\frac{P}{\\sqrt{0.9 + (\\frac{P}{L(t)})^2}} $$
+    *Donde $P$ es la precipitación media anual.*
+
+    **C. Recarga Hídrica Potencial ($R$)**
+    $$ R = P - ETR $$
+
+    **D. Índice de Prioridad ($Score$)**
+    $$ Score = (R_{norm} \times W_{agua}) + (Bio_{norm} \times W_{bio}) $$
+
+    ### 4. Fuentes de Información
+    * **Climatología:** Base de datos SIHCLI (Series históricas IDEAM/EPM procesadas).
+    * **Cartografía:** Capas vectoriales de Cuencas y Municipios (Gobernación de Antioquia/IGAC).
+    * **Ubicación Estaciones:** Catálogo `mapaCVENSO.csv`.
+    """)
+
+st.markdown("---")
 
 # --- 1. SELECTOR ---
 ids_seleccionados, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
