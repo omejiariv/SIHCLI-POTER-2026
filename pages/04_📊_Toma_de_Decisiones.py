@@ -1,4 +1,5 @@
 # Módulo de Soporte a Decisiones
+
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -41,46 +42,30 @@ with st.sidebar:
     st.divider()
     umbral_prioridad = st.slider("Filtrar Prioridad Alta (%)", 0, 90, 70)
 
-# --- 3. MOTOR DE ANÁLISIS (MODO DETECTIVE) ---
+# --- 3. MOTOR DE ANÁLISIS ---
 if gdf_zona is not None and not gdf_zona.empty:
     engine = create_engine(st.secrets["DATABASE_URL"])
     
     try:
-        # A. Cargar catálogo de estaciones completo para inspeccionar columnas
-        df_estaciones_all = pd.read_sql("SELECT * FROM estaciones", engine)
+        # A. CARGAR CATÁLOGO MAESTRO DESDE CSV (Más seguro que SQL)
+        csv_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'mapaCVENSO.csv')
         
-        if not df_estaciones_all.empty:
-            # B. AUTODETECCIÓN DE COLUMNAS (¡Adiós errores de nombre!)
-            cols_lower = df_estaciones_all.columns.str.lower()
+        if os.path.exists(csv_path):
+            # Cargar columnas específicas para ahorrar memoria
+            df_estaciones_all = pd.read_csv(csv_path, usecols=['Id_estacio', 'Longitud_geo', 'Latitud_geo', 'alt_est', 'Nom_Est'])
             
-            # Buscar Latitud
-            cands_lat = ['lat', 'latitude', 'latitud', 'lat_est', 'y_coord', 'y', 'north']
-            col_lat = next((c for c in df_estaciones_all.columns if c.lower() in cands_lat), None)
+            # RENOMBRAR PARA ESTANDARIZAR (CSV -> Python)
+            df_estaciones_all.rename(columns={
+                'Id_estacio': 'id_estacion',
+                'Longitud_geo': 'longitude',
+                'Latitud_geo': 'latitude',
+                'Nom_Est': 'nombre'
+            }, inplace=True)
             
-            # Buscar Longitud
-            cands_lon = ['lon', 'lng', 'longitude', 'longitud', 'lon_est', 'x_coord', 'x', 'east']
-            col_lon = next((c for c in df_estaciones_all.columns if c.lower() in cands_lon), None)
-            
-            # Buscar Altitud
-            cands_alt = ['alt_est', 'alt', 'altitude', 'altitud', 'elevation', 'z']
-            col_alt = next((c for c in df_estaciones_all.columns if c.lower() in cands_alt), None)
-            
-            # Buscar ID
-            cands_id = ['id_estacion', 'station_id', 'id', 'codigo']
-            col_id = next((c for c in df_estaciones_all.columns if c.lower() in cands_id), None)
+            # Rellenar altitud
+            df_estaciones_all['alt_est'] = df_estaciones_all['alt_est'].fillna(altitud_ref)
 
-            if not col_lat or not col_lon or not col_id:
-                st.error("❌ No pude identificar automáticamente las columnas de coordenadas.")
-                st.write("Columnas encontradas:", list(df_estaciones_all.columns))
-                st.stop()
-
-            # C. Estandarización
-            df_estaciones_all['latitude'] = df_estaciones_all[col_lat]
-            df_estaciones_all['longitude'] = df_estaciones_all[col_lon]
-            df_estaciones_all['id_estacion'] = df_estaciones_all[col_id]
-            df_estaciones_all['alt_est'] = df_estaciones_all[col_alt] if col_alt else altitud_ref
-
-            # D. Filtro Espacial (Bounding Box)
+            # B. FILTRO ESPACIAL (Bounding Box)
             minx, miny, maxx, maxy = gdf_zona.total_bounds
             mask = (
                 (df_estaciones_all['longitude'] >= minx) & (df_estaciones_all['longitude'] <= maxx) &
@@ -88,43 +73,47 @@ if gdf_zona is not None and not gdf_zona.empty:
             )
             df_filtrada = df_estaciones_all[mask].copy()
             
-            # E. Traer Precipitación (Solo para IDs válidos)
+            # C. TRAER PRECIPITACIÓN DESDE SQL (Solo para las estaciones del CSV que cayeron en la zona)
             if not df_filtrada.empty:
                 ids_validos = tuple(df_filtrada['id_estacion'].unique())
-                ids_sql = str(ids_validos).replace(',)', ')') # Ajuste tupla 1 elemento
                 
-                if ids_validos:
-                    q_ppt = f"""
-                        SELECT id_estacion_fk as id_estacion, AVG(precipitation) * 12 as p_anual
-                        FROM precipitacion_mensual
-                        WHERE id_estacion_fk IN {ids_sql}
-                        GROUP BY id_estacion_fk
-                    """
-                    df_ppt = pd.read_sql(q_ppt, engine)
-                    
-                    # Merge Final
-                    df_data = pd.merge(df_filtrada, df_ppt, on='id_estacion', how='inner')
-                    
-                    # Clip Geométrico Exacto
-                    gdf_pts = gpd.GeoDataFrame(
-                        df_data, geometry=gpd.points_from_xy(df_data.longitude, df_data.latitude), crs="EPSG:4326"
-                    )
-                    gdf_pts = gpd.clip(gdf_pts, gdf_zona)
-                    df_data = pd.DataFrame(gdf_pts.drop(columns='geometry'))
+                # Ajuste de sintaxis SQL para tupla de 1 elemento
+                if len(ids_validos) == 1:
+                    ids_sql = f"({ids_validos[0]})"
                 else:
-                    df_data = pd.DataFrame()
+                    ids_sql = str(ids_validos)
+                
+                # Consultamos solo la lluvia, confiando en los IDs del CSV
+                q_ppt = f"""
+                    SELECT id_estacion_fk as id_estacion, AVG(precipitation) * 12 as p_anual
+                    FROM precipitacion_mensual
+                    WHERE id_estacion_fk IN {ids_sql}
+                    GROUP BY id_estacion_fk
+                """
+                df_ppt = pd.read_sql(q_ppt, engine)
+                
+                # Unir Ubicación (CSV) con Lluvia (SQL)
+                df_data = pd.merge(df_filtrada, df_ppt, on='id_estacion', how='inner')
+                
+                # Clip Geométrico Exacto
+                gdf_pts = gpd.GeoDataFrame(
+                    df_data, geometry=gpd.points_from_xy(df_data.longitude, df_data.latitude), crs="EPSG:4326"
+                )
+                gdf_pts = gpd.clip(gdf_pts, gdf_zona)
+                df_data = pd.DataFrame(gdf_pts.drop(columns='geometry'))
             else:
                 df_data = pd.DataFrame()
 
-            # --- PROCESO DE INTERPOLACIÓN Y MAPA ---
+            # --- D. INTERPOLACIÓN Y CÁLCULOS ---
             if len(df_data) >= 3:
-                with st.spinner("🧮 Calculando prioridades..."):
+                with st.spinner("🧮 Modelando territorio..."):
                     # 1. Grilla
                     gx, gy = interpolation.generate_grid_coordinates((minx, maxx, miny, maxy), resolution=60j)
                     
                     # 2. Interpolación
                     grid_P = interpolation.interpolate_spatial(df_data, 'p_anual', gx, gy, method='rbf')
                     grid_Alt = interpolation.interpolate_spatial(df_data, 'alt_est', gx, gy, method='linear')
+                    
                     if grid_Alt is None: grid_Alt = np.full_like(grid_P, altitud_ref)
                     
                     # 3. Cálculo Turc & Bio
@@ -137,7 +126,6 @@ if gdf_zona is not None and not gdf_zona.empty:
                     
                     # Normalizar
                     norm_R = grid_R / np.max(grid_R) if np.max(grid_R) > 0 else grid_R
-                    
                     raw_Bio = (grid_Alt * 0.7) + (grid_P * 0.3)
                     norm_Bio = raw_Bio / np.max(raw_Bio) if np.max(raw_Bio) > 0 else raw_Bio
                     
@@ -151,10 +139,13 @@ if gdf_zona is not None and not gdf_zona.empty:
                     
                     with col_map:
                         fig = go.Figure()
+                        
+                        # Mapa de Calor
                         fig.add_trace(go.Contour(
                             z=grid_Final, x=gx[0], y=gy[:,0],
                             colorscale="RdYlGn", colorbar=dict(title="Índice", len=0.8),
-                            hoverinfo='z', name="Prioridad"
+                            hoverinfo='z', name="Prioridad",
+                            connectgaps=False
                         ))
                         
                         # Borde Zona
@@ -168,6 +159,13 @@ if gdf_zona is not None and not gdf_zona.empty:
                                     line=dict(color='black', width=2), showlegend=False, hoverinfo='skip'
                                 ))
                         
+                        # Estaciones
+                        fig.add_trace(go.Scatter(
+                            x=df_data['longitude'], y=df_data['latitude'],
+                            mode='markers', marker=dict(color='blue', size=5, symbol='x'),
+                            name='Estaciones'
+                        ))
+
                         fig.update_layout(
                             title=f"Mapa de Priorización: {nombre_seleccion}",
                             height=600, margin=dict(l=0,r=0,t=40,b=0),
@@ -191,7 +189,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 st.info("💡 Aumenta el 'Radio Buffer' en la barra lateral para buscar estaciones cercanas.")
 
         else:
-            st.error("La tabla 'estaciones' está vacía en la base de datos.")
+            st.error("Archivo 'mapaCVENSO.csv' no encontrado en la carpeta 'data'.")
 
     except Exception as e:
         st.error(f"Error en el proceso: {e}")
