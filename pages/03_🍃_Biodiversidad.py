@@ -4,14 +4,14 @@ import streamlit as st
 import sys
 import os
 
-# 1. CONFIGURACIÓN (Debe ser lo primero)
+# 1. CONFIGURACIÓN
 st.set_page_config(page_title="Monitor de Biodiversidad", page_icon="🍃", layout="wide")
 
 try:
     import pandas as pd
     import geopandas as gpd
     import plotly.graph_objects as go
-    import plotly.express as px # Necesario para el Sunburst dinámico
+    import plotly.express as px
     
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
     from modules import selectors, config, gbif_connector
@@ -28,27 +28,38 @@ except Exception as e:
     st.error(f"Error en selector: {e}")
     st.stop()
 
+# Funciones Auxiliares
+def save_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
+
 def load_context_layer(layer_name):
-    """Carga capas desde archivos GeoJSON locales."""
-    # Mapeo de nombres a archivos
+    """
+    Carga capas desde archivos GeoJSON locales.
+    """
+    # Mapeo EXACTO de nombres a archivos en la carpeta data/
     file_map = {
         "Cuencas": "SubcuencasAinfluencia.geojson",
         "Municipios": "MunicipiosAntioquia.geojson",
-        "Predios": "PrediosEjecutados.geojson" # CORREGIDO
+        "Predios": "PrediosEjecutados.geojson"  # <--- CORREGIDO: Ahora apunta al archivo local
     }
     
     if layer_name in file_map:
         try:
             filename = file_map[layer_name]
+            # Ruta absoluta segura
             file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', filename))
             
             if os.path.exists(file_path):
+                # Usar engine pyogrio es más rápido si está instalado, si no, usa fiona por defecto
                 gdf = gpd.read_file(file_path)
                 if gdf.crs and gdf.crs != "EPSG:4326":
                     gdf = gdf.to_crs("EPSG:4326")
                 return gdf
+            else:
+                # Solo mostrar error si se intenta cargar explícitamente
+                print(f"Archivo no encontrado: {file_path}")
         except Exception as e:
-            print(f"Error cargando {layer_name}: {e}")
+            st.error(f"Error cargando capa {layer_name}: {e}")
     return None
 
 # 3. LÓGICA PRINCIPAL
@@ -66,12 +77,19 @@ if gdf_zona is not None:
         c2.metric("Especies", f"{gdf_bio['Nombre Científico'].nunique():,.0f}")
         c3.metric("Familias", f"{gdf_bio['Familia'].nunique():,.0f}" if 'Familia' in gdf_bio.columns else "0")
         
-        # Botón descarga
-        csv = gdf_bio.drop(columns='geometry', errors='ignore').to_csv(index=False).encode('utf-8')
-        c4.download_button("💾 Descargar CSV", csv, "biodiversidad.csv", "text/csv")
+        # Cálculo Amenazas para KPI
+        n_threat = 0
+        threatened = pd.DataFrame()
+        if 'Amenaza IUCN' in gdf_bio.columns:
+            threatened = gdf_bio[~gdf_bio['Amenaza IUCN'].isin(['NE', 'LC', 'NT', 'DD', 'nan'])]
+            n_threat = threatened['Nombre Científico'].nunique()
+        c4.metric("Amenazadas (IUCN)", f"{n_threat}")
 
-        # --- PESTAÑAS ---
-        tab1, tab2 = st.tabs(["🗺️ Mapa Multicapa", "📊 Análisis Taxonómico"])
+        # Botón descarga
+        st.download_button("💾 Descargar Datos (CSV)", save_to_csv(gdf_bio.drop(columns='geometry', errors='ignore')), f"biodiv_{nombre_seleccion}.csv", "text/csv")
+
+        # --- PESTAÑAS (RESTAURADAS A 3) ---
+        tab1, tab2, tab3 = st.tabs(["🗺️ Mapa Multicapa & Predios", "📊 Análisis Taxonómico", "🚨 Especies Amenazadas"])
         
         # === TAB 1: MAPA ===
         with tab1:
@@ -82,7 +100,7 @@ if gdf_zona is not None:
                 st.subheader("Capas")
                 show_munis = st.checkbox("🏛️ Municipios", value=True)
                 show_cuencas = st.checkbox("💧 Cuencas", value=True)
-                show_predios = st.checkbox("🏡 Predios", value=False)
+                show_predios = st.checkbox("🏡 Predios Ejecutados", value=False)
                 st.caption("Puntos verdes: Biodiversidad")
 
             with col_map:
@@ -90,16 +108,17 @@ if gdf_zona is not None:
 
                 # 1. Base: Zona Seleccionada (ROJO)
                 if gdf_zona is not None:
-                    # Corrección Centroide (Reproyectamos temporalmente para calcular centro)
+                    # Centroide seguro
                     try:
-                        centroid = gdf_zona.to_crs('+proj=cea').centroid.to_crs(gdf_zona.crs).iloc[0]
-                        center_lat, center_lon = centroid.y, centroid.x
+                        # Reproyectar a plano para centroide preciso
+                        center = gdf_zona.to_crs("+proj=cea").centroid.to_crs("EPSG:4326").iloc[0]
+                        center_lat, center_lon = center.y, center.x
                     except:
-                        center_lat, center_lon = 6.2, -75.5 # Fallback Medellin
+                        center_lat, center_lon = 6.5, -75.5
 
+                    # Dibujo Zona
                     for idx, row in gdf_zona.iterrows():
                         geom = row.geometry
-                        # Manejo seguro de MultiPolygon
                         polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
                         for poly in polys:
                             x, y = poly.exterior.xy
@@ -132,7 +151,7 @@ if gdf_zona is not None:
                                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
                                 for poly in polys:
                                     x, y = poly.exterior.xy
-                                    # CORREGIDO: Eliminada propiedad 'dash' que causaba error
+                                    # SIN DASH PARA EVITAR ERROR
                                     fig.add_trace(go.Scattermapbox(
                                         lon=list(x), lat=list(y), mode='lines',
                                         line=dict(width=1.5, color='blue'), name='Cuenca', hoverinfo='skip'
@@ -141,21 +160,29 @@ if gdf_zona is not None:
                 if show_predios:
                     gdf_predios = load_context_layer("Predios")
                     if gdf_predios is not None:
-                        # Filtro espacial simple para no saturar
-                        gdf_predios = gpd.clip(gdf_predios, gdf_zona) if not gdf_predios.empty else gdf_predios
-                        
-                        for _, row in gdf_predios.iterrows():
-                            geom = row.geometry
-                            if geom:
-                                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
-                                for poly in polys:
-                                    x, y = poly.exterior.xy
-                                    fig.add_trace(go.Scattermapbox(
-                                        lon=list(x), lat=list(y), mode='lines',
-                                        fill='toself', fillcolor='rgba(255, 165, 0, 0.3)',
-                                        line=dict(width=1, color='orange'), 
-                                        name='Predio', hoverinfo='text', text="Predio Ejecutado"
-                                    ))
+                        # Filtro espacial simple (Clip) para mejorar rendimiento
+                        try:
+                            gdf_predios_clip = gpd.clip(gdf_predios, gdf_zona)
+                        except:
+                            gdf_predios_clip = gdf_predios # Si falla clip, mostrar todo (cuidado rendimiento)
+
+                        if not gdf_predios_clip.empty:
+                            for _, row in gdf_predios_clip.iterrows():
+                                geom = row.geometry
+                                if geom:
+                                    polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
+                                    for poly in polys:
+                                        x, y = poly.exterior.xy
+                                        fig.add_trace(go.Scattermapbox(
+                                            lon=list(x), lat=list(y), mode='lines',
+                                            fill='toself', fillcolor='rgba(255, 165, 0, 0.4)', # Naranja semitransparente
+                                            line=dict(width=1, color='orange'), 
+                                            name='Predio', hoverinfo='text', text="Predio Ejecutado"
+                                        ))
+                        else:
+                            st.warning("No hay predios dentro de esta zona.")
+                    else:
+                        st.toast("⚠️ Archivo 'PrediosEjecutados.geojson' no encontrado.", icon="📂")
 
                 # 3. Biodiversidad (Puntos)
                 fig.add_trace(go.Scattermapbox(
@@ -175,13 +202,11 @@ if gdf_zona is not None:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-        # === TAB 2: GRÁFICO DINÁMICO (Restaurado) ===
+        # === TAB 2: GRÁFICO DINÁMICO ===
         with tab2:
             st.markdown("##### Estructura Taxonómica")
             if 'Reino' in gdf_bio.columns and 'Familia' in gdf_bio.columns:
-                # Limpieza de nulos
                 df_chart = gdf_bio.fillna("Sin Dato")
-                # Sunburst Interactivo
                 fig_sun = px.sunburst(
                     df_chart, 
                     path=['Reino', 'Clase', 'Orden', 'Familia'], 
@@ -194,6 +219,27 @@ if gdf_zona is not None:
             
             st.markdown("##### Datos Detallados")
             st.dataframe(gdf_bio.drop(columns='geometry', errors='ignore'))
+
+        # === TAB 3: AMENAZAS (RESTAURADA) ===
+        with tab3:
+            st.markdown("##### Especies en Lista Roja (IUCN)")
+            if not threatened.empty:
+                st.warning(f"⚠️ Se han detectado {n_threat} especies con categoría de amenaza alta.")
+                
+                # Resumen simple
+                df_show = threatened[['Nombre Científico', 'Nombre Común', 'Amenaza IUCN', 'Familia', 'lat', 'lon']].drop_duplicates(subset=['Nombre Científico'])
+                st.dataframe(df_show, use_container_width=True)
+                
+                # Mapa de calor de amenazas
+                st.markdown("**Focos de Amenaza:**")
+                fig_heat = px.density_mapbox(
+                    threatened, lat='lat', lon='lon', radius=20,
+                    zoom=10, height=400, title="Concentración de Especies Amenazadas"
+                )
+                fig_heat.update_layout(mapbox_style="carto-positron")
+                st.plotly_chart(fig_heat, use_container_width=True)
+            else:
+                st.success("✅ ¡Buenas noticias! No se encontraron especies en categorías críticas (VU, EN, CR) en los registros disponibles.")
 
     else:
         st.warning("⚠️ No se encontraron registros en GBIF para esta zona.")
