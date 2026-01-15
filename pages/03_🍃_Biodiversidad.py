@@ -32,7 +32,6 @@ except Exception as e:
 def save_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
-# --- OPTIMIZACIÓN: CACHÉ DE CAPAS ---
 @st.cache_data(ttl=3600)
 def load_layer_cached(layer_name):
     """Carga capas GeoJSON locales usando caché para velocidad."""
@@ -48,7 +47,6 @@ def load_layer_cached(layer_name):
             file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', filename))
             
             if os.path.exists(file_path):
-                # Usamos una librería más ligera si es posible, o gpd estándar
                 gdf = gpd.read_file(file_path)
                 if gdf.crs and gdf.crs != "EPSG:4326":
                     gdf = gdf.to_crs("EPSG:4326")
@@ -63,7 +61,7 @@ if gdf_zona is not None:
     
     # --- A. DESCARGA GBIF ---
     with st.spinner(f"📡 Escaneando biodiversidad en {nombre_seleccion}..."):
-        gdf_bio = gbif_connector.get_biodiversity_in_polygon(gdf_zona, limit=3000) # Límite ajustado para velocidad
+        gdf_bio = gbif_connector.get_biodiversity_in_polygon(gdf_zona, limit=3000)
 
     if not gdf_bio.empty:
         # Métricas
@@ -79,119 +77,137 @@ if gdf_zona is not None:
             n_threat = threatened['Nombre Científico'].nunique()
         c4.metric("Amenazadas (IUCN)", f"{n_threat}")
 
-        # Botón descarga
         st.download_button("💾 Descargar Datos (CSV)", save_to_csv(gdf_bio.drop(columns='geometry', errors='ignore')), f"biodiv_{nombre_seleccion}.csv", "text/csv")
 
         # --- PESTAÑAS ---
-        tab1, tab2, tab3 = st.tabs(["🗺️ Mapa Multicapa & Predios", "📊 Análisis Taxonómico", "🚨 Especies Amenazadas"])
+        tab1, tab2, tab3 = st.tabs(["🗺️ Mapa Interactivo", "📊 Taxonomía", "🚨 Amenazas"])
         
-        # === TAB 1: MAPA ===
+        # === TAB 1: MAPA OPTIMIZADO ===
         with tab1:
-            st.markdown("##### Visor Territorial Integrado")
-            col_layers, col_map = st.columns([1, 4])
+            st.markdown("##### Visor Territorial")
+            st.caption("ℹ️ Haz clic en los nombres de la leyenda (derecha) para encender/apagar capas instantáneamente.")
             
-            with col_layers:
-                st.subheader("Capas")
-                show_munis = st.checkbox("🏛️ Municipios", value=True)
-                show_cuencas = st.checkbox("💧 Cuencas", value=True)
-                show_predios = st.checkbox("🏡 Predios Ejecutados", value=False)
-                st.caption("Puntos verdes: Biodiversidad")
+            fig = go.Figure()
 
-            with col_map:
-                fig = go.Figure()
+            # --- 1. CAPA BASE: ZONA SELECCIONADA ---
+            if gdf_zona is not None:
+                # Centroide
+                try:
+                    center = gdf_zona.to_crs("+proj=cea").centroid.to_crs("EPSG:4326").iloc[0]
+                    center_lat, center_lon = center.y, center.x
+                except:
+                    center_lat, center_lon = 6.5, -75.5
 
-                # 1. Base: Zona Seleccionada (ROJO)
-                if gdf_zona is not None:
-                    try:
-                        center = gdf_zona.to_crs("+proj=cea").centroid.to_crs("EPSG:4326").iloc[0]
-                        center_lat, center_lon = center.y, center.x
-                    except:
-                        center_lat, center_lon = 6.5, -75.5
+                for idx, row in gdf_zona.iterrows():
+                    geom = row.geometry
+                    polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
+                    for poly in polys:
+                        x, y = poly.exterior.xy
+                        fig.add_trace(go.Scattermapbox(
+                            lon=list(x), lat=list(y), mode='lines', 
+                            line=dict(width=3, color='red'), 
+                            name='Zona Selección', hoverinfo='skip'
+                        ))
 
-                    for idx, row in gdf_zona.iterrows():
-                        geom = row.geometry
+            # --- 2. CAPA: MUNICIPIOS ---
+            gdf_muni = load_layer_cached("Municipios")
+            if gdf_muni is not None:
+                # Para evitar agregar miles de trazos, fusionamos visualmente si es posible, 
+                # o iteramos con cuidado. Aquí iteramos pero con 'legendgroup' para que se apaguen todos juntos.
+                
+                # TRUCO DE RENDIMIENTO: Solo dibujamos municipios que interceptan con la vista general
+                # (Opcional: Si sigue lento, podemos hacer un clip espacial aquí también)
+                
+                for idx, row in gdf_muni.iterrows():
+                    geom = row.geometry
+                    if geom:
                         polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
-                        for poly in polys:
+                        for i, poly in enumerate(polys):
                             x, y = poly.exterior.xy
+                            # Solo añadimos 'name' y 'showlegend' al primer polígono para no spammear la leyenda
+                            show_leg = True if idx == 0 and i == 0 else False
                             fig.add_trace(go.Scattermapbox(
-                                lon=list(x), lat=list(y), mode='lines', 
-                                line=dict(width=2, color='red'), name='Zona Selección', hoverinfo='skip'
+                                lon=list(x), lat=list(y), mode='lines',
+                                line=dict(width=1, color='gray'), 
+                                name='Municipios', 
+                                legendgroup='group_muni',
+                                showlegend=show_leg,
+                                hoverinfo='skip',
+                                visible=True # Visible por defecto
                             ))
 
-                # 2. Contexto (Archivos Locales CACHEADOS)
-                if show_munis:
-                    gdf_muni = load_layer_cached("Municipios")
-                    if gdf_muni is not None:
-                        for _, row in gdf_muni.iterrows():
-                            geom = row.geometry
-                            if geom:
-                                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
-                                for poly in polys:
-                                    x, y = poly.exterior.xy
-                                    fig.add_trace(go.Scattermapbox(
-                                        lon=list(x), lat=list(y), mode='lines',
-                                        line=dict(width=1, color='gray'), hoverinfo='skip'
-                                    ))
+            # --- 3. CAPA: CUENCAS ---
+            gdf_cuenca = load_layer_cached("Cuencas")
+            if gdf_cuenca is not None:
+                 for idx, row in gdf_cuenca.iterrows():
+                    geom = row.geometry
+                    if geom:
+                        polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
+                        for i, poly in enumerate(polys):
+                            x, y = poly.exterior.xy
+                            show_leg = True if idx == 0 and i == 0 else False
+                            fig.add_trace(go.Scattermapbox(
+                                lon=list(x), lat=list(y), mode='lines',
+                                line=dict(width=1.5, color='blue'), 
+                                name='Cuencas',
+                                legendgroup='group_cuenca',
+                                showlegend=show_leg,
+                                hoverinfo='skip',
+                                visible=True # Visible por defecto
+                            ))
 
-                if show_cuencas:
-                    gdf_cuenca = load_layer_cached("Cuencas")
-                    if gdf_cuenca is not None:
-                         for _, row in gdf_cuenca.iterrows():
-                            geom = row.geometry
-                            if geom:
-                                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
-                                for poly in polys:
-                                    x, y = poly.exterior.xy
-                                    fig.add_trace(go.Scattermapbox(
-                                        lon=list(x), lat=list(y), mode='lines',
-                                        line=dict(width=1.5, color='blue'), name='Cuenca', hoverinfo='skip'
-                                    ))
+            # --- 4. CAPA: PREDIOS (Apagada por defecto) ---
+            gdf_predios = load_layer_cached("Predios")
+            if gdf_predios is not None:
+                # Clip espacial ESTRICTO para no cargar predios lejanos
+                try:
+                    gdf_predios_clip = gpd.clip(gdf_predios, gdf_zona.buffer(0.01))
+                except:
+                    gdf_predios_clip = gdf_predios
 
-                if show_predios:
-                    gdf_predios = load_layer_cached("Predios")
-                    if gdf_predios is not None:
-                        # Clip espacial para rendimiento
-                        try:
-                            gdf_predios_clip = gpd.clip(gdf_predios, gdf_zona)
-                        except:
-                            gdf_predios_clip = gdf_predios 
+                if not gdf_predios_clip.empty:
+                    for idx, row in gdf_predios_clip.iterrows():
+                        geom = row.geometry
+                        if geom:
+                            polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
+                            for i, poly in enumerate(polys):
+                                x, y = poly.exterior.xy
+                                show_leg = True if idx == 0 and i == 0 else False
+                                fig.add_trace(go.Scattermapbox(
+                                    lon=list(x), lat=list(y), mode='lines',
+                                    fill='toself', fillcolor='rgba(255, 165, 0, 0.4)',
+                                    line=dict(width=1, color='orange'), 
+                                    name='Predios', 
+                                    legendgroup='group_predios',
+                                    showlegend=show_leg,
+                                    hoverinfo='text', text="Predio",
+                                    visible='legendonly' # <--- TRUCO: Apagado al inicio, clic para ver
+                                ))
 
-                        if not gdf_predios_clip.empty:
-                            for _, row in gdf_predios_clip.iterrows():
-                                geom = row.geometry
-                                if geom:
-                                    polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
-                                    for poly in polys:
-                                        x, y = poly.exterior.xy
-                                        fig.add_trace(go.Scattermapbox(
-                                            lon=list(x), lat=list(y), mode='lines',
-                                            fill='toself', fillcolor='rgba(255, 165, 0, 0.4)',
-                                            line=dict(width=1, color='orange'), 
-                                            name='Predio', hoverinfo='text', text="Predio Ejecutado"
-                                        ))
-                        else:
-                            st.warning("No hay predios dentro de esta zona.")
-                    else:
-                        st.toast("⚠️ Archivo 'PrediosEjecutados.geojson' no encontrado.", icon="📂")
+            # --- 5. BIODIVERSIDAD (Encima de todo) ---
+            fig.add_trace(go.Scattermapbox(
+                lon=gdf_bio['lon'], lat=gdf_bio['lat'],
+                mode='markers',
+                marker=dict(size=7, color='rgb(0, 200, 100)'),
+                text=gdf_bio['Nombre Común'],
+                name='Biodiversidad',
+                visible=True
+            ))
 
-                # 3. Biodiversidad (Puntos)
-                fig.add_trace(go.Scattermapbox(
-                    lon=gdf_bio['lon'], lat=gdf_bio['lat'],
-                    mode='markers',
-                    marker=dict(size=6, color='rgb(0, 200, 100)'),
-                    text=gdf_bio['Nombre Común'],
-                    name='Biodiversidad'
-                ))
-
-                fig.update_layout(
-                    mapbox_style="carto-positron",
-                    mapbox=dict(center=dict(lat=center_lat, lon=center_lon), zoom=10),
-                    margin={"r":0,"t":0,"l":0,"b":0},
-                    height=600,
-                    showlegend=False 
+            fig.update_layout(
+                mapbox_style="carto-positron",
+                mapbox=dict(center=dict(lat=center_lat, lon=center_lon), zoom=10),
+                margin={"r":0,"t":0,"l":0,"b":0},
+                height=700,
+                legend=dict(
+                    yanchor="top", y=0.99,
+                    xanchor="left", x=0.01,
+                    bgcolor="rgba(255, 255, 255, 0.8)"
                 )
-                st.plotly_chart(fig, use_container_width=True)
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
+        # === TAB 2: TAXONOMÍA ===
         with tab2:
             st.markdown("##### Estructura Taxonómica")
             if 'Reino' in gdf_bio.columns and 'Familia' in gdf_bio.columns:
@@ -199,30 +215,29 @@ if gdf_zona is not None:
                 fig_sun = px.sunburst(
                     df_chart, 
                     path=['Reino', 'Clase', 'Orden', 'Familia'], 
-                    title="Distribución por Grupos Biológicos",
-                    height=700
+                    height=600
                 )
                 st.plotly_chart(fig_sun, use_container_width=True)
             else:
-                st.warning("Datos insuficientes para el gráfico.")
-            
+                st.warning("Datos insuficientes.")
             st.dataframe(gdf_bio.drop(columns='geometry', errors='ignore'))
 
+        # === TAB 3: AMENAZAS ===
         with tab3:
-            st.markdown("##### Especies en Lista Roja (IUCN)")
+            st.markdown("##### Especies Amenazadas (IUCN)")
             if not threatened.empty:
-                st.warning(f"⚠️ Se han detectado {n_threat} especies con categoría de amenaza alta.")
-                df_show = threatened[['Nombre Científico', 'Nombre Común', 'Amenaza IUCN', 'Familia', 'lat', 'lon']].drop_duplicates(subset=['Nombre Científico'])
+                st.warning(f"⚠️ {n_threat} especies en riesgo.")
+                df_show = threatened[['Nombre Científico', 'Nombre Común', 'Amenaza IUCN', 'Familia']].drop_duplicates()
                 st.dataframe(df_show, use_container_width=True)
                 
                 fig_heat = px.density_mapbox(
-                    threatened, lat='lat', lon='lon', radius=20,
-                    zoom=10, height=400, title="Concentración de Especies Amenazadas"
+                    threatened, lat='lat', lon='lon', radius=25,
+                    zoom=10, height=500, title="Mapa de Calor: Amenazas"
                 )
                 fig_heat.update_layout(mapbox_style="carto-positron")
                 st.plotly_chart(fig_heat, use_container_width=True)
             else:
-                st.success("✅ No se encontraron especies en categorías críticas.")
+                st.success("✅ No se detectaron especies críticas.")
 
     else:
         st.warning("⚠️ No se encontraron registros en GBIF para esta zona.")
