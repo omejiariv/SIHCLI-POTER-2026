@@ -51,15 +51,16 @@ if gdf_zona is not None and not gdf_zona.empty:
         csv_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'mapaCVENSO.csv')
         
         if os.path.exists(csv_path):
-            # CORRECCIÓN DE SEPARADOR Y CODIFICACIÓN
+            # CORRECCIÓN: Separador punto y coma Y decimal coma (Estándar Colombia)
             df_estaciones_all = pd.read_csv(
                 csv_path, 
-                sep=';',            # <--- CORRECCIÓN CRÍTICA: Separador punto y coma
-                encoding='latin-1', # Corrección para tildes y ñ
+                sep=';',            
+                decimal=',',        # <--- IMPORTANTE: Maneja "6,25" como número, no texto
+                encoding='latin-1', 
                 usecols=['Id_estacio', 'Longitud_geo', 'Latitud_geo', 'alt_est', 'Nom_Est']
             )
             
-            # RENOMBRAR PARA ESTANDARIZAR
+            # RENOMBRAR
             df_estaciones_all.rename(columns={
                 'Id_estacio': 'id_estacion',
                 'Longitud_geo': 'longitude',
@@ -67,9 +68,16 @@ if gdf_zona is not None and not gdf_zona.empty:
                 'Nom_Est': 'nombre'
             }, inplace=True)
             
-            # Rellenar altitud
-            # Aseguramos que sea numérico, convirtiendo errores a NaN primero
+            # LIMPIEZA AGRESIVA DE DATOS (Convertir texto a número a la fuerza)
+            # Si algo no es número, se convierte en NaN y luego lo borramos
+            df_estaciones_all['latitude'] = pd.to_numeric(df_estaciones_all['latitude'], errors='coerce')
+            df_estaciones_all['longitude'] = pd.to_numeric(df_estaciones_all['longitude'], errors='coerce')
             df_estaciones_all['alt_est'] = pd.to_numeric(df_estaciones_all['alt_est'], errors='coerce')
+            
+            # Eliminar filas con coordenadas corruptas
+            df_estaciones_all.dropna(subset=['latitude', 'longitude'], inplace=True)
+            
+            # Rellenar altitud
             df_estaciones_all['alt_est'] = df_estaciones_all['alt_est'].fillna(altitud_ref)
 
             # B. FILTRO ESPACIAL
