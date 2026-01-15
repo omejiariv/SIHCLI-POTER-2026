@@ -47,7 +47,7 @@ def render_selector_espacial():
             if gdf_all is not None:
                 # LISTA DE CANDIDATOS (Agrega aquí el nombre si lo ves en la lista de abajo)
                 posibles_nombres = [
-                    'N-NSS3', # Nombres técnicos comunes
+                    'SUBC_LBL', # Nombres técnicos comunes
                     'subcuenca', 
                     'NOMBRE_SUB', 'nom_subcue', 'Cuenca', 'CUENCA', 'Label'
                 ]
