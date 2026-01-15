@@ -6,6 +6,7 @@ import pandas as pd
 import geopandas as gpd
 import plotly.graph_objects as go
 from sqlalchemy import create_engine
+from scipy.interpolate import griddata # <--- NUEVA IMPORTACIÓN CLAVE
 import sys
 import os
 
@@ -14,14 +15,14 @@ st.set_page_config(page_title="Matriz de Decisiones", page_icon="🎯", layout="
 
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-    from modules import selectors, interpolation
+    from modules import selectors # Mantenemos selectores, pero haremos la interpolación aquí mismo
 except Exception as e:
     st.error(f"Error de sistema: {e}")
     st.stop()
 
 st.title("🎯 Priorización de Áreas de Intervención")
 st.markdown("""
-**Análisis Multicriterio:** Este mapa identifica las zonas donde la inversión en conservación tendrá mayor impacto, cruzando oferta hídrica y valor ecosistémico.
+**Análisis Multicriterio:** Identificación de lotes prioritarios cruzando oferta hídrica (Lluvia/Turc) y valor ecosistémico (Altitud/Biodiversidad).
 """)
 
 # --- 1. SELECTOR ---
@@ -40,61 +41,64 @@ with st.sidebar:
     
     st.caption(f"**Distribución:** Agua {pct_agua:.0%} | Bio {pct_bio:.0%}")
     st.divider()
-    # Bajamos el default a 0 para ver TODO el mapa primero, luego el usuario filtra
-    umbral_prioridad = st.slider("Filtrar Prioridad Alta (%)", 0, 90, 0, help="Sube este valor para ver solo las zonas críticas.")
+    # Umbral por defecto en 0 para asegurar visibilidad inicial
+    umbral_prioridad = st.slider("Filtrar Prioridad Alta (%)", 0, 90, 0)
+
+# --- FUNCIÓN DE INTERPOLACIÓN ROBUSTA (HÍBRIDA) ---
+def interpolacion_segura(points, values, grid_x, grid_y):
+    """
+    Combina 'linear' para suavidad y 'nearest' para rellenar bordes.
+    Garantiza 0 huecos blancos.
+    """
+    # 1. Intento Lineal (Suave, pero deja huecos fuera del polígono convexo)
+    grid_z0 = griddata(points, values, (grid_x, grid_y), method='linear')
+    
+    # 2. Relleno Nearest (Cuadriculado, pero llena todo)
+    mask = np.isnan(grid_z0)
+    if np.any(mask):
+        grid_z1 = griddata(points, values, (grid_x, grid_y), method='nearest')
+        # Rellenar los huecos del lineal con el nearest
+        grid_z0[mask] = grid_z1[mask]
+    
+    return grid_z0
 
 # --- 3. MOTOR DE ANÁLISIS ---
 if gdf_zona is not None and not gdf_zona.empty:
     engine = create_engine(st.secrets["DATABASE_URL"])
     
     try:
-        # A. CARGAR CATÁLOGO MAESTRO (CSV)
+        # A. CARGAR CATÁLOGO (CSV)
         csv_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'mapaCVENSO.csv')
         
         if os.path.exists(csv_path):
             df_estaciones_all = pd.read_csv(
-                csv_path, 
-                sep=';',            
-                decimal=',',        
-                encoding='latin-1', 
+                csv_path, sep=';', decimal=',', encoding='latin-1', 
                 usecols=['Id_estacio', 'Longitud_geo', 'Latitud_geo', 'alt_est', 'Nom_Est']
             )
-            
-            df_estaciones_all.rename(columns={
-                'Id_estacio': 'id_estacion',
-                'Longitud_geo': 'longitude',
-                'Latitud_geo': 'latitude',
-                'Nom_Est': 'nombre'
-            }, inplace=True)
+            df_estaciones_all.rename(columns={'Id_estacio': 'id_estacion', 'Longitud_geo': 'longitude', 'Latitud_geo': 'latitude', 'Nom_Est': 'nombre'}, inplace=True)
             
             # Limpieza
-            df_estaciones_all['latitude'] = pd.to_numeric(df_estaciones_all['latitude'], errors='coerce')
-            df_estaciones_all['longitude'] = pd.to_numeric(df_estaciones_all['longitude'], errors='coerce')
-            df_estaciones_all['alt_est'] = pd.to_numeric(df_estaciones_all['alt_est'], errors='coerce')
+            for col in ['latitude', 'longitude', 'alt_est']:
+                df_estaciones_all[col] = pd.to_numeric(df_estaciones_all[col], errors='coerce')
+            
             df_estaciones_all.dropna(subset=['latitude', 'longitude'], inplace=True)
             df_estaciones_all['alt_est'] = df_estaciones_all['alt_est'].fillna(altitud_ref)
 
-            # B. FILTRO ESPACIAL
-            # Usamos un buffer pequeño para asegurar que atrapamos estaciones en el borde
-            minx, miny, maxx, maxy = gdf_zona.buffer(0.02).total_bounds
+            # B. FILTRO ESPACIAL (Buffer generoso para asegurar bordes)
+            minx, miny, maxx, maxy = gdf_zona.buffer(0.05).total_bounds
             mask = (
                 (df_estaciones_all['longitude'] >= minx) & (df_estaciones_all['longitude'] <= maxx) &
                 (df_estaciones_all['latitude'] >= miny) & (df_estaciones_all['latitude'] <= maxy)
             )
             df_filtrada = df_estaciones_all[mask].copy()
             
-            # C. DATOS DE PRECIPITACIÓN (SQL)
+            # C. DATOS PRECIPITACIÓN (SQL)
             if not df_filtrada.empty:
                 ids_validos = df_filtrada['id_estacion'].unique()
                 ids_sql = ",".join([f"'{str(x)}'" for x in ids_validos])
                 
                 if ids_sql:
-                    q_ppt = f"""
-                        SELECT id_estacion_fk as id_estacion, AVG(precipitation) * 12 as p_anual
-                        FROM precipitacion_mensual
-                        WHERE id_estacion_fk IN ({ids_sql})
-                        GROUP BY id_estacion_fk
-                    """
+                    q_ppt = f"SELECT id_estacion_fk as id_estacion, AVG(precipitation) * 12 as p_anual FROM precipitacion_mensual WHERE id_estacion_fk IN ({ids_sql}) GROUP BY id_estacion_fk"
                     df_ppt = pd.read_sql(q_ppt, engine)
                     
                     df_filtrada['id_estacion'] = df_filtrada['id_estacion'].astype(str)
@@ -106,24 +110,24 @@ if gdf_zona is not None and not gdf_zona.empty:
             else:
                 df_data = pd.DataFrame()
 
-            # --- D. CÁLCULOS VISUALES ---
+            # --- D. CÁLCULOS ---
             if len(df_data) >= 3:
-                with st.spinner("🎨 Pintando mapa de prioridades..."):
-                    # 1. Grilla (Aumentamos un poco la resolución para suavidad)
-                    gx, gy = interpolation.generate_grid_coordinates((minx, maxx, miny, maxy), resolution=80j)
+                with st.spinner("🎨 Generando mapa continuo..."):
+                    # 1. Crear Malla (Grid)
+                    grid_x, grid_y = np.mgrid[minx:maxx:100j, miny:maxy:100j]
                     
-                    # 2. Interpolación (CORREGIDO: Usamos 'nearest' o 'rbf' para llenar huecos)
-                    # 'linear' dejaba huecos blancos. 'nearest' llena todo el rectángulo.
-                    grid_P = interpolation.interpolate_spatial(df_data, 'p_anual', gx, gy, method='rbf') # RBF es suave y llena todo
-                    grid_Alt = interpolation.interpolate_spatial(df_data, 'alt_est', gx, gy, method='nearest') # Nearest es robusto para relieve
+                    # 2. Interpolación Híbrida (Aquí está la magia)
+                    points = df_data[['longitude', 'latitude']].values
                     
-                    # Fallback de seguridad
-                    if grid_Alt is None: grid_Alt = np.full_like(grid_P, altitud_ref)
-                    if grid_P is None: 
-                         st.warning("No se pudo interpolar la lluvia. Verifica los datos.")
-                         st.stop()
+                    # Lluvia
+                    values_p = df_data['p_anual'].values
+                    grid_P = interpolacion_segura(points, values_p, grid_x, grid_y)
                     
-                    # 3. Modelo Matemático (Turc & Bio)
+                    # Altitud
+                    values_alt = df_data['alt_est'].values
+                    grid_Alt = interpolacion_segura(points, values_alt, grid_x, grid_y)
+                    
+                    # 3. Modelo Matemático
                     grid_T = 30 - (0.0065 * grid_Alt)
                     L_t = 300 + 25*grid_T + 0.05*(grid_T**3)
                     
@@ -143,31 +147,33 @@ if gdf_zona is not None and not gdf_zona.empty:
                     # 4. Score Final
                     grid_Score = (norm_R * pct_agua) + (norm_Bio * pct_bio)
                     
-                    # Filtro de Umbral (Visualización)
-                    # Si el usuario pone el umbral en 0, se ve todo.
+                    # Filtro de Umbral
                     mask_score = grid_Score >= (umbral_prioridad / 100.0)
                     grid_Final = np.where(mask_score, grid_Score, np.nan)
 
-                    # 5. Visualización (Plotly)
+                    # 5. Visualización
                     col_map, col_res = st.columns([3, 1])
                     
                     with col_map:
                         fig = go.Figure()
                         
-                        # A. Mapa de Calor (Contour)
-                        # connectgaps=True es clave para evitar agujeros
+                        # Mapa de Calor (Transpuesto para alinear con Plotly)
+                        # Plotly contour espera x, y y z. grid_x es [100,100], grid_y es [100,100]
+                        # A veces griddata devuelve shape transpuesto visualmente respecto a lat/lon
+                        
                         fig.add_trace(go.Contour(
-                            z=grid_Final, x=gx[0], y=gy[:,0],
+                            z=grid_Final.T, # Transponer para alinear Lat/Lon correctamente
+                            x=np.linspace(minx, maxx, 100),
+                            y=np.linspace(miny, maxy, 100),
                             colorscale="RdYlGn", 
-                            colorbar=dict(title="Prioridad (0-1)", len=0.8),
-                            hoverinfo='z+x+y', 
-                            name="Prioridad",
-                            connectgaps=True, 
-                            line_smoothing=0.5,
-                            contours=dict(coloring='heatmap') # Relleno sólido tipo heatmap
+                            colorbar=dict(title="Prioridad", len=0.8),
+                            hoverinfo='z', name="Prioridad",
+                            connectgaps=True,
+                            line_smoothing=0.85,
+                            contours=dict(coloring='heatmap')
                         ))
                         
-                        # B. Límites de la Zona (Negro)
+                        # Contorno Zona
                         for idx, row in gdf_zona.iterrows():
                             geom = row.geometry
                             polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
@@ -175,54 +181,45 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 x, y = poly.exterior.xy
                                 fig.add_trace(go.Scatter(
                                     x=list(x), y=list(y), mode='lines', 
-                                    line=dict(color='black', width=3), showlegend=False, hoverinfo='skip'
+                                    line=dict(color='black', width=3), hoverinfo='skip', showlegend=False
                                 ))
                         
-                        # C. Estaciones (Puntos Azules)
+                        # Estaciones
                         fig.add_trace(go.Scatter(
                             x=df_data['longitude'], y=df_data['latitude'],
                             mode='markers', 
-                            marker=dict(color='blue', size=6, symbol='circle', line=dict(width=1, color='white')),
-                            name='Estaciones',
-                            text=df_data['nombre'],
-                            hoverinfo='text'
+                            marker=dict(color='blue', size=6, line=dict(width=1, color='white')),
+                            name='Estaciones', text=df_data['nombre'], hoverinfo='text'
                         ))
 
                         fig.update_layout(
-                            title=f"Mapa de Priorización: {nombre_seleccion}",
-                            height=650, margin=dict(l=20,r=20,t=50,b=20),
-                            xaxis=dict(visible=False, showgrid=False), 
-                            yaxis=dict(visible=False, showgrid=False, scaleanchor="x"),
-                            plot_bgcolor='rgba(0,0,0,0)' # Fondo transparente
+                            title=f"Mapa: {nombre_seleccion}",
+                            height=650, margin=dict(l=0,r=0,t=40,b=0),
+                            xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"),
+                            plot_bgcolor='white'
                         )
                         st.plotly_chart(fig, use_container_width=True)
                     
                     with col_res:
-                        st.markdown("### 📊 Resultados")
-                        
+                        st.markdown("### 📊 Cobertura")
                         valid_cells = np.count_nonzero(~np.isnan(grid_Final))
-                        total_grid_cells = grid_Final.size
-                        pct_visible = valid_cells / total_grid_cells if total_grid_cells > 0 else 0
+                        pct_visible = valid_cells / grid_Final.size
                         
-                        # Métricas más claras
-                        st.metric("Cobertura del Mapa", f"{pct_visible:.1%}", help="Porcentaje del área que supera el umbral seleccionado.")
-                        
-                        st.info(f"**Estaciones Base:** {len(df_data)}")
+                        st.metric("Área Analizada", f"{pct_visible:.1%}")
+                        st.info(f"Estaciones: {len(df_data)}")
                         
                         st.markdown("---")
-                        st.markdown("**Interpretación:**")
-                        st.markdown("🟢 **Verde:** Alta Prioridad (Conservar/Restaurar)")
-                        st.markdown("🔴 **Rojo:** Baja Prioridad (O menor impacto relativo)")
+                        st.markdown("🟢 **Alta Prioridad**")
+                        st.markdown("🔴 **Baja Prioridad**")
 
             else:
-                st.warning("⚠️ Datos insuficientes para interpolar.")
-                st.write(f"Estaciones encontradas: {len(df_data)} (Mínimo 3 requeridas).")
-                st.info("💡 Aumenta el 'Radio Buffer' en la barra lateral.")
+                st.warning("⚠️ Datos insuficientes (Mínimo 3 estaciones).")
+                st.info("Aumenta el 'Radio Buffer' en la barra lateral.")
 
         else:
-            st.error("Archivo 'mapaCVENSO.csv' no encontrado.")
+            st.error("CSV no encontrado.")
 
     except Exception as e:
-        st.error(f"Error en el proceso: {e}")
+        st.error(f"Error técnico: {e}")
 else:
-    st.info("👈 Seleccione una zona para comenzar.")
+    st.info("👈 Seleccione una zona.")
