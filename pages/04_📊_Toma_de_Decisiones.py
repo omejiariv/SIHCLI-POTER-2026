@@ -51,11 +51,12 @@ if gdf_zona is not None and not gdf_zona.empty:
         csv_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'mapaCVENSO.csv')
         
         if os.path.exists(csv_path):
-            # CORRECCIÓN DE CODIFICACIÓN PARA LA 'Ñ' (latin-1)
+            # CORRECCIÓN DE SEPARADOR Y CODIFICACIÓN
             df_estaciones_all = pd.read_csv(
                 csv_path, 
-                usecols=['Id_estacio', 'Longitud_geo', 'Latitud_geo', 'alt_est', 'Nom_Est'],
-                encoding='latin-1'  # <--- AQUÍ ESTÁ LA MAGIA
+                sep=';',            # <--- CORRECCIÓN CRÍTICA: Separador punto y coma
+                encoding='latin-1', # Corrección para tildes y ñ
+                usecols=['Id_estacio', 'Longitud_geo', 'Latitud_geo', 'alt_est', 'Nom_Est']
             )
             
             # RENOMBRAR PARA ESTANDARIZAR
@@ -67,6 +68,8 @@ if gdf_zona is not None and not gdf_zona.empty:
             }, inplace=True)
             
             # Rellenar altitud
+            # Aseguramos que sea numérico, convirtiendo errores a NaN primero
+            df_estaciones_all['alt_est'] = pd.to_numeric(df_estaciones_all['alt_est'], errors='coerce')
             df_estaciones_all['alt_est'] = df_estaciones_all['alt_est'].fillna(altitud_ref)
 
             # B. FILTRO ESPACIAL
