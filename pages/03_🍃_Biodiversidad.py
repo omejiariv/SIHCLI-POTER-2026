@@ -85,13 +85,12 @@ if gdf_zona is not None:
         # === TAB 1: MAPA OPTIMIZADO ===
         with tab1:
             st.markdown("##### Visor Territorial")
-            st.caption("ℹ️ Haz clic en los nombres de la leyenda (derecha) para encender/apagar capas instantáneamente.")
+            st.caption("ℹ️ Haz clic en los nombres de la leyenda (derecha) para encender/apagar capas.")
             
             fig = go.Figure()
 
             # --- 1. CAPA BASE: ZONA SELECCIONADA ---
             if gdf_zona is not None:
-                # Centroide
                 try:
                     center = gdf_zona.to_crs("+proj=cea").centroid.to_crs("EPSG:4326").iloc[0]
                     center_lat, center_lon = center.y, center.x
@@ -112,19 +111,16 @@ if gdf_zona is not None:
             # --- 2. CAPA: MUNICIPIOS ---
             gdf_muni = load_layer_cached("Municipios")
             if gdf_muni is not None:
-                # Para evitar agregar miles de trazos, fusionamos visualmente si es posible, 
-                # o iteramos con cuidado. Aquí iteramos pero con 'legendgroup' para que se apaguen todos juntos.
-                
-                # TRUCO DE RENDIMIENTO: Solo dibujamos municipios que interceptan con la vista general
-                # (Opcional: Si sigue lento, podemos hacer un clip espacial aquí también)
+                # Buscar nombre de municipio
+                name_col_muni = next((c for c in ['MPIO_CNMBR', 'nombre', 'NOMBRE', 'municipio'] if c in gdf_muni.columns), None)
                 
                 for idx, row in gdf_muni.iterrows():
                     geom = row.geometry
                     if geom:
+                        muni_name = str(row[name_col_muni]) if name_col_muni else "Municipio"
                         polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
                         for i, poly in enumerate(polys):
                             x, y = poly.exterior.xy
-                            # Solo añadimos 'name' y 'showlegend' al primer polígono para no spammear la leyenda
                             show_leg = True if idx == 0 and i == 0 else False
                             fig.add_trace(go.Scattermapbox(
                                 lon=list(x), lat=list(y), mode='lines',
@@ -132,16 +128,24 @@ if gdf_zona is not None:
                                 name='Municipios', 
                                 legendgroup='group_muni',
                                 showlegend=show_leg,
-                                hoverinfo='skip',
-                                visible=True # Visible por defecto
+                                hoverinfo='text',
+                                text=muni_name, # Nombre al pasar el mouse
+                                visible=True
                             ))
 
-            # --- 3. CAPA: CUENCAS ---
+            # --- 3. CAPA: CUENCAS (Con Hover Activado) ---
             gdf_cuenca = load_layer_cached("Cuencas")
             if gdf_cuenca is not None:
+                 # Detectar columna de nombre
+                 posibles_nombres = ['N-NSS3', 'SUBC_LBL', 'N_NSS1', 'nombre', 'Name', 'NOM_CUENCA', 'subcuenca']
+                 name_col_cuenca = next((c for c in posibles_nombres if c in gdf_cuenca.columns), None)
+
                  for idx, row in gdf_cuenca.iterrows():
                     geom = row.geometry
                     if geom:
+                        # Obtener nombre específico
+                        cuenca_name = str(row[name_col_cuenca]) if name_col_cuenca else "Cuenca"
+                        
                         polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
                         for i, poly in enumerate(polys):
                             x, y = poly.exterior.xy
@@ -152,14 +156,14 @@ if gdf_zona is not None:
                                 name='Cuencas',
                                 legendgroup='group_cuenca',
                                 showlegend=show_leg,
-                                hoverinfo='skip',
-                                visible=True # Visible por defecto
+                                hoverinfo='text', # ACTIVADO
+                                text=cuenca_name, # EL NOMBRE APARECERÁ AQUÍ
+                                visible=True
                             ))
 
-            # --- 4. CAPA: PREDIOS (Apagada por defecto) ---
+            # --- 4. CAPA: PREDIOS ---
             gdf_predios = load_layer_cached("Predios")
             if gdf_predios is not None:
-                # Clip espacial ESTRICTO para no cargar predios lejanos
                 try:
                     gdf_predios_clip = gpd.clip(gdf_predios, gdf_zona.buffer(0.01))
                 except:
@@ -180,11 +184,11 @@ if gdf_zona is not None:
                                     name='Predios', 
                                     legendgroup='group_predios',
                                     showlegend=show_leg,
-                                    hoverinfo='text', text="Predio",
-                                    visible='legendonly' # <--- TRUCO: Apagado al inicio, clic para ver
+                                    hoverinfo='text', text="Predio Ejecutado",
+                                    visible='legendonly'
                                 ))
 
-            # --- 5. BIODIVERSIDAD (Encima de todo) ---
+            # --- 5. BIODIVERSIDAD ---
             fig.add_trace(go.Scattermapbox(
                 lon=gdf_bio['lon'], lat=gdf_bio['lat'],
                 mode='markers',
