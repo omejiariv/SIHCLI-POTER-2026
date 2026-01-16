@@ -2,9 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 from sqlalchemy import create_engine, text
 import geopandas as gpd
+from scipy.interpolate import griddata
 import sys
 import os
 
@@ -18,7 +18,7 @@ except ImportError:
     st.error("Error al importar módulos base.")
     st.stop()
 
-st.title("💧 Modelo Hidrogeológico: Recarga y Escenarios")
+st.title("💧 Estimación de Recarga (Modelo Turc + Escenarios)")
 
 # --- FUNCIONES AUXILIARES DE CAPAS ---
 @st.cache_data(ttl=3600)
@@ -33,9 +33,11 @@ def load_geojson_cached(filename):
     return None
 
 def add_context_layers(fig, gdf_zona):
-    """Añade capas de contexto recortadas."""
+    """Añade capas de contexto (Munis, Cuencas) al mapa."""
     try:
+        # Buffer para asegurar contexto visual
         roi = gdf_zona.buffer(0.05)
+        
         # Municipios
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         if gdf_m is not None:
@@ -45,7 +47,8 @@ def add_context_layers(fig, gdf_zona):
                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
                 for p in polys:
                     x, y = p.exterior.xy
-                    fig.add_trace(go.Scattermapbox(lon=list(x), lat=list(y), mode='lines', line=dict(width=1, color='gray'), hoverinfo='skip'))
+                    fig.add_trace(go.Scattermapbox(lon=list(x), lat=list(y), mode='lines', line=dict(width=0.5, color='gray'), hoverinfo='skip'))
+        
         # Cuencas
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         if gdf_cu is not None:
@@ -58,18 +61,31 @@ def add_context_layers(fig, gdf_zona):
                     fig.add_trace(go.Scattermapbox(lon=list(x), lat=list(y), mode='lines', line=dict(width=1, color='blue'), hoverinfo='skip'))
     except: pass
 
-# --- FUNCIONES MATEMÁTICAS ---
+# --- FUNCIONES MATEMÁTICAS E INTERPOLACIÓN ---
+def interpolacion_segura(points, values, grid_x, grid_y):
+    """Genera superficie continua sin huecos."""
+    # 1. Lineal (Suave)
+    grid_z0 = griddata(points, values, (grid_x, grid_y), method='linear')
+    # 2. Nearest (Relleno de bordes)
+    mask = np.isnan(grid_z0)
+    if np.any(mask):
+        grid_z1 = griddata(points, values, (grid_x, grid_y), method='nearest')
+        grid_z0[mask] = grid_z1[mask]
+    return grid_z0
+
 def calculate_turc_row(p_anual, altitud, ki):
     temp = 30 - (0.0065 * altitud)
     l_t = 300 + 25*temp + 0.05*(temp**3)
+    # Evitar div por cero
+    if l_t == 0: l_t = 0.001
     etr = p_anual / np.sqrt(0.9 + (p_anual / l_t)**2)
     recarga = (p_anual - etr) * ki
-    return etr, recarga
+    return etr, max(0, recarga)
 
 def calculate_turc_advanced(df, ki):
     df = df.copy()
-    df['alt_est'] = pd.to_numeric(df['alt_est'], errors='coerce')
-    df['p_anual'] = pd.to_numeric(df['p_anual'], errors='coerce')
+    df['alt_est'] = pd.to_numeric(df['alt_est'], errors='coerce').fillna(0)
+    df['p_anual'] = pd.to_numeric(df['p_anual'], errors='coerce').fillna(0)
     
     df['temp_est'] = 30 - (0.0065 * df['alt_est'])
     t = df['temp_est']
@@ -107,9 +123,8 @@ ids_dummy, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_e
 
 st.sidebar.divider()
 st.sidebar.header("🌱 Parámetros del Suelo")
-st.sidebar.info("Ajuste los coeficientes según la cobertura del suelo.")
-k_bosque, k_cultivo, k_urbano = 0.50, 0.30, 0.10
 col_s1, col_s2, col_s3 = st.sidebar.columns(3)
+k_bosque, k_cultivo, k_urbano = 0.50, 0.30, 0.10
 pct_bosque = col_s1.number_input("% Bosque", 0, 100, 60)
 pct_cultivo = col_s2.number_input("% Agrícola", 0, 100, 30)
 pct_urbano = max(0, 100 - (pct_bosque + pct_cultivo))
@@ -128,7 +143,7 @@ if gdf_zona is not None and not gdf_zona.empty:
     engine = create_engine(st.secrets["DATABASE_URL"])
     minx, miny, maxx, maxy = gdf_zona.total_bounds
     
-    # 1. Buscar Estaciones
+    # 1. Buscar Estaciones (Usando ST_X/ST_Y para seguridad)
     q_est = text("""
         SELECT id_estacion, nom_est, alt_est, ST_Y(geom::geometry) as lat, ST_X(geom::geometry) as lon
         FROM estaciones 
@@ -157,13 +172,12 @@ if gdf_zona is not None and not gdf_zona.empty:
                 """)
                 df_clima_avg = pd.read_sql(q_clima_avg, engine)
                 
-                # Merge
+                # Merge y Cálculo
                 df_est_filtered['id_estacion'] = df_est_filtered['id_estacion'].astype(str)
                 df_clima_avg['id_estacion'] = df_clima_avg['id_estacion'].astype(str)
                 df_work = pd.merge(df_est_filtered, df_clima_avg, on='id_estacion', how='inner')
                 df_work['alt_est'] = df_work['alt_est'].fillna(altitud_ref)
                 
-                # Cálculo
                 df_res_avg = calculate_turc_advanced(df_work, ki_ponderado)
                 
                 # KPIs
@@ -176,7 +190,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 st.divider()
 
                 # --- PESTAÑAS ---
-                tab_hist, tab_serie, tab_mapa, tab_proy = st.tabs(["📊 Balance Hídrico", "📈 Evolución Histórica", "🗺️ Mapa de Recarga", "🔮 Proyección"])
+                tab_hist, tab_serie, tab_mapa, tab_proy, tab_down = st.tabs(["📊 Balance Hídrico", "📈 Evolución Histórica", "🗺️ Mapa de Superficie", "🔮 Proyección", "💾 Descargas"])
                 
                 with tab_hist:
                     vals = [df_res_avg['p_anual'].mean(), df_res_avg['etr_mm'].mean(), df_res_avg['excedente_mm'].mean(), df_res_avg['recarga_mm'].mean()]
@@ -186,59 +200,89 @@ if gdf_zona is not None and not gdf_zona.empty:
                     st.plotly_chart(fig_hist, use_container_width=True)
 
                 with tab_serie:
-                    with st.spinner("Consultando historia climática..."):
-                        # --- AUTODETECCIÓN DE COLUMNA DE FECHA (Nueva Lógica) ---
-                        # Consultamos una fila para ver los nombres de columnas
-                        check_cols = pd.read_sql("SELECT * FROM precipitacion_mensual LIMIT 1", engine)
-                        cols = [c.lower() for c in check_cols.columns]
-                        
-                        # Buscamos el nombre correcto
-                        date_col = 'fecha' # Default
-                        if 'date' in cols: date_col = 'date'
-                        elif 'fecha_registro' in cols: date_col = 'fecha_registro'
-                        elif 'time' in cols: date_col = 'time'
-                        
-                        # Consulta Agrupada usando la columna detectada
-                        q_hist = text(f"""
-                            SELECT EXTRACT(YEAR FROM {date_col}) as anio, AVG(precipitation)*12 as p_anual 
-                            FROM precipitacion_mensual 
-                            WHERE id_estacion_fk IN ({ids_s}) 
-                            GROUP BY 1 ORDER BY 1
-                        """)
-                        
+                    with st.spinner("Consultando historia..."):
+                        # --- AUTODETECCIÓN INTELIGENTE DE COLUMNA FECHA ---
+                        # 1. Obtener lista de columnas
                         try:
-                            df_hist_serie = pd.read_sql(q_hist, engine)
+                            check_cols = pd.read_sql("SELECT * FROM precipitacion_mensual LIMIT 0", engine)
+                            cols = [c.lower() for c in check_cols.columns]
                             
-                            if not df_hist_serie.empty:
-                                alt_prom = df_est_filtered['alt_est'].mean()
-                                if pd.isna(alt_prom): alt_prom = altitud_ref
-                                df_hist_serie['etr'], df_hist_serie['recarga'] = zip(*df_hist_serie['p_anual'].apply(lambda p: calculate_turc_row(p, alt_prom, ki_ponderado)))
+                            # 2. Buscar candidato (fecha, date, time, year, anio)
+                            date_col = next((c for c in cols if 'fecha' in c or 'date' in c or 'time' in c), None)
+                            
+                            if date_col:
+                                q_hist = text(f"""
+                                    SELECT EXTRACT(YEAR FROM {date_col}) as anio, AVG(precipitation)*12 as p_anual 
+                                    FROM precipitacion_mensual 
+                                    WHERE id_estacion_fk IN ({ids_s}) 
+                                    GROUP BY 1 ORDER BY 1
+                                """)
+                                df_hist_serie = pd.read_sql(q_hist, engine)
                                 
-                                fig_serie = go.Figure()
-                                fig_serie.add_trace(go.Bar(x=df_hist_serie['anio'], y=df_hist_serie['p_anual'], name='Precipitación', marker_color='#A9D0F5', opacity=0.6))
-                                fig_serie.add_trace(go.Scatter(x=df_hist_serie['anio'], y=df_hist_serie['etr'], name='ETR', line=dict(color='orange', width=2)))
-                                fig_serie.add_trace(go.Scatter(x=df_hist_serie['anio'], y=df_hist_serie['recarga'], name='Recarga Potencial', line=dict(color='blue', width=3), fill='tozeroy', fillcolor='rgba(0,0,255,0.1)'))
-                                fig_serie.update_layout(title="Evolución Histórica: Lluvia vs Recarga", xaxis_title="Año", yaxis_title="mm/año", hovermode="x unified", height=500)
-                                st.plotly_chart(fig_serie, use_container_width=True)
+                                if not df_hist_serie.empty:
+                                    alt_prom = df_est_filtered['alt_est'].mean()
+                                    if pd.isna(alt_prom): alt_prom = altitud_ref
+                                    df_hist_serie['etr'], df_hist_serie['recarga'] = zip(*df_hist_serie['p_anual'].apply(lambda p: calculate_turc_row(p, alt_prom, ki_ponderado)))
+                                    
+                                    fig_serie = go.Figure()
+                                    fig_serie.add_trace(go.Bar(x=df_hist_serie['anio'], y=df_hist_serie['p_anual'], name='Precipitación', marker_color='#A9D0F5', opacity=0.6))
+                                    fig_serie.add_trace(go.Scatter(x=df_hist_serie['anio'], y=df_hist_serie['recarga'], name='Recarga Potencial', line=dict(color='blue', width=3), fill='tozeroy'))
+                                    fig_serie.update_layout(title="Evolución Histórica: Lluvia vs Recarga", height=500, hovermode="x unified")
+                                    st.plotly_chart(fig_serie, use_container_width=True)
+                                else:
+                                    st.warning("No hay datos históricos detallados.")
                             else:
-                                st.warning("No hay datos históricos detallados disponibles.")
+                                st.error("No se encontró columna de fecha en la tabla 'precipitacion_mensual'.")
+                                st.write("Columnas disponibles:", cols)
                         except Exception as e:
-                            st.error(f"Error consultando histórico (Columna: {date_col}): {e}")
+                            st.error(f"Error al analizar histórico: {e}")
 
                 with tab_mapa:
-                    center_lat = df_res_avg['lat'].mean()
-                    center_lon = df_res_avg['lon'].mean()
-                    fig_map = go.Figure()
-                    add_context_layers(fig_map, gdf_zona)
-                    fig_map.add_trace(go.Scattermapbox(
-                        lon=df_res_avg['lon'], lat=df_res_avg['lat'],
-                        mode='markers',
-                        marker=dict(size=12, color=df_res_avg['recarga_mm'], colorscale='RdYlBu', showscale=True, colorbar=dict(title="Recarga (mm)")),
-                        text=df_res_avg['nom_est'] + '<br>Recarga: ' + df_res_avg['recarga_mm'].round(1).astype(str) + ' mm',
-                        hoverinfo='text'
-                    ))
-                    fig_map.update_layout(mapbox_style="carto-positron", mapbox=dict(center=dict(lat=center_lat, lon=center_lon), zoom=10), margin={"r":0,"t":0,"l":0,"b":0}, height=600)
-                    st.plotly_chart(fig_map, use_container_width=True)
+                    # --- MAPA DE SUPERFICIE (INTERPOLADO) ---
+                    if len(df_res_avg) >= 3:
+                        with st.spinner("Interpolando superficie de recarga..."):
+                            # Grid
+                            gx, gy = np.mgrid[minx:maxx:100j, miny:maxy:100j]
+                            points = df_res_avg[['lon', 'lat']].values
+                            values = df_res_avg['recarga_mm'].values
+                            
+                            grid_R = interpolacion_segura(points, values, gx, gy)
+                            
+                            center_lat = df_res_avg['lat'].mean()
+                            center_lon = df_res_avg['lon'].mean()
+                            
+                            fig_map = go.Figure()
+                            
+                            # 1. Superficie (Contour)
+                            fig_map.add_trace(go.Contour(
+                                z=grid_R.T, x=np.linspace(minx, maxx, 100), y=np.linspace(miny, maxy, 100),
+                                colorscale="Blues", # Azul = Agua
+                                colorbar=dict(title="Recarga (mm/año)", len=0.8),
+                                hoverinfo='z', name="Recarga",
+                                contours=dict(coloring='heatmap', showlabels=True),
+                                opacity=0.7, connectgaps=True
+                            ))
+                            
+                            # 2. Contexto
+                            add_context_layers(fig_map, gdf_zona)
+                            
+                            # 3. Estaciones (Puntos encima)
+                            fig_map.add_trace(go.Scattermapbox(
+                                lon=df_res_avg['lon'], lat=df_res_avg['lat'],
+                                mode='markers',
+                                marker=dict(size=8, color='black'),
+                                text=df_res_avg['nom_est'] + '<br>R: ' + df_res_avg['recarga_mm'].round(0).astype(str) + ' mm',
+                                hoverinfo='text', name='Estaciones'
+                            ))
+                            
+                            fig_map.update_layout(
+                                mapbox_style="carto-positron",
+                                mapbox=dict(center=dict(lat=center_lat, lon=center_lon), zoom=10),
+                                margin={"r":0,"t":0,"l":0,"b":0}, height=600
+                            )
+                            st.plotly_chart(fig_map, use_container_width=True)
+                    else:
+                        st.warning("⚠️ Se necesitan al menos 3 estaciones para generar la superficie interpolada.")
 
                 with tab_proy:
                     if activar_proyeccion:
@@ -249,6 +293,35 @@ if gdf_zona is not None and not gdf_zona.empty:
                         fig_proy.add_trace(go.Scatter(x=df_proy['Fecha'], y=df_proy['Recarga Estimada'], mode='lines', line=dict(color='blue', width=3), name='Recarga Estimada'))
                         fig_proy.update_layout(title=f"Proyección (Horizonte {horizonte})", yaxis_title="Recarga (mm/año)", hovermode="x unified", height=500)
                         st.plotly_chart(fig_proy, use_container_width=True)
+
+                with tab_down:
+                    st.subheader("💾 Centro de Descargas")
+                    
+                    # 1. Datos Tabulares (Excel/CSV)
+                    csv = df_res_avg.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Descargar Datos Calculados (CSV)",
+                        data=csv,
+                        file_name=f"recarga_subterranea_{nombre_seleccion}.csv",
+                        mime="text/csv",
+                    )
+                    
+                    # 2. Datos Espaciales (GeoJSON)
+                    # Convertimos el DF resultante a GeoJSON
+                    gdf_export = gpd.GeoDataFrame(
+                        df_res_avg, 
+                        geometry=gpd.points_from_xy(df_res_avg.lon, df_res_avg.lat),
+                        crs="EPSG:4326"
+                    )
+                    geojson = gdf_export.to_json()
+                    st.download_button(
+                        label="🗺️ Descargar Capa GIS (GeoJSON)",
+                        data=geojson,
+                        file_name=f"recarga_gis_{nombre_seleccion}.geojson",
+                        mime="application/geo+json",
+                    )
+                    st.info("💡 El archivo GeoJSON contiene la ubicación de las estaciones y sus valores de recarga calculados. Puedes abrirlo directamente en QGIS, ArcGIS o Google Earth.")
+
             else:
                 st.warning("Seleccione estaciones.")
         else:
