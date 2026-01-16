@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
 import geopandas as gpd
-from scipy.interpolate import Rbf  # <--- NUEVO: Interpolación RBF suave
+from scipy.interpolate import griddata
 import sys
 import os
 
@@ -27,36 +27,15 @@ except ImportError:
 
 st.title("💧 Estimación de Recarga (Modelo Turc + Escenarios)")
 
-# --- 1. DOCUMENTACIÓN TÉCNICA (RECUPERADA) ---
-with st.expander("📘 Documentación Técnica: Marco Conceptual, Ecuaciones y Metodología", expanded=False):
+# --- 1. DOCUMENTACIÓN ---
+with st.expander("📘 Metodología: Modelo Turc y Proyecciones", expanded=False):
     st.markdown("""
-    ### 1. Marco Conceptual
-    La recarga de aguas subterráneas es la fracción de la precipitación que se infiltra en el suelo y alcanza el nivel freático, renovando los acuíferos. Este módulo estima la **Recarga Potencial** mediante un balance hídrico climático corregido por la capacidad de infiltración del terreno.
-
-    ### 2. Metodología: Método de Turc (1954)
-    Se utiliza el modelo empírico de Turc para estimar la Evapotranspiración Real (ETR) a partir de la precipitación y la temperatura media.
-
-    #### Ecuaciones:
-    1.  **Temperatura Estimada ($T$):** Se calcula mediante el gradiente altitudinal.
-        $$ T = 30 - (0.0065 \times Altitud) $$
-    2.  **Capacidad Evaporativa del Aire ($L_t$):**
-        $$ L(t) = 300 + 25T + 0.05T^3 $$
-    3.  **Evapotranspiración Real ($ETR$):**
-        $$ ETR = \\frac{P}{\\sqrt{0.9 + (\\frac{P}{L(t)})^2}} $$
-    4.  **Excedente Hídrico ($Exc$):**
-        $$ Exc = P - ETR $$
-    5.  **Recarga Potencial ($R$):** Se aplica un Coeficiente de Infiltración ($K_i$) dependiente del uso del suelo.
-        $$ R = Exc \times K_i $$
-
-    ### 3. Proyecciones
-    Se utiliza el algoritmo **Facebook Prophet** (o un modelo estadístico simplificado si no está disponible) para proyectar la serie temporal de precipitación. Luego, se recalcula el balance de Turc para cada mes futuro, permitiendo visualizar escenarios de estrés hídrico.
-    
-    ### 4. Fuentes
-    * **Clima:** Series históricas mensuales IDEAM/EPM (Tabla `precipitacion_mensual`).
-    * **Cartografía:** Capas oficiales de la Gobernación de Antioquia.
+    * **Balance Hídrico (Turc):** Estima la recarga como el excedente de la precipitación menos la evapotranspiración real (ETR), corregido por un coeficiente de infiltración ($K_i$).
+    * **Proyección:** Utiliza el algoritmo Prophet para modelar la tendencia y estacionalidad de la lluvia, proyectando escenarios futuros.
+    * **Interpolación:** Genera superficies continuas mediante métodos geoestadísticos para identificar zonas de recarga preferencial.
     """)
 
-# --- FUNCIONES AUXILIARES ---
+# --- FUNCIONES GIS ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
     filepath = os.path.join(os.path.dirname(__file__), '..', 'data', filename)
@@ -69,9 +48,10 @@ def load_geojson_cached(filename):
     return None
 
 def add_context_layers(fig, gdf_zona):
-    """Añade capas de contexto recortadas."""
+    """Añade capas de contexto (Municipios, Cuencas)."""
     try:
         roi = gdf_zona.buffer(0.05)
+        # Municipios
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         if gdf_m is not None:
             gdf_c = gpd.clip(gdf_m, roi)
@@ -81,7 +61,7 @@ def add_context_layers(fig, gdf_zona):
                 for p in polys:
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scattermapbox(lon=list(x), lat=list(y), mode='lines', line=dict(width=0.5, color='gray'), hoverinfo='skip'))
-        
+        # Cuencas
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         if gdf_cu is not None:
             gdf_c = gpd.clip(gdf_cu, roi)
@@ -93,20 +73,19 @@ def add_context_layers(fig, gdf_zona):
                     fig.add_trace(go.Scattermapbox(lon=list(x), lat=list(y), mode='lines', line=dict(width=1, color='blue'), hoverinfo='skip'))
     except: pass
 
-def interpolacion_rbf(points, values, grid_x, grid_y):
+def interpolacion_segura(points, values, grid_x, grid_y):
     """
-    Interpolación usando Radial Basis Function (RBF).
-    Genera superficies mucho más suaves y naturales que la interpolación lineal.
+    Interpolación Robusta (Linear + Nearest). 
+    Más estable que RBF para visualización web rápida.
     """
-    try:
-        # 'thin_plate' es excelente para topografía y campos continuos
-        rbf = Rbf(points[:, 0], points[:, 1], values, function='thin_plate')
-        grid_z = rbf(grid_x, grid_y)
-        return grid_z
-    except Exception:
-        # Fallback si RBF falla (por puntos colineales, etc.)
-        from scipy.interpolate import griddata
-        return griddata(points, values, (grid_x, grid_y), method='nearest')
+    # 1. Linear (Suave dentro del convex hull)
+    grid_z0 = griddata(points, values, (grid_x, grid_y), method='linear')
+    # 2. Nearest (Rellena bordes y evita huecos)
+    mask = np.isnan(grid_z0)
+    if np.any(mask):
+        grid_z1 = griddata(points, values, (grid_x, grid_y), method='nearest')
+        grid_z0[mask] = grid_z1[mask]
+    return grid_z0
 
 # --- CÁLCULOS TURC ---
 def calculate_turc_row(p_anual, altitud, ki):
@@ -133,57 +112,56 @@ def calculate_turc_advanced(df, ki):
     df['recarga_mm'] = df['excedente_mm'] * ki
     return df
 
-# --- PROPHET + SUAVIZADO ---
-def run_prophet_forecast_smoothed(df_hist, months_ahead, altitud_ref, ki):
+# --- FORECASTING ---
+def run_prophet_forecast_gap_filling(df_hist, months_ahead, altitud_ref, ki, ruido_factor):
     """
-    Proyecta y aplica Media Móvil (Rolling Mean) para eliminar ruido estacional irreal.
+    Proyecta desde el último dato real hasta el futuro (cubriendo el presente).
     """
+    if not PROPHET_AVAILABLE: return pd.DataFrame()
+
     # 1. Preparar histórico
-    if PROPHET_AVAILABLE and len(df_hist) >= 24:
-        df_prophet = df_hist.rename(columns={'fecha': 'ds', 'p_mensual': 'y'})
-        m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True)
-        m.fit(df_prophet)
-        future = m.make_future_dataframe(periods=months_ahead, freq='M')
-        forecast = m.predict(future)
-        
-        # DataFrame continuo (Histórico + Futuro)
-        df_full = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
-        
-        # Reemplazar el pasado simulado con el real para mayor precisión visual
-        df_full = df_full.set_index('ds')
-        df_real = df_prophet.set_index('ds')
-        df_full.loc[df_real.index, 'yhat'] = df_real['y'] # Usar dato real donde existe
-        df_full = df_full.reset_index()
-
-    else:
-        # Fallback Estadístico Simple
-        # ... (Lógica simple de extensión de media)
-        return pd.DataFrame() # Simplificado para brevedad, idealmente usar fallback
-
-    # 2. Calcular Variables Hidrológicas Mensuales
-    # Nota: Turc es anual, pero lo aplicamos mensualmente como aproximación de proceso continuo
-    # Para visualizar "Tasa Anual", anualizamos (x12) ANTES de suavizar
-    df_full['p_rate'] = df_full['yhat'].clip(lower=0) * 12
+    df_prophet = df_hist.rename(columns={'fecha': 'ds', 'p_mensual': 'y'})
+    last_date = df_prophet['ds'].max()
     
-    # Vectorización
+    # 2. Configurar Modelo
+    m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True)
+    m.fit(df_prophet)
+    
+    # 3. Definir Horizonte (Desde último dato hasta Hoy + Meses Futuros)
+    target_date = pd.Timestamp.today() + pd.DateOffset(months=months_ahead)
+    # Calcular cuántos meses faltan desde el último dato real hasta el objetivo
+    months_gap = (target_date.year - last_date.year) * 12 + (target_date.month - last_date.month)
+    if months_gap < 1: months_gap = 12
+    
+    future = m.make_future_dataframe(periods=months_gap, freq='M')
+    forecast = m.predict(future)
+    
+    res = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
+    
+    # 4. Calcular Hidrología (Mensual Anualizada)
+    # Sin suavizado excesivo para ver variabilidad
+    res['p_rate'] = res['yhat'].clip(lower=0) * 12
+    
+    # Aplicar Incertidumbre del usuario
+    res['p_rate_low'] = (res['yhat_lower'] * (1 - 0.1*ruido_factor)).clip(lower=0) * 12
+    res['p_rate_high'] = (res['yhat_upper'] * (1 + 0.1*ruido_factor)).clip(lower=0) * 12
+    
+    # Vectorización Turc
     def calc_vec(p): return calculate_turc_row(p, altitud_ref, ki)
     
-    # Aplicar a cada fila
-    res_vec = df_full['p_rate'].apply(calc_vec)
-    df_full['etr_raw'] = [x[0] for x in res_vec]
-    df_full['rec_raw'] = [x[1] for x in res_vec]
+    # Calcular Central
+    central = res['p_rate'].apply(calc_vec)
+    res['etr_est'] = [x[0] for x in central]
+    res['recarga_est'] = [x[1] for x in central]
     
-    # 3. SUAVIZADO (ROLLING MEAN) - LA CLAVE
-    # Una ventana de 12 meses elimina la estacionalidad intra-anual y deja la tendencia climática
-    df_full['recarga_smooth'] = df_full['rec_raw'].rolling(window=12, center=True).mean()
-    df_full['etr_smooth'] = df_full['etr_raw'].rolling(window=12, center=True).mean()
-    df_full['p_smooth'] = df_full['p_rate'].rolling(window=12, center=True).mean()
+    # Calcular Bandas
+    low = res['p_rate_low'].apply(calc_vec)
+    res['recarga_low'] = [x[1] for x in low]
     
-    # Incertidumbre (También suavizada)
-    df_full['rec_lower'] = (df_full['yhat_lower']*12).apply(lambda x: calculate_turc_row(x, altitud_ref, ki)[1]).rolling(12, center=True).mean()
-    df_full['rec_upper'] = (df_full['yhat_upper']*12).apply(lambda x: calculate_turc_row(x, altitud_ref, ki)[1]).rolling(12, center=True).mean()
+    high = res['p_rate_high'].apply(calc_vec)
+    res['recarga_high'] = [x[1] for x in high]
     
-    return df_full.dropna() # Eliminar los NaN de los bordes del rolling
+    return res
 
 # --- INTERFAZ ---
 ids_dummy, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
@@ -199,10 +177,11 @@ ki_ponderado = ((pct_bosque * 0.50) + (pct_cultivo * 0.30) + (pct_urbano * 0.10)
 st.sidebar.metric("Coef. Infiltración ($K_i$)", f"{ki_ponderado:.2f}")
 
 st.sidebar.divider()
-st.sidebar.header("⚙️ Pronóstico")
-horizonte_meses = st.sidebar.slider("Meses a Proyectar:", 12, 60, 24)
+st.sidebar.header("⚙️ Configuración Pronóstico")
+horizonte_meses = st.sidebar.slider("Meses Futuros:", 12, 60, 24)
+ruido = st.sidebar.slider("Incertidumbre Climática:", 0.0, 2.0, 0.5)
 
-# --- MOTOR PRINCIPAL ---
+# --- MOTOR ---
 if gdf_zona is not None and not gdf_zona.empty:
     engine = create_engine(st.secrets["DATABASE_URL"])
     minx, miny, maxx, maxy = gdf_zona.total_bounds
@@ -226,14 +205,14 @@ if gdf_zona is not None and not gdf_zona.empty:
                 ids_v = df_est_filtered['id_estacion'].unique()
                 ids_s = ",".join([f"'{str(x)}'" for x in ids_v])
                 
-                # DATOS PROMEDIO
+                # --- DATOS PROMEDIO ---
                 q_avg = text(f"""
                     SELECT id_estacion_fk as id_estacion, AVG(precipitation)*12 as p_anual 
                     FROM precipitacion_mensual WHERE id_estacion_fk IN ({ids_s}) GROUP BY 1
                 """)
                 df_avg = pd.read_sql(q_avg, engine)
                 
-                # DATOS SERIE (CORREGIDO: fecha_mes_año)
+                # --- DATOS SERIE (HISTÓRICO) ---
                 q_serie = text(f"""
                     SELECT fecha_mes_año as fecha, AVG(precipitation) as p_mensual
                     FROM precipitacion_mensual 
@@ -242,12 +221,11 @@ if gdf_zona is not None and not gdf_zona.empty:
                 """)
                 df_serie = pd.read_sql(q_serie, engine)
                 
-                # Procesamiento
+                # Procesar KPIs y Mapa
                 df_est_filtered['id_estacion'] = df_est_filtered['id_estacion'].astype(str)
                 df_avg['id_estacion'] = df_avg['id_estacion'].astype(str)
                 df_work = pd.merge(df_est_filtered, df_avg, on='id_estacion', how='inner')
                 df_work['alt_est'] = df_work['alt_est'].fillna(altitud_ref)
-                
                 df_res_avg = calculate_turc_advanced(df_work, ki_ponderado)
                 
                 # KPIs
@@ -255,95 +233,136 @@ if gdf_zona is not None and not gdf_zona.empty:
                 c1.metric("Lluvia Media", f"{df_res_avg['p_anual'].mean():.0f} mm")
                 c2.metric("ETR", f"{df_res_avg['etr_mm'].mean():.0f} mm")
                 c3.metric("Coef. $K_i$", f"{ki_ponderado:.2f}")
-                c4.metric("Recarga Total", f"{df_res_avg['recarga_mm'].mean():.0f} mm", delta="Oferta")
+                c4.metric("Recarga Total", f"{df_res_avg['recarga_mm'].mean():.0f} mm", delta="Oferta Hídrica")
                 
                 st.divider()
                 
-                tab_evol, tab_mapa, tab_data = st.tabs(["📈 Evolución & Pronóstico", "🗺️ Superficie de Recarga", "💾 Datos"])
+                # --- PESTAÑAS ---
+                tab_evol, tab_mapa, tab_data = st.tabs(["📈 Evolución & Pronóstico", "🗺️ Mapa de Recarga", "💾 Descargas"])
                 
                 with tab_evol:
                     if not df_serie.empty and PROPHET_AVAILABLE:
-                        with st.spinner("Generando proyección suavizada (Tendencia)..."):
+                        with st.spinner("Proyectando escenarios climáticos..."):
                             alt_prom = df_est_filtered['alt_est'].mean() if not df_est_filtered['alt_est'].isna().all() else altitud_ref
                             
-                            df_smooth = run_prophet_forecast_smoothed(df_serie, horizonte_meses, alt_prom, ki_ponderado)
+                            # Forecast Gap Filling
+                            df_forecast = run_prophet_forecast_gap_filling(df_serie, horizonte_meses, alt_prom, ki_ponderado, ruido)
                             
-                            if not df_smooth.empty:
+                            if not df_forecast.empty:
                                 fig = go.Figure()
                                 now = pd.Timestamp.today()
-                                hist = df_smooth[df_smooth['ds'] <= now]
-                                fut = df_smooth[df_smooth['ds'] > now]
                                 
-                                # Tendencias Suavizadas
-                                fig.add_trace(go.Scatter(x=hist['ds'], y=hist['p_smooth'], name='Lluvia (Tendencia)', line=dict(color='lightblue', width=1.5)))
-                                fig.add_trace(go.Scatter(x=hist['ds'], y=hist['etr_smooth'], name='ETR', line=dict(color='orange', width=2)))
-                                fig.add_trace(go.Scatter(x=hist['ds'], y=hist['recarga_smooth'], name='Recarga (Hist)', line=dict(color='darkblue', width=3)))
+                                # Separar Pasado (Real/Simulado) y Futuro
+                                # Prophet devuelve toda la serie temporal
                                 
-                                # Futuro
-                                fig.add_trace(go.Scatter(x=fut['ds'], y=fut['recarga_smooth'], name='Pronóstico Recarga', line=dict(color='dodgerblue', width=3, dash='dot')))
+                                # 1. Recarga (Continua)
+                                fig.add_trace(go.Scatter(
+                                    x=df_forecast['ds'], y=df_forecast['recarga_est'],
+                                    name='Recarga Estimada', line=dict(color='blue', width=2),
+                                    fill='tozeroy', fillcolor='rgba(0,0,255,0.05)'
+                                ))
                                 
-                                # Incertidumbre
-                                fig.add_trace(go.Scatter(x=fut['ds'], y=fut['rec_upper'], mode='lines', line=dict(width=0), showlegend=False))
-                                fig.add_trace(go.Scatter(x=fut['ds'], y=fut['rec_lower'], mode='lines', line=dict(width=0), fill='tonexty', fillcolor='rgba(0,0,255,0.1)', name='Rango Incertidumbre'))
+                                # 2. Lluvia (Fondo)
+                                fig.add_trace(go.Bar(
+                                    x=df_forecast['ds'], y=df_forecast['p_rate'],
+                                    name='Precipitación', marker_color='rgba(135, 206, 235, 0.3)',
+                                    hoverinfo='skip' # Para no saturar el hover
+                                ))
+                                
+                                # 3. ETR
+                                fig.add_trace(go.Scatter(
+                                    x=df_forecast['ds'], y=df_forecast['etr_est'],
+                                    name='ETR', line=dict(color='orange', width=1.5, dash='dot')
+                                ))
+                                
+                                # 4. Incertidumbre Futura
+                                fut_mask = df_forecast['ds'] > now
+                                fig.add_trace(go.Scatter(
+                                    x=df_forecast[fut_mask]['ds'], y=df_forecast[fut_mask]['recarga_high'],
+                                    mode='lines', line=dict(width=0), showlegend=False
+                                ))
+                                fig.add_trace(go.Scatter(
+                                    x=df_forecast[fut_mask]['ds'], y=df_forecast[fut_mask]['recarga_low'],
+                                    mode='lines', line=dict(width=0), fill='tonexty', 
+                                    fillcolor='rgba(0,0,255,0.1)', name='Rango Incertidumbre'
+                                ))
+                                
+                                # Línea vertical de "Hoy"
+                                fig.add_vline(x=now.timestamp() * 1000, line_width=1, line_dash="dash", line_color="green")
+                                fig.add_annotation(x=now, y=df_forecast['recarga_est'].max(), text="Hoy", showarrow=False, yshift=10)
 
                                 fig.update_layout(
-                                    title="Tendencia Hidrológica (Media Móvil 12 meses)",
-                                    yaxis_title="Tasa Anualizada (mm/año)",
-                                    hovermode="x unified", height=500
+                                    title="Dinámica de Recarga: Histórico + Proyección (Gap Filling)",
+                                    yaxis_title="Tasa (mm/año)", hovermode="x unified", height=500
                                 )
                                 st.plotly_chart(fig, use_container_width=True)
-                                st.info("ℹ️ Se aplica un filtro de Media Móvil (12 meses) para eliminar la estacionalidad y visualizar la tendencia real del acuífero.")
                             else:
-                                st.warning("No hay suficientes datos para la proyección suavizada.")
+                                st.warning("Error en la generación del pronóstico.")
                     else:
-                        st.warning("Datos insuficientes o Prophet no instalado.")
+                        st.warning("Datos históricos insuficientes para proyectar.")
 
                 with tab_mapa:
                     if len(df_res_avg) >= 3:
-                        with st.spinner("Generando superficie RBF..."):
-                            # Grid de alta resolución
-                            gx, gy = np.mgrid[minx:maxx:200j, miny:maxy:200j]
+                        with st.spinner("Generando superficie continua..."):
+                            # Grid
+                            gx, gy = np.mgrid[minx:maxx:100j, miny:maxy:100j]
                             
-                            # Interpolación RBF
-                            points = df_res_avg[['lon', 'lat']].values
-                            values = df_res_avg['recarga_mm'].values
-                            grid_R = interpolacion_rbf(points, values, gx, gy)
+                            # Interpolación
+                            grid_R = interpolacion_segura(
+                                df_res_avg[['lon', 'lat']].values, 
+                                df_res_avg['recarga_mm'].values, gx, gy
+                            )
                             
                             fig_m = go.Figure()
                             
-                            # Superficie
+                            # 1. Superficie Continua (Contour)
                             fig_m.add_trace(go.Contour(
-                                z=grid_R.T, x=np.linspace(minx, maxx, 200), y=np.linspace(miny, maxy, 200),
-                                colorscale="Blues", colorbar=dict(title="Recarga (mm)"),
-                                hoverinfo='z', contours=dict(coloring='heatmap', showlabels=False),
-                                opacity=0.8, connectgaps=True
+                                z=grid_R.T, x=np.linspace(minx, maxx, 100), y=np.linspace(miny, maxy, 100),
+                                colorscale="Blues", 
+                                colorbar=dict(title="Recarga (mm/año)"), 
+                                hoverinfo='z', 
+                                contours=dict(coloring='heatmap', showlabels=False),
+                                opacity=0.7, 
+                                connectgaps=True,
+                                line_smoothing=0.85
                             ))
                             
+                            # 2. Contexto
                             add_context_layers(fig_m, gdf_zona)
                             
+                            # 3. Puntos Estaciones
                             fig_m.add_trace(go.Scattermapbox(
                                 lon=df_res_avg['lon'], lat=df_res_avg['lat'],
                                 mode='markers', marker=dict(size=8, color='black'),
-                                text=df_res_avg['nom_est'], hoverinfo='text', name='Estaciones'
+                                text=df_res_avg['nom_est'] + '<br>Recarga: ' + df_res_avg['recarga_mm'].round(0).astype(str),
+                                hoverinfo='text', name='Estaciones'
                             ))
                             
-                            center_lat = df_res_avg['lat'].mean()
-                            center_lon = df_res_avg['lon'].mean()
                             fig_m.update_layout(
                                 mapbox_style="carto-positron",
-                                mapbox=dict(center=dict(lat=center_lat, lon=center_lon), zoom=10),
+                                mapbox=dict(center=dict(lat=df_res_avg['lat'].mean(), lon=df_res_avg['lon'].mean()), zoom=10),
                                 margin={"r":0,"t":0,"l":0,"b":0}, height=650
                             )
-                            st.plotly_chart(fig_m, use_container_width=True)
+                            # CLAVE ÚNICA PARA EVITAR PARPADEO
+                            st.plotly_chart(fig_m, use_container_width=True, key="mapa_recarga_estable")
                     else:
-                        st.warning("Se necesitan al menos 3 estaciones para interpolar.")
+                        st.warning("⚠️ Se necesitan al menos 3 estaciones para interpolar el mapa.")
 
                 with tab_data:
+                    st.subheader("Centro de Descargas")
+                    c_d1, c_d2 = st.columns(2)
+                    
+                    # CSV
                     csv = df_res_avg.to_csv(index=False).encode('utf-8')
-                    st.download_button("📥 Descargar CSV", csv, "balance.csv", "text/csv")
+                    c_d1.download_button("📥 Descargar Tabla (CSV)", csv, "balance_hidrico.csv", "text/csv")
+                    
+                    # GeoJSON
+                    gdf_exp = gpd.GeoDataFrame(df_res_avg, geometry=gpd.points_from_xy(df_res_avg.lon, df_res_avg.lat), crs="EPSG:4326")
+                    c_d2.download_button("🗺️ Descargar Capa GIS (GeoJSON)", gdf_exp.to_json(), "recarga_gis.geojson", "application/json")
+                    
                     st.dataframe(df_res_avg[['nom_est', 'p_anual', 'etr_mm', 'recarga_mm']])
 
-            else: st.warning("Seleccione estaciones.")
+            else: st.warning("Seleccione al menos una estación.")
         else: st.warning("Zona sin estaciones.")
     except Exception as e: st.error(f"Error técnico: {e}")
 else: st.info("👈 Seleccione una zona.")
