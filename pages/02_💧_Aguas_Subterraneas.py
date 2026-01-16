@@ -20,7 +20,7 @@ except ImportError:
 
 st.title("💧 Modelo Hidrogeológico: Recarga y Escenarios")
 
-# --- FUNCIONES AUXILIARES DE CAPAS (Para el Mapa) ---
+# --- FUNCIONES AUXILIARES DE CAPAS ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
     filepath = os.path.join(os.path.dirname(__file__), '..', 'data', filename)
@@ -60,7 +60,6 @@ def add_context_layers(fig, gdf_zona):
 
 # --- FUNCIONES MATEMÁTICAS ---
 def calculate_turc_row(p_anual, altitud, ki):
-    """Calcula Turc para una fila o valor escalar."""
     temp = 30 - (0.0065 * altitud)
     l_t = 300 + 25*temp + 0.05*(temp**3)
     etr = p_anual / np.sqrt(0.9 + (p_anual / l_t)**2)
@@ -68,7 +67,6 @@ def calculate_turc_row(p_anual, altitud, ki):
     return etr, recarga
 
 def calculate_turc_advanced(df, ki):
-    """Calcula Turc vectorizado para dataframe."""
     df = df.copy()
     df['alt_est'] = pd.to_numeric(df['alt_est'], errors='coerce')
     df['p_anual'] = pd.to_numeric(df['p_anual'], errors='coerce')
@@ -150,7 +148,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 ids_v = df_est_filtered['id_estacion'].unique()
                 ids_s = ",".join([f"'{str(x)}'" for x in ids_v])
                 
-                # 2. DATOS PROMEDIO (Para KPIs y Mapa)
+                # 2. DATOS PROMEDIO
                 q_clima_avg = text(f"""
                     SELECT id_estacion_fk as id_estacion, AVG(precipitation)*12 as p_anual 
                     FROM precipitacion_mensual 
@@ -159,13 +157,13 @@ if gdf_zona is not None and not gdf_zona.empty:
                 """)
                 df_clima_avg = pd.read_sql(q_clima_avg, engine)
                 
-                # Merge Promedio
+                # Merge
                 df_est_filtered['id_estacion'] = df_est_filtered['id_estacion'].astype(str)
                 df_clima_avg['id_estacion'] = df_clima_avg['id_estacion'].astype(str)
                 df_work = pd.merge(df_est_filtered, df_clima_avg, on='id_estacion', how='inner')
                 df_work['alt_est'] = df_work['alt_est'].fillna(altitud_ref)
                 
-                # Cálculo Promedio
+                # Cálculo
                 df_res_avg = calculate_turc_advanced(df_work, ki_ponderado)
                 
                 # KPIs
@@ -181,7 +179,6 @@ if gdf_zona is not None and not gdf_zona.empty:
                 tab_hist, tab_serie, tab_mapa, tab_proy = st.tabs(["📊 Balance Hídrico", "📈 Evolución Histórica", "🗺️ Mapa de Recarga", "🔮 Proyección"])
                 
                 with tab_hist:
-                    # Gráfico de Barras (Resumen)
                     vals = [df_res_avg['p_anual'].mean(), df_res_avg['etr_mm'].mean(), df_res_avg['excedente_mm'].mean(), df_res_avg['recarga_mm'].mean()]
                     cats = ['Precipitación', 'ETR', 'Excedente', 'Recarga']
                     fig_hist = go.Figure(go.Bar(x=cats, y=vals, text=[f"{v:.0f}" for v in vals], textposition='auto', marker_color=['#1f77b4', '#ff7f0e', '#2ca02c', '#17becf']))
@@ -189,66 +186,58 @@ if gdf_zona is not None and not gdf_zona.empty:
                     st.plotly_chart(fig_hist, use_container_width=True)
 
                 with tab_serie:
-                    # NUEVO: Gráfico de Serie Temporal Histórica
                     with st.spinner("Consultando historia climática..."):
-                        # Consulta Agrupada por Año
+                        # --- AUTODETECCIÓN DE COLUMNA DE FECHA (Nueva Lógica) ---
+                        # Consultamos una fila para ver los nombres de columnas
+                        check_cols = pd.read_sql("SELECT * FROM precipitacion_mensual LIMIT 1", engine)
+                        cols = [c.lower() for c in check_cols.columns]
+                        
+                        # Buscamos el nombre correcto
+                        date_col = 'fecha' # Default
+                        if 'date' in cols: date_col = 'date'
+                        elif 'fecha_registro' in cols: date_col = 'fecha_registro'
+                        elif 'time' in cols: date_col = 'time'
+                        
+                        # Consulta Agrupada usando la columna detectada
                         q_hist = text(f"""
-                            SELECT EXTRACT(YEAR FROM fecha) as anio, AVG(precipitation)*12 as p_anual 
+                            SELECT EXTRACT(YEAR FROM {date_col}) as anio, AVG(precipitation)*12 as p_anual 
                             FROM precipitacion_mensual 
                             WHERE id_estacion_fk IN ({ids_s}) 
                             GROUP BY 1 ORDER BY 1
                         """)
-                        df_hist_serie = pd.read_sql(q_hist, engine)
                         
-                        if not df_hist_serie.empty:
-                            # Calculamos Turc año a año (usando altitud promedio de la zona para simplificar)
-                            alt_prom = df_est_filtered['alt_est'].mean()
-                            if pd.isna(alt_prom): alt_prom = altitud_ref
+                        try:
+                            df_hist_serie = pd.read_sql(q_hist, engine)
                             
-                            df_hist_serie['etr'], df_hist_serie['recarga'] = zip(*df_hist_serie['p_anual'].apply(lambda p: calculate_turc_row(p, alt_prom, ki_ponderado)))
-                            
-                            fig_serie = go.Figure()
-                            fig_serie.add_trace(go.Bar(x=df_hist_serie['anio'], y=df_hist_serie['p_anual'], name='Precipitación', marker_color='#A9D0F5', opacity=0.6))
-                            fig_serie.add_trace(go.Scatter(x=df_hist_serie['anio'], y=df_hist_serie['etr'], name='ETR', line=dict(color='orange', width=2)))
-                            fig_serie.add_trace(go.Scatter(x=df_hist_serie['anio'], y=df_hist_serie['recarga'], name='Recarga Potencial', line=dict(color='blue', width=3), fill='tozeroy', fillcolor='rgba(0,0,255,0.1)'))
-                            
-                            fig_serie.update_layout(title="Evolución Histórica: Lluvia vs Recarga", xaxis_title="Año", yaxis_title="mm/año", hovermode="x unified", height=500)
-                            st.plotly_chart(fig_serie, use_container_width=True)
-                        else:
-                            st.warning("No hay datos históricos detallados disponibles.")
+                            if not df_hist_serie.empty:
+                                alt_prom = df_est_filtered['alt_est'].mean()
+                                if pd.isna(alt_prom): alt_prom = altitud_ref
+                                df_hist_serie['etr'], df_hist_serie['recarga'] = zip(*df_hist_serie['p_anual'].apply(lambda p: calculate_turc_row(p, alt_prom, ki_ponderado)))
+                                
+                                fig_serie = go.Figure()
+                                fig_serie.add_trace(go.Bar(x=df_hist_serie['anio'], y=df_hist_serie['p_anual'], name='Precipitación', marker_color='#A9D0F5', opacity=0.6))
+                                fig_serie.add_trace(go.Scatter(x=df_hist_serie['anio'], y=df_hist_serie['etr'], name='ETR', line=dict(color='orange', width=2)))
+                                fig_serie.add_trace(go.Scatter(x=df_hist_serie['anio'], y=df_hist_serie['recarga'], name='Recarga Potencial', line=dict(color='blue', width=3), fill='tozeroy', fillcolor='rgba(0,0,255,0.1)'))
+                                fig_serie.update_layout(title="Evolución Histórica: Lluvia vs Recarga", xaxis_title="Año", yaxis_title="mm/año", hovermode="x unified", height=500)
+                                st.plotly_chart(fig_serie, use_container_width=True)
+                            else:
+                                st.warning("No hay datos históricos detallados disponibles.")
+                        except Exception as e:
+                            st.error(f"Error consultando histórico (Columna: {date_col}): {e}")
 
                 with tab_mapa:
-                    # NUEVO: Mapa de Recarga
-                    # Usamos df_res_avg que ya tiene lat/lon/recarga
                     center_lat = df_res_avg['lat'].mean()
                     center_lon = df_res_avg['lon'].mean()
-                    
                     fig_map = go.Figure()
-                    
-                    # Capas Base
                     add_context_layers(fig_map, gdf_zona)
-                    
-                    # Estaciones
                     fig_map.add_trace(go.Scattermapbox(
                         lon=df_res_avg['lon'], lat=df_res_avg['lat'],
                         mode='markers',
-                        marker=dict(
-                            size=12,
-                            color=df_res_avg['recarga_mm'],
-                            colorscale='RdYlBu', # Rojo bajo, Azul alto
-                            showscale=True,
-                            colorbar=dict(title="Recarga (mm)")
-                        ),
+                        marker=dict(size=12, color=df_res_avg['recarga_mm'], colorscale='RdYlBu', showscale=True, colorbar=dict(title="Recarga (mm)")),
                         text=df_res_avg['nom_est'] + '<br>Recarga: ' + df_res_avg['recarga_mm'].round(1).astype(str) + ' mm',
                         hoverinfo='text'
                     ))
-                    
-                    fig_map.update_layout(
-                        mapbox_style="carto-positron",
-                        mapbox=dict(center=dict(lat=center_lat, lon=center_lon), zoom=10),
-                        margin={"r":0,"t":0,"l":0,"b":0},
-                        height=600
-                    )
+                    fig_map.update_layout(mapbox_style="carto-positron", mapbox=dict(center=dict(lat=center_lat, lon=center_lon), zoom=10), margin={"r":0,"t":0,"l":0,"b":0}, height=600)
                     st.plotly_chart(fig_map, use_container_width=True)
 
                 with tab_proy:
