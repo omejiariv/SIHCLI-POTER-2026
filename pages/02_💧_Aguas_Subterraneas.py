@@ -31,8 +31,8 @@ st.title("💧 Estimación de Recarga (Modelo Turc + Escenarios)")
 with st.expander("📘 Metodología: Modelo Turc y Proyecciones", expanded=False):
     st.markdown("""
     * **Balance Hídrico (Turc):** Estima la recarga como el excedente de la precipitación menos la evapotranspiración real (ETR), corregido por un coeficiente de infiltración ($K_i$).
-    * **Proyección:** Utiliza el algoritmo Prophet para modelar la tendencia y estacionalidad de la lluvia, proyectando escenarios futuros.
-    * **Interpolación:** Genera superficies continuas mediante métodos geoestadísticos para identificar zonas de recarga preferencial.
+    * **Datos Históricos:** Se utilizan los registros reales de precipitación para calcular la recarga histórica, capturando la variabilidad climática natural (ENSO).
+    * **Proyección:** Se utiliza Prophet para modelar la tendencia futura.
     """)
 
 # --- FUNCIONES GIS ---
@@ -51,7 +51,6 @@ def add_context_layers(fig, gdf_zona):
     """Añade capas de contexto (Municipios, Cuencas)."""
     try:
         roi = gdf_zona.buffer(0.05)
-        # Municipios
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         if gdf_m is not None:
             gdf_c = gpd.clip(gdf_m, roi)
@@ -61,7 +60,6 @@ def add_context_layers(fig, gdf_zona):
                 for p in polys:
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scattermapbox(lon=list(x), lat=list(y), mode='lines', line=dict(width=0.5, color='gray'), hoverinfo='skip'))
-        # Cuencas
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         if gdf_cu is not None:
             gdf_c = gpd.clip(gdf_cu, roi)
@@ -74,13 +72,8 @@ def add_context_layers(fig, gdf_zona):
     except: pass
 
 def interpolacion_segura(points, values, grid_x, grid_y):
-    """
-    Interpolación Robusta (Linear + Nearest). 
-    Más estable que RBF para visualización web rápida.
-    """
-    # 1. Linear (Suave dentro del convex hull)
+    """Interpolación Robusta (Linear + Nearest)."""
     grid_z0 = griddata(points, values, (grid_x, grid_y), method='linear')
-    # 2. Nearest (Rellena bordes y evita huecos)
     mask = np.isnan(grid_z0)
     if np.any(mask):
         grid_z1 = griddata(points, values, (grid_x, grid_y), method='nearest')
@@ -112,56 +105,66 @@ def calculate_turc_advanced(df, ki):
     df['recarga_mm'] = df['excedente_mm'] * ki
     return df
 
-# --- FORECASTING ---
-def run_prophet_forecast_gap_filling(df_hist, months_ahead, altitud_ref, ki, ruido_factor):
+# --- FORECASTING HÍBRIDO (REAL + PROPHET) ---
+def run_prophet_forecast_hybrid(df_hist, months_ahead, altitud_ref, ki, ruido_factor):
     """
-    Proyecta desde el último dato real hasta el futuro (cubriendo el presente).
+    Combina datos REALES históricos con proyecciones futuras de Prophet.
+    Esto garantiza que la variabilidad histórica se mantenga intacta.
     """
     if not PROPHET_AVAILABLE: return pd.DataFrame()
 
-    # 1. Preparar histórico
+    # 1. Preparar histórico real
     df_prophet = df_hist.rename(columns={'fecha': 'ds', 'p_mensual': 'y'})
-    last_date = df_prophet['ds'].max()
+    last_date_real = df_prophet['ds'].max()
     
-    # 2. Configurar Modelo
+    # 2. Entrenar Modelo
     m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True)
     m.fit(df_prophet)
     
-    # 3. Definir Horizonte (Desde último dato hasta Hoy + Meses Futuros)
+    # 3. Predecir Futuro (Gap filling hasta hoy + horizonte)
     target_date = pd.Timestamp.today() + pd.DateOffset(months=months_ahead)
-    # Calcular cuántos meses faltan desde el último dato real hasta el objetivo
-    months_gap = (target_date.year - last_date.year) * 12 + (target_date.month - last_date.month)
+    months_gap = (target_date.year - last_date_real.year) * 12 + (target_date.month - last_date_real.month)
     if months_gap < 1: months_gap = 12
     
     future = m.make_future_dataframe(periods=months_gap, freq='M')
     forecast = m.predict(future)
     
-    res = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
+    # 4. FUSIÓN INTELIGENTE (LA CLAVE DE LA VARIABILIDAD)
+    # Unimos el pronóstico con los datos reales originales
+    df_merged = pd.merge(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], df_prophet[['ds', 'y']], on='ds', how='left')
     
-    # 4. Calcular Hidrología (Mensual Anualizada)
-    # Sin suavizado excesivo para ver variabilidad
-    res['p_rate'] = res['yhat'].clip(lower=0) * 12
+    # Columna maestra de precipitación: Si existe dato real (y), úsalo. Si no, usa predicción (yhat).
+    # Esto preserva el ruido histórico real.
+    df_merged['p_final'] = df_merged['y'].combine_first(df_merged['yhat'])
     
-    # Aplicar Incertidumbre del usuario
-    res['p_rate_low'] = (res['yhat_lower'] * (1 - 0.1*ruido_factor)).clip(lower=0) * 12
-    res['p_rate_high'] = (res['yhat_upper'] * (1 + 0.1*ruido_factor)).clip(lower=0) * 12
+    # Incertidumbre (solo aplica donde no hay datos reales)
+    df_merged['p_lower'] = df_merged['y'].combine_first(df_merged['yhat_lower'] * (1 - 0.1*ruido_factor))
+    df_merged['p_upper'] = df_merged['y'].combine_first(df_merged['yhat_upper'] * (1 + 0.1*ruido_factor))
     
-    # Vectorización Turc
+    # Anualizar tasas (x12) para visualización mensual compatible con Turc
+    df_merged['p_rate'] = df_merged['p_final'].clip(lower=0) * 12
+    df_merged['p_rate_low'] = df_merged['p_lower'].clip(lower=0) * 12
+    df_merged['p_rate_high'] = df_merged['p_upper'].clip(lower=0) * 12
+    
+    # 5. Calcular Turc sobre la serie combinada
     def calc_vec(p): return calculate_turc_row(p, altitud_ref, ki)
     
-    # Calcular Central
-    central = res['p_rate'].apply(calc_vec)
-    res['etr_est'] = [x[0] for x in central]
-    res['recarga_est'] = [x[1] for x in central]
+    # Central
+    central = df_merged['p_rate'].apply(calc_vec)
+    df_merged['etr_est'] = [x[0] for x in central]
+    df_merged['recarga_est'] = [x[1] for x in central]
     
-    # Calcular Bandas
-    low = res['p_rate_low'].apply(calc_vec)
-    res['recarga_low'] = [x[1] for x in low]
+    # Bandas
+    low = df_merged['p_rate_low'].apply(calc_vec)
+    df_merged['recarga_low'] = [x[1] for x in low]
     
-    high = res['p_rate_high'].apply(calc_vec)
-    res['recarga_high'] = [x[1] for x in high]
+    high = df_merged['p_rate_high'].apply(calc_vec)
+    df_merged['recarga_high'] = [x[1] for x in high]
     
-    return res
+    # Marcar qué es histórico y qué es pronóstico para colorear
+    df_merged['tipo'] = np.where(df_merged['ds'] <= last_date_real, 'Histórico', 'Proyección')
+    
+    return df_merged
 
 # --- INTERFAZ ---
 ids_dummy, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
@@ -221,7 +224,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 """)
                 df_serie = pd.read_sql(q_serie, engine)
                 
-                # Procesar KPIs y Mapa
+                # Procesar Mapa
                 df_est_filtered['id_estacion'] = df_est_filtered['id_estacion'].astype(str)
                 df_avg['id_estacion'] = df_avg['id_estacion'].astype(str)
                 df_work = pd.merge(df_est_filtered, df_avg, on='id_estacion', how='inner')
@@ -242,57 +245,50 @@ if gdf_zona is not None and not gdf_zona.empty:
                 
                 with tab_evol:
                     if not df_serie.empty and PROPHET_AVAILABLE:
-                        with st.spinner("Proyectando escenarios climáticos..."):
+                        with st.spinner("Integrando datos reales y proyectados..."):
                             alt_prom = df_est_filtered['alt_est'].mean() if not df_est_filtered['alt_est'].isna().all() else altitud_ref
                             
-                            # Forecast Gap Filling
-                            df_forecast = run_prophet_forecast_gap_filling(df_serie, horizonte_meses, alt_prom, ki_ponderado, ruido)
+                            # Forecast Híbrido
+                            df_forecast = run_prophet_forecast_hybrid(df_serie, horizonte_meses, alt_prom, ki_ponderado, ruido)
                             
                             if not df_forecast.empty:
                                 fig = go.Figure()
-                                now = pd.Timestamp.today()
                                 
-                                # Separar Pasado (Real/Simulado) y Futuro
-                                # Prophet devuelve toda la serie temporal
+                                # Separar visualmente Histórico (Real) vs Proyección
+                                hist = df_forecast[df_forecast['tipo'] == 'Histórico']
+                                fut = df_forecast[df_forecast['tipo'] == 'Proyección']
                                 
-                                # 1. Recarga (Continua)
+                                # 1. Recarga Histórica (REAL - CON RUIDO NATURAL)
                                 fig.add_trace(go.Scatter(
-                                    x=df_forecast['ds'], y=df_forecast['recarga_est'],
-                                    name='Recarga Estimada', line=dict(color='blue', width=2),
-                                    fill='tozeroy', fillcolor='rgba(0,0,255,0.05)'
+                                    x=hist['ds'], y=hist['recarga_est'],
+                                    name='Recarga Histórica (Real)', line=dict(color='blue', width=1.5),
+                                    fill='tozeroy', fillcolor='rgba(0,0,255,0.1)'
                                 ))
                                 
-                                # 2. Lluvia (Fondo)
+                                # 2. Lluvia Histórica (Fondo)
                                 fig.add_trace(go.Bar(
-                                    x=df_forecast['ds'], y=df_forecast['p_rate'],
-                                    name='Precipitación', marker_color='rgba(135, 206, 235, 0.3)',
-                                    hoverinfo='skip' # Para no saturar el hover
+                                    x=hist['ds'], y=hist['p_rate'],
+                                    name='Precipitación (Real)', marker_color='rgba(135, 206, 235, 0.4)',
+                                    hoverinfo='skip'
                                 ))
                                 
-                                # 3. ETR
+                                # 3. Recarga Proyectada
                                 fig.add_trace(go.Scatter(
-                                    x=df_forecast['ds'], y=df_forecast['etr_est'],
-                                    name='ETR', line=dict(color='orange', width=1.5, dash='dot')
+                                    x=fut['ds'], y=fut['recarga_est'],
+                                    name='Recarga Proyectada', line=dict(color='dodgerblue', width=2, dash='dot')
                                 ))
                                 
                                 # 4. Incertidumbre Futura
-                                fut_mask = df_forecast['ds'] > now
                                 fig.add_trace(go.Scatter(
-                                    x=df_forecast[fut_mask]['ds'], y=df_forecast[fut_mask]['recarga_high'],
-                                    mode='lines', line=dict(width=0), showlegend=False
+                                    x=fut['ds'], y=fut['recarga_high'], mode='lines', line=dict(width=0), showlegend=False
                                 ))
                                 fig.add_trace(go.Scatter(
-                                    x=df_forecast[fut_mask]['ds'], y=df_forecast[fut_mask]['recarga_low'],
-                                    mode='lines', line=dict(width=0), fill='tonexty', 
-                                    fillcolor='rgba(0,0,255,0.1)', name='Rango Incertidumbre'
+                                    x=fut['ds'], y=fut['recarga_low'], mode='lines', line=dict(width=0), 
+                                    fill='tonexty', fillcolor='rgba(0,0,255,0.1)', name='Rango Incertidumbre'
                                 ))
                                 
-                                # Línea vertical de "Hoy"
-                                fig.add_vline(x=now.timestamp() * 1000, line_width=1, line_dash="dash", line_color="green")
-                                fig.add_annotation(x=now, y=df_forecast['recarga_est'].max(), text="Hoy", showarrow=False, yshift=10)
-
                                 fig.update_layout(
-                                    title="Dinámica de Recarga: Histórico + Proyección (Gap Filling)",
+                                    title="Dinámica de Recarga: Datos Reales + Proyección",
                                     yaxis_title="Tasa (mm/año)", hovermode="x unified", height=500
                                 )
                                 st.plotly_chart(fig, use_container_width=True)
@@ -304,33 +300,23 @@ if gdf_zona is not None and not gdf_zona.empty:
                 with tab_mapa:
                     if len(df_res_avg) >= 3:
                         with st.spinner("Generando superficie continua..."):
-                            # Grid
                             gx, gy = np.mgrid[minx:maxx:100j, miny:maxy:100j]
-                            
-                            # Interpolación
                             grid_R = interpolacion_segura(
                                 df_res_avg[['lon', 'lat']].values, 
                                 df_res_avg['recarga_mm'].values, gx, gy
                             )
                             
                             fig_m = go.Figure()
-                            
-                            # 1. Superficie Continua (Contour)
+                            # Superficie
                             fig_m.add_trace(go.Contour(
                                 z=grid_R.T, x=np.linspace(minx, maxx, 100), y=np.linspace(miny, maxy, 100),
-                                colorscale="Blues", 
-                                colorbar=dict(title="Recarga (mm/año)"), 
-                                hoverinfo='z', 
-                                contours=dict(coloring='heatmap', showlabels=False),
-                                opacity=0.7, 
-                                connectgaps=True,
-                                line_smoothing=0.85
+                                colorscale="Blues", colorbar=dict(title="Recarga (mm/año)"), 
+                                hoverinfo='z', contours=dict(coloring='heatmap', showlabels=False), 
+                                opacity=0.7, connectgaps=True, line_smoothing=0.85
                             ))
                             
-                            # 2. Contexto
                             add_context_layers(fig_m, gdf_zona)
                             
-                            # 3. Puntos Estaciones
                             fig_m.add_trace(go.Scattermapbox(
                                 lon=df_res_avg['lon'], lat=df_res_avg['lat'],
                                 mode='markers', marker=dict(size=8, color='black'),
@@ -343,8 +329,8 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 mapbox=dict(center=dict(lat=df_res_avg['lat'].mean(), lon=df_res_avg['lon'].mean()), zoom=10),
                                 margin={"r":0,"t":0,"l":0,"b":0}, height=650
                             )
-                            # CLAVE ÚNICA PARA EVITAR PARPADEO
-                            st.plotly_chart(fig_m, use_container_width=True, key="mapa_recarga_estable")
+                            # Key única para estabilidad
+                            st.plotly_chart(fig_m, use_container_width=True, key="mapa_recarga_final")
                     else:
                         st.warning("⚠️ Se necesitan al menos 3 estaciones para interpolar el mapa.")
 
@@ -352,11 +338,9 @@ if gdf_zona is not None and not gdf_zona.empty:
                     st.subheader("Centro de Descargas")
                     c_d1, c_d2 = st.columns(2)
                     
-                    # CSV
                     csv = df_res_avg.to_csv(index=False).encode('utf-8')
                     c_d1.download_button("📥 Descargar Tabla (CSV)", csv, "balance_hidrico.csv", "text/csv")
                     
-                    # GeoJSON
                     gdf_exp = gpd.GeoDataFrame(df_res_avg, geometry=gpd.points_from_xy(df_res_avg.lon, df_res_avg.lat), crs="EPSG:4326")
                     c_d2.download_button("🗺️ Descargar Capa GIS (GeoJSON)", gdf_exp.to_json(), "recarga_gis.geojson", "application/json")
                     
