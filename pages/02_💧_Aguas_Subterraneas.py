@@ -56,7 +56,7 @@ with st.expander("📘 Metodología: Modelo Turc y Proyecciones", expanded=False
     * **Cartografía:** Capas oficiales de la Gobernación de Antioquia.
     """)
 
-# --- FUNCIONES GIS (MODO CARTESIANO ROBUSTO) ---
+# --- FUNCIONES GIS (ESTILO FANTASMA) ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
     filepath = os.path.join(os.path.dirname(__file__), '..', 'data', filename)
@@ -69,11 +69,11 @@ def load_geojson_cached(filename):
     return None
 
 def add_context_layers_cartesian(fig, gdf_zona):
-    """Añade capas de contexto usando go.Scatter (Cartesiano) para compatibilidad con Contour."""
+    """Añade capas de contexto con estilo sutil (Punteado y Transparente)."""
     try:
         roi = gdf_zona.buffer(0.05)
         
-        # Municipios
+        # 1. MUNICIPIOS (Gris muy suave, punteado)
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         if gdf_m is not None:
             gdf_c = gpd.clip(gdf_m, roi)
@@ -82,9 +82,14 @@ def add_context_layers_cartesian(fig, gdf_zona):
                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
                 for p in polys:
                     x, y = p.exterior.xy
-                    fig.add_trace(go.Scatter(x=list(x), y=list(y), mode='lines', line=dict(width=0.5, color='gray'), hoverinfo='text', text="Municipio", showlegend=False))
+                    fig.add_trace(go.Scatter(
+                        x=list(x), y=list(y), 
+                        mode='lines', 
+                        line=dict(width=0.5, color='rgba(100, 100, 100, 0.3)', dash='dot'), # <--- SUTIL
+                        hoverinfo='text', text="Municipio", showlegend=False
+                    ))
         
-        # Cuencas
+        # 2. CUENCAS (Azul muy suave, punteado)
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         if gdf_cu is not None:
             gdf_c = gpd.clip(gdf_cu, roi)
@@ -93,7 +98,12 @@ def add_context_layers_cartesian(fig, gdf_zona):
                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
                 for p in polys:
                     x, y = p.exterior.xy
-                    fig.add_trace(go.Scatter(x=list(x), y=list(y), mode='lines', line=dict(width=1, color='blue', dash='dot'), hoverinfo='text', text="Cuenca", showlegend=False))
+                    fig.add_trace(go.Scatter(
+                        x=list(x), y=list(y), 
+                        mode='lines', 
+                        line=dict(width=0.5, color='rgba(50, 50, 50, 0.2)', dash='dot'), # <--- MUY SUTIL
+                        hoverinfo='text', text="Cuenca", showlegend=False
+                    ))
     except: pass
 
 def interpolacion_segura(points, values, grid_x, grid_y):
@@ -134,15 +144,12 @@ def calculate_turc_advanced(df, ki):
 def run_prophet_forecast_hybrid(df_hist, months_ahead, altitud_ref, ki, ruido_factor):
     if not PROPHET_AVAILABLE: return pd.DataFrame()
 
-    # 1. Preparar histórico real
     df_prophet = df_hist.rename(columns={'fecha': 'ds', 'p_mensual': 'y'})
     last_date_real = df_prophet['ds'].max()
     
-    # 2. Entrenar Modelo
     m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True)
     m.fit(df_prophet)
     
-    # 3. Predecir Futuro
     target_date = pd.Timestamp.today() + pd.DateOffset(months=months_ahead)
     months_gap = (target_date.year - last_date_real.year) * 12 + (target_date.month - last_date_real.month)
     if months_gap < 1: months_gap = 12
@@ -150,30 +157,22 @@ def run_prophet_forecast_hybrid(df_hist, months_ahead, altitud_ref, ki, ruido_fa
     future = m.make_future_dataframe(periods=months_gap, freq='M')
     forecast = m.predict(future)
     
-    # 4. FUSIÓN
     df_merged = pd.merge(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], df_prophet[['ds', 'y']], on='ds', how='left')
     
-    # Columna maestra de precipitación
     df_merged['p_final'] = df_merged['y'].combine_first(df_merged['yhat'])
-    
-    # Incertidumbre
     df_merged['p_lower'] = df_merged['y'].combine_first(df_merged['yhat_lower'] * (1 - 0.1*ruido_factor))
     df_merged['p_upper'] = df_merged['y'].combine_first(df_merged['yhat_upper'] * (1 + 0.1*ruido_factor))
     
-    # Anualizar tasas
     df_merged['p_rate'] = df_merged['p_final'].clip(lower=0) * 12
     df_merged['p_rate_low'] = df_merged['p_lower'].clip(lower=0) * 12
     df_merged['p_rate_high'] = df_merged['p_upper'].clip(lower=0) * 12
     
-    # 5. Calcular Turc
     def calc_vec(p): return calculate_turc_row(p, altitud_ref, ki)
     
-    # Central
     central = df_merged['p_rate'].apply(calc_vec)
     df_merged['etr_est'] = [x[0] for x in central]
     df_merged['recarga_est'] = [x[1] for x in central]
     
-    # Bandas Recarga
     low = df_merged['p_rate_low'].apply(calc_vec)
     df_merged['recarga_low'] = [x[1] for x in low]
     
@@ -226,14 +225,14 @@ if gdf_zona is not None and not gdf_zona.empty:
                 ids_v = df_est_filtered['id_estacion'].unique()
                 ids_s = ",".join([f"'{str(x)}'" for x in ids_v])
                 
-                # --- DATOS PROMEDIO ---
+                # DATOS PROMEDIO
                 q_avg = text(f"""
                     SELECT id_estacion_fk as id_estacion, AVG(precipitation)*12 as p_anual 
                     FROM precipitacion_mensual WHERE id_estacion_fk IN ({ids_s}) GROUP BY 1
                 """)
                 df_avg = pd.read_sql(q_avg, engine)
                 
-                # --- DATOS SERIE (HISTÓRICO) ---
+                # DATOS SERIE
                 q_serie = text(f"""
                     SELECT fecha_mes_año as fecha, AVG(precipitation) as p_mensual
                     FROM precipitacion_mensual 
@@ -242,7 +241,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 """)
                 df_serie = pd.read_sql(q_serie, engine)
                 
-                # Procesar KPIs y Mapa
+                # Procesamiento
                 df_est_filtered['id_estacion'] = df_est_filtered['id_estacion'].astype(str)
                 df_avg['id_estacion'] = df_avg['id_estacion'].astype(str)
                 df_work = pd.merge(df_est_filtered, df_avg, on='id_estacion', how='inner')
@@ -274,14 +273,14 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 hist = df_forecast[df_forecast['tipo'] == 'Histórico']
                                 fut = df_forecast[df_forecast['tipo'] == 'Proyección']
                                 
-                                # 1. Lluvia Histórica (Barras Fondo)
+                                # 1. Lluvia Histórica
                                 fig.add_trace(go.Bar(
                                     x=hist['ds'], y=hist['p_rate'],
                                     name='Precipitación', marker_color='rgba(173, 216, 230, 0.4)',
                                     hoverinfo='y+name'
                                 ))
                                 
-                                # 2. ETR (RECUPERADO)
+                                # 2. ETR
                                 fig.add_trace(go.Scatter(
                                     x=df_forecast['ds'], y=df_forecast['etr_est'],
                                     name='ETR (Evapotranspiración)', line=dict(color='orange', width=1.5, dash='dot')
@@ -294,7 +293,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                                     fill='tozeroy', fillcolor='rgba(0,0,255,0.1)'
                                 ))
                                 
-                                # 4. Proyección Recarga
+                                # 4. Recarga Proyectada
                                 fig.add_trace(go.Scatter(
                                     x=fut['ds'], y=fut['recarga_est'],
                                     name='Recarga Proyectada', line=dict(color='dodgerblue', width=2, dash='dash')
@@ -322,10 +321,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 with tab_mapa:
                     if len(df_res_avg) >= 3:
                         with st.spinner("Generando superficie continua (Cartesiana)..."):
-                            # Grid
                             gx, gy = np.mgrid[minx:maxx:100j, miny:maxy:100j]
-                            
-                            # Interpolación
                             grid_R = interpolacion_segura(
                                 df_res_avg[['lon', 'lat']].values, 
                                 df_res_avg['recarga_mm'].values, gx, gy
@@ -333,7 +329,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                             
                             fig_m = go.Figure()
                             
-                            # 1. Superficie Continua (Contour - Al fondo)
+                            # 1. Superficie Continua
                             fig_m.add_trace(go.Contour(
                                 z=grid_R.T, 
                                 x=np.linspace(minx, maxx, 100), 
@@ -347,7 +343,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 line_smoothing=0.85
                             ))
                             
-                            # 2. Contexto (Lineas encima - Modo Cartesiano)
+                            # 2. Contexto (ESTILO FANTASMA)
                             add_context_layers_cartesian(fig_m, gdf_zona)
                             
                             # 3. Puntos Estaciones
@@ -358,7 +354,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 hoverinfo='text', name='Estaciones'
                             ))
                             
-                            # 4. Borde Zona
+                            # 4. Borde Zona (Negro Fuerte)
                             for _, row in gdf_zona.iterrows():
                                 geom = row.geometry
                                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
@@ -373,7 +369,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 yaxis=dict(visible=False),
                                 plot_bgcolor='white'
                             )
-                            st.plotly_chart(fig_m, use_container_width=True)
+                            st.plotly_chart(fig_m, use_container_width=True, key="mapa_recarga_final")
                     else:
                         st.warning("⚠️ Se necesitan al menos 3 estaciones para interpolar el mapa.")
 
