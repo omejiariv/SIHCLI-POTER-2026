@@ -22,30 +22,21 @@ Esta plataforma integra datos climáticos, hidrológicos y de biodiversidad para
 st.divider()
 
 # --- DATOS DEL GRÁFICO SUNBURST (Estructura del Sistema) ---
-# Aquí definimos la jerarquía: Abuelo -> Padre -> Hijo
 data = {
     'id': [
         'SIHCLI-POTER', 
-        # --- NIVEL 1: MÓDULOS PRINCIPALES ---
+        # NIVEL 1
         'Clima e Hidrología', 'Aguas Subterráneas', 'Biodiversidad', 'Toma de Decisiones', 'Herramientas',
-        
-        # --- NIVEL 2: SUBMÓDULOS (HIJOS) ---
-        # Hijos de Clima
+        # NIVEL 2
         'Precipitación', 'Índices (ENSO)', 'Caudales',
-        # Hijos de Aguas Sub
         'Modelo Turc', 'Mapa Recarga', 'Escenarios', 'Balance Hídrico',
-        # Hijos de Biodiversidad
         'Monitor GBIF', 'Taxonomía', 'Amenazas IUCN', 'Servicios Ecosistémicos',
-        # Hijos de Decisiones
         'Matriz Prioridad', 'Análisis Multicriterio', 'Predios',
-        # Hijos de Herramientas (Diagnóstico/Detective)
         'Diagnóstico Calidad', 'Detective de Datos'
     ],
     'parent': [
-        '', # Raíz (No tiene padre)
-        # Padres Nivel 1
+        '', 
         'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER',
-        # Padres Nivel 2 (Conectan con Nivel 1)
         'Clima e Hidrología', 'Clima e Hidrología', 'Clima e Hidrología',
         'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas',
         'Biodiversidad', 'Biodiversidad', 'Biodiversidad', 'Biodiversidad',
@@ -53,13 +44,13 @@ data = {
         'Herramientas', 'Herramientas'
     ],
     'value': [
-        100, # Valor Central
-        20, 25, 20, 20, 15, # Pesos Nivel 1
-        6, 7, 7,            # Clima
-        6, 7, 6, 6,         # Aguas
-        5, 5, 5, 5,         # Bio
-        7, 7, 6,            # Decisiones
-        7, 8                # Herramientas
+        100, 
+        20, 25, 20, 20, 15, 
+        6, 7, 7,            
+        6, 7, 6, 6,         
+        5, 5, 5, 5,         
+        7, 7, 6,            
+        7, 8                
     ]
 }
 
@@ -72,9 +63,9 @@ def create_system_map():
         names='id',
         parents='parent',
         values='value',
-        color='parent', # Colorear según el módulo padre
-        color_discrete_sequence=px.colors.qualitative.Pastel1, # Paleta profesional y suave
-        branchvalues='total' # El tamaño del padre es la suma de los hijos
+        color='parent', 
+        color_discrete_sequence=px.colors.qualitative.Pastel1, 
+        branchvalues='total' 
     )
     
     fig.update_layout(
@@ -88,10 +79,9 @@ def create_system_map():
         font=dict(family="Arial", size=14),
         margin=dict(t=60, l=0, r=0, b=0),
         height=650,
-        paper_bgcolor='rgba(0,0,0,0)', # Fondo transparente
+        paper_bgcolor='rgba(0,0,0,0)', 
     )
     
-    # Efecto Hover personalizado
     fig.update_traces(
         hovertemplate='<b>%{label}</b><br>Módulo: %{parent}<extra></extra>',
         textinfo='label+percent parent'
@@ -111,7 +101,12 @@ with c2:
     
     st.markdown("### Módulos Destacados")
     
-    with st.expander("💧 Aguas Subterráneas", expanded=True):
+    # --- NUEVO: CLIMA E HIDROLOGÍA ---
+    with st.expander("🌦️ Clima e Hidrología"):
+        st.write("Tablero de control con series temporales de precipitación, caudales e índices climáticos (ENSO).")
+        st.caption("Estado: ✅ Operativo")
+
+    with st.expander("💧 Aguas Subterráneas"):
         st.write("Cálculo de recarga potencial y proyección de escenarios climáticos.")
         st.caption("Estado: ✅ Operativo")
         
@@ -123,6 +118,6 @@ with c2:
         st.write("Priorización espacial de predios para inversión basada en multicriterio.")
         st.caption("Estado: ✅ Operativo")
 
-# --- FOOTER ---
+# --- FOOTER ACTUALIZADO ---
 st.divider()
-st.caption("© 2026 CuencaVerde & Nutresa | SIHCLI-POTER v2.0")
+st.caption("© 2026 omejia CV | SIHCLI-POTER v2.0")
