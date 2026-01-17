@@ -13,7 +13,6 @@ import sys
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Isoyetas HD", page_icon="🗺️", layout="wide")
 
-# Intentar importar módulos compartidos si existen, sino usar locales
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
     from modules.config import Config
@@ -22,7 +21,7 @@ except:
 
 st.title("🗺️ Mapas de Isoyetas de Alta Definición (RBF)")
 
-# --- 2. FUNCIONES DE SOPORTE (Estilo Fantasma y Carga) ---
+# --- 2. FUNCIONES DE SOPORTE ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
     filepath = os.path.join(os.path.dirname(__file__), '..', 'data', filename)
@@ -35,26 +34,35 @@ def load_geojson_cached(filename):
     return None
 
 def get_name_from_row_v2(row, type_layer):
+    """Extrae nombre de geojson de forma segura."""
     cols = row.index.str.lower()
     if type_layer == 'muni':
         for c in ['mpio_cnmbr', 'nombre', 'municipio', 'mpio_nomb']:
             if c in cols: return row[c]
     elif type_layer == 'cuenca':
-        for c in ['n-nss3', 'subc_lbl', 'nom_cuenca', 'nombre']:
+        for c in ['n-nss3', 'subc_lbl', 'nom_cuenca', 'nombre', 'cuenca']:
             if c in cols: return row[c]
     return ""
 
+def detectar_columna(df, keywords):
+    """Busca una columna en el DF que coincida con las keywords (insensible a mayúsculas)."""
+    cols_lower = [c.lower() for c in df.columns]
+    for kw in keywords:
+        kw_lower = kw.lower()
+        # Buscamos coincidencia exacta o parcial
+        for i, col_name in enumerate(cols_lower):
+            if kw_lower in col_name:
+                return df.columns[i] # Retorna el nombre real de la columna
+    return None
+
 def add_context_layers_ghost(fig, gdf_zona):
-    """Añade capas de contexto (Municipios/Cuencas) con estilo fantasma."""
     try:
         if gdf_zona is None or gdf_zona.empty: return
         roi = gdf_zona.buffer(0.05)
         
-        # Cargar GeoJSONs
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         
-        # Capa Municipios
         if gdf_m is not None:
             gdf_c = gpd.clip(gdf_m, roi)
             for _, r in gdf_c.iterrows():
@@ -69,7 +77,6 @@ def add_context_layers_ghost(fig, gdf_zona):
                         hoverinfo='text', text=f"Mpio: {name}", showlegend=False
                     ))
         
-        # Capa Cuencas
         if gdf_cu is not None:
             gdf_c = gpd.clip(gdf_cu, roi)
             for _, r in gdf_c.iterrows():
@@ -85,78 +92,84 @@ def add_context_layers_ghost(fig, gdf_zona):
                     ))
     except Exception as e: print(f"Ghost Error: {e}")
 
-# --- 3. FICHA TÉCNICA (DOCUMENTACIÓN) ---
+# --- 3. FICHA TÉCNICA ---
 with st.expander("📘 Ficha Técnica: Metodología e Interpretación", expanded=False):
     st.markdown("""
     ### 1. Concepto
-    Las **isoyetas** son isolíneas que conectan puntos de igual precipitación. Este módulo utiliza técnicas avanzadas de interpolación para estimar la lluvia en lugares donde no existen estaciones, generando una superficie continua.
+    Mapas de isolíneas de precipitación interpoladas mediante algoritmos matemáticos (RBF) para estimar lluvia en zonas no instrumentadas.
 
-    ### 2. Metodología RBF (Radial Basis Function)
-    Se implementa el algoritmo **Thin-Plate Spline** de la librería `SciPy`. 
-    * A diferencia de la interpolación lineal, el RBF simula el comportamiento de una hoja flexible que se dobla suavemente para pasar por los puntos de medición.
-    * Esto elimina el efecto artificial de "conos" o "ojos de buey".
+    ### 2. Metodología
+    **Thin-Plate Spline (RBF):** Simula una superficie flexible que se ajusta suavemente a los datos, ideal para variables continuas como la lluvia.
 
-    ### 3. Interpretación del Mapa
-    * **🟦 Azul Oscuro:** Alta precipitación (> 3000 mm). Oferta hídrica.
-    * **🟨 Amarillo/Claro:** Baja precipitación (< 1500 mm). Déficit hídrico.
-    
-    ### 4. Fuentes de Datos
-    * **Precipitación:** Base de datos SIHCLI.
-    * **Cartografía:** IGAC y Corporación CuencaVerde.
+    ### 3. Interpretación
+    * **🟦 Azul Oscuro:** Alta precipitación.
+    * **🟨 Amarillo:** Baja precipitación.
     """)
 
-# --- 4. SIDEBAR DE HIDROLOGÍA (FILTROS) ---
+# --- 4. SIDEBAR DE HIDROLOGÍA ---
 st.sidebar.header("🔍 Filtros Hidrológicos")
 
-# Conexión a BD
 try:
     engine = create_engine(st.secrets["DATABASE_URL"])
     
-    # --- CORRECCIÓN AQUÍ: Usamos ST_X y ST_Y para extraer lat/lon ---
+    # CONSULTA GENERAL (Traemos todo para buscar N-NSS3)
     q_meta = """
-        SELECT id_estacion, nom_est, 
-               ST_Y(geom::geometry) as lat, 
-               ST_X(geom::geometry) as lon, 
-               alt_est, municipio, cuenca 
+        SELECT *, 
+               ST_Y(geom::geometry) as lat_calc, 
+               ST_X(geom::geometry) as lon_calc 
         FROM estaciones
     """
     df_meta = pd.read_sql(q_meta, engine)
     
-    # Filtro 1: CUENCA
-    cuencas_disp = sorted(df_meta['cuenca'].dropna().unique())
-    sel_cuenca = st.sidebar.multiselect("🌊 Seleccionar Cuenca:", cuencas_disp)
+    # Detección de columnas
+    col_id = detectar_columna(df_meta, ['id_estacion', 'codigo']) or 'id_estacion'
+    col_nom = detectar_columna(df_meta, ['nom_est', 'nombre']) or 'nom_est'
     
-    # Filtro 2: MUNICIPIO
-    if sel_cuenca:
-        df_meta = df_meta[df_meta['cuenca'].isin(sel_cuenca)]
-        
-    munis_disp = sorted(df_meta['municipio'].dropna().unique())
-    sel_muni = st.sidebar.multiselect("🏙️ Seleccionar Municipio:", munis_disp)
+    # 1. Filtro CUENCA (Prioridad: N-NSS3)
+    col_cuenca = detectar_columna(df_meta, ['n-nss3', 'n_nss3', 'cuenca', 'basin', 'zona_hidro'])
     
-    # Aplicar Filtros
-    if sel_muni:
-        df_meta = df_meta[df_meta['municipio'].isin(sel_muni)]
-        
-    ids_filtrados = tuple(df_meta['id_estacion'].unique())
+    sel_cuenca = []
+    if col_cuenca:
+        cuencas_disp = sorted(df_meta[col_cuenca].astype(str).unique())
+        sel_cuenca = st.sidebar.multiselect(f"🌊 Cuenca ({col_cuenca}):", cuencas_disp)
+        if sel_cuenca:
+            df_meta = df_meta[df_meta[col_cuenca].isin(sel_cuenca)]
+    else:
+        st.sidebar.warning("⚠️ No se encontró la columna 'N-NSS3' ni similares.")
+
+    # 2. Filtro MUNICIPIO
+    col_muni = detectar_columna(df_meta, ['municipio', 'mpio', 'ciud'])
+    
+    sel_muni = []
+    if col_muni:
+        munis_disp = sorted(df_meta[col_muni].astype(str).unique())
+        sel_muni = st.sidebar.multiselect("🏙️ Municipio:", munis_disp)
+        if sel_muni:
+            df_meta = df_meta[df_meta[col_muni].isin(sel_muni)]
+
+    ids_filtrados = tuple(df_meta[col_id].unique())
     st.sidebar.markdown(f"**Estaciones encontradas:** {len(df_meta)}")
     
-    # Filtro 3: TIEMPO Y PARÁMETROS
+    # 3. Parametros
     st.sidebar.divider()
     year_iso = st.sidebar.selectbox("📅 Año de Análisis:", range(2025, 1980, -1))
     
-    col_opt1, col_opt2 = st.sidebar.columns(2)
-    ignore_zeros = col_opt1.checkbox("🚫 No Ceros", value=True)
-    ignore_nulls = col_opt2.checkbox("🚫 No Nulos", value=True)
-    
-    suavidad = st.sidebar.slider("🎨 Suavizado (RBF):", 0.0, 2.0, 0.5, help="Mayor valor = curvas más relajadas")
+    c1, c2 = st.sidebar.columns(2)
+    ignore_zeros = c1.checkbox("🚫 No Ceros", value=True)
+    ignore_nulls = c2.checkbox("🚫 No Nulos", value=True)
+    suavidad = st.sidebar.slider("🎨 Suavizado (RBF):", 0.0, 2.0, 0.5)
 
 except Exception as e:
-    st.error(f"Error de conexión o consulta SQL: {e}")
+    st.error(f"Error cargando metadatos: {e}")
     st.stop()
 
 # --- 5. LÓGICA PRINCIPAL ---
 if len(df_meta) > 0:
-    # Definir zona geográfica para el mapa
+    # Asegurar Lat/Lon
+    if 'lat' not in df_meta.columns: df_meta['lat'] = df_meta['lat_calc']
+    if 'lon' not in df_meta.columns: df_meta['lon'] = df_meta['lon_calc']
+    
+    # Crear Geometría
     gdf_puntos = gpd.GeoDataFrame(df_meta, geometry=gpd.points_from_xy(df_meta.lon, df_meta.lat), crs="EPSG:4326")
     minx, miny, maxx, maxy = gdf_puntos.total_bounds
     
@@ -168,8 +181,9 @@ if len(df_meta) > 0:
             if len(ids_filtrados) == 1: ids_sql = f"('{ids_filtrados[0]}')"
             else: ids_sql = str(ids_filtrados)
             
+            # Consulta de LLUVIA
             q_data = text(f"""
-                SELECT id_estacion_fk as id_estacion, SUM(precipitation) as valor
+                SELECT id_estacion_fk as {col_id}, SUM(precipitation) as valor
                 FROM precipitacion_mensual
                 WHERE extract(year from fecha_mes_año) = :anio
                 AND id_estacion_fk IN {ids_sql}
@@ -177,8 +191,8 @@ if len(df_meta) > 0:
             """)
             df_rain = pd.read_sql(q_data, engine, params={"anio": year_iso})
             
-            # Unir con metadatos (Lat/Lon ya corregidos)
-            df_final = pd.merge(df_rain, df_meta, on='id_estacion')
+            # Merge
+            df_final = pd.merge(df_rain, df_meta, on=col_id)
             
             # Limpieza
             if ignore_zeros: df_final = df_final[df_final['valor'] > 0]
@@ -186,18 +200,15 @@ if len(df_meta) > 0:
             
             if len(df_final) >= 3:
                 with st.spinner("Interpolando superficie hidrológica..."):
-                    # Grid 200x200
                     grid_res = 200
                     gx, gy = np.mgrid[minx:maxx:complex(0, grid_res), miny:maxy:complex(0, grid_res)]
                     
-                    # Interpolación RBF
                     rbf = Rbf(df_final['lon'], df_final['lat'], df_final['valor'], function='thin_plate', smooth=suavidad)
                     grid_z = rbf(gx, gy)
                     
-                    # Graficar
                     fig = go.Figure()
                     
-                    # 1. Contornos
+                    # Contornos
                     fig.add_trace(go.Contour(
                         z=grid_z.T, x=np.linspace(minx, maxx, grid_res), y=np.linspace(miny, maxy, grid_res),
                         colorscale="YlGnBu", colorbar=dict(title="Lluvia (mm)"),
@@ -206,14 +217,14 @@ if len(df_meta) > 0:
                         opacity=0.8, connectgaps=True, line_smoothing=1.3
                     ))
                     
-                    # 2. Contexto Fantasma
+                    # Contexto
                     add_context_layers_ghost(fig, gdf_puntos)
                     
-                    # 3. Puntos Estaciones
+                    # Puntos
                     fig.add_trace(go.Scatter(
                         x=df_final['lon'], y=df_final['lat'], mode='markers',
                         marker=dict(size=6, color='black', line=dict(width=1, color='white')),
-                        text=df_final['nom_est'] + ': ' + df_final['valor'].round(0).astype(str) + ' mm',
+                        text=df_final[col_nom] + ': ' + df_final['valor'].round(0).astype(str) + ' mm',
                         hoverinfo='text', name="Estaciones"
                     ))
                     
@@ -223,9 +234,8 @@ if len(df_meta) > 0:
                         plot_bgcolor='white'
                     )
                     st.plotly_chart(fig, use_container_width=True)
-                    
             else:
-                st.warning(f"⚠️ Datos insuficientes en {year_iso} para las estaciones seleccionadas (Mínimo 3).")
+                st.warning(f"⚠️ Datos insuficientes en {year_iso} (Mínimo 3 estaciones con datos).")
                 
         except Exception as e:
             st.error(f"Error procesando mapa: {e}")
@@ -233,30 +243,24 @@ if len(df_meta) > 0:
     with tab_datos:
         if 'df_final' in locals() and not df_final.empty:
             st.subheader(f"📋 Tabla de Datos: Año {year_iso}")
-            st.markdown("Datos consolidados utilizados para la generación de las isoyetas.")
+            cols_show = [col_id, col_nom, 'valor']
+            if col_muni: cols_show.append(col_muni)
+            if col_cuenca: cols_show.append(col_cuenca)
             
-            # Tabla interactiva
-            st.dataframe(
-                df_final[['id_estacion', 'nom_est', 'municipio', 'cuenca', 'valor']].rename(columns={'valor': 'Lluvia (mm)'}),
-                use_container_width=True, hide_index=True
-            )
+            st.dataframe(df_final[cols_show].rename(columns={'valor': 'Lluvia (mm)'}), use_container_width=True, hide_index=True)
             
-            # Botones de descarga
-            c_d1, c_d2 = st.columns(2)
+            c1, c2 = st.columns(2)
             csv = df_final.to_csv(index=False).encode('utf-8')
-            c_d1.download_button("📥 Descargar Excel/CSV", csv, f"Isoyetas_{year_iso}.csv", "text/csv")
+            c1.download_button("📥 Descargar CSV", csv, f"Isoyetas_{year_iso}.csv", "text/csv")
             
-            # Descargar Mapa HTML
             try:
                 import io
                 buffer = io.StringIO()
                 fig.write_html(buffer)
-                html_bytes = buffer.getvalue().encode()
-                c_d2.download_button("🗺️ Descargar Mapa Interactivo (HTML)", html_bytes, f"Mapa_Isoyetas_{year_iso}.html", "text/html")
+                c2.download_button("🗺️ Descargar Mapa HTML", buffer.getvalue().encode(), f"Mapa_{year_iso}.html", "text/html")
             except: pass
-            
         else:
-            st.info("Genere el mapa primero para ver los datos.")
+            st.info("Genere el mapa para ver los datos.")
 
 else:
-    st.info("👈 Utilice el sidebar para seleccionar una Cuenca o Municipio.")
+    st.info("👈 No se encontraron estaciones con los filtros actuales.")
