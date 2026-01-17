@@ -37,6 +37,74 @@ except Exception as e:
     st.error(f"Error crítico importando módulos: {e}")
     st.stop()
 
+# --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
+from scipy.interpolate import griddata # Asegurate de tener este import arriba
+
+def get_name_from_row_v2(row, type_layer):
+    """Ayudante para nombres en capas fantasma."""
+    cols = row.index.str.lower()
+    if type_layer == 'muni':
+        for c in ['mpio_cnmbr', 'nombre', 'municipio']:
+            if c in cols: return row[c]
+    elif type_layer == 'cuenca':
+        for c in ['n-nss3', 'subc_lbl', 'nom_cuenca']:
+            if c in cols: return row[c]
+    return "Desconocido"
+
+def add_context_layers_ghost(fig, gdf_zona):
+    """Añade capas de contexto con estilo 'Fantasma' (Sutil y Punteado)."""
+    try:
+        roi = gdf_zona.buffer(0.05)
+        # Cargar GeoJSONs (Asegúrate que la ruta sea compatible con tu estructura 'data/')
+        # Si ya tienes funciones de carga, úsalas. Si no, usa gpd.read_file directo.
+        path_muni = os.path.join("data", "MunicipiosAntioquia.geojson") 
+        path_cuenca = os.path.join("data", "SubcuencasAinfluencia.geojson")
+        
+        if os.path.exists(path_muni):
+            gdf_m = gpd.read_file(path_muni).to_crs("EPSG:4326")
+            gdf_c = gpd.clip(gdf_m, roi)
+            gdf_c.columns = gdf_c.columns.str.lower()
+            for _, r in gdf_c.iterrows():
+                name = get_name_from_row_v2(r, 'muni')
+                geom = r.geometry
+                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
+                for p in polys:
+                    x, y = p.exterior.xy
+                    fig.add_trace(go.Scatter(
+                        x=list(x), y=list(y), mode='lines', 
+                        line=dict(width=0.7, color='rgba(100, 100, 100, 0.3)', dash='dot'), 
+                        hoverinfo='text', text=f"Mpio: {name}", showlegend=False
+                    ))
+        
+        if os.path.exists(path_cuenca):
+            gdf_cu = gpd.read_file(path_cuenca).to_crs("EPSG:4326")
+            gdf_c = gpd.clip(gdf_cu, roi)
+            gdf_c.columns = gdf_c.columns.str.lower()
+            for _, r in gdf_c.iterrows():
+                name = get_name_from_row_v2(r, 'cuenca')
+                geom = r.geometry
+                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
+                for p in polys:
+                    x, y = p.exterior.xy
+                    fig.add_trace(go.Scatter(
+                        x=list(x), y=list(y), mode='lines', 
+                        line=dict(width=0.7, color='rgba(50, 100, 200, 0.3)', dash='dash'), 
+                        hoverinfo='text', text=f"Cuenca: {name}", showlegend=False
+                    ))
+    except Exception as e: print(f"Error capas fantasma: {e}")
+
+def interpolacion_suave(points, values, grid_x, grid_y):
+    """Interpolación Cúbica para contornos suaves (HD)."""
+    try:
+        grid_z = griddata(points, values, (grid_x, grid_y), method='cubic')
+        mask = np.isnan(grid_z)
+        if np.any(mask): # Rellenar huecos con nearest
+            grid_n = griddata(points, values, (grid_x, grid_y), method='nearest')
+            grid_z[mask] = grid_n[mask]
+        return grid_z
+    except:
+        return griddata(points, values, (grid_x, grid_y), method='linear')
+
 # --- FUNCIÓN AUXILIAR PARA DETECTAR COLUMNAS ---
 def get_fuzzy_col(df, keywords):
     """Busca si alguna columna contiene alguna de las palabras clave."""
@@ -101,7 +169,8 @@ def main():
                 "🌿 Cobertura", 
                 "🌱 Zonas Vida", 
                 "🌡️ Clima Futuro", 
-                "📄 Reporte"
+                "📄 Reporte",
+                "✨ Mapas Isoyetas HD"
             ]
         )
         st.markdown("---")
@@ -316,6 +385,83 @@ def main():
             pdf = generate_pdf_report(df_monthly_filtered, gdf_filtered, res)
             if pdf:
                 st.download_button("Descargar", pdf, "reporte.pdf", "application/pdf")
+
+elif navegacion == "✨ Mapas Isoyetas HD":
+    st.header("🗺️ Mapas de Isoyetas de Alta Definición")
+    st.info("Interpolación espacial suavizada (Cubic Spline) con capas de contexto fantasma.")
+    
+    # Asumo que ya tienes 'gdf_zona' y 'engine' definidos en tu script principal.
+    # Si no, asegúrate de instanciarlos como lo haces en las otras secciones.
+    
+    if 'gdf_zona' in locals() and gdf_zona is not None:
+        minx, miny, maxx, maxy = gdf_zona.total_bounds
+        
+        col_iso1, col_iso2 = st.columns([1, 3])
+        
+        with col_iso1:
+            st.subheader("Configuración")
+            year_iso = st.selectbox("Seleccionar Año:", range(2025, 1980, -1))
+            variable_iso = "Precipitación Total Anual"
+        
+        with col_iso2:
+            # Consulta SQL optimizada para el mapa
+            try:
+                # Ajusta esta consulta a los nombres reales de tus tablas
+                q_iso = text(f"""
+                    SELECT e.id_estacion, e.nom_est, ST_X(e.geom::geometry) as lon, ST_Y(e.geom::geometry) as lat,
+                           SUM(p.precipitation) as valor
+                    FROM precipitacion_mensual p
+                    JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+                    WHERE extract(year from p.fecha_mes_año) = :anio
+                    AND ST_X(e.geom::geometry) BETWEEN :minx AND :maxx 
+                    AND ST_Y(e.geom::geometry) BETWEEN :miny AND :maxy
+                    GROUP BY e.id_estacion, e.nom_est, e.geom
+                """)
+                
+                df_iso = pd.read_sql(q_iso, engine, params={"anio": year_iso, "minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy})
+                
+                if len(df_iso) >= 3:
+                    with st.spinner(f"Interpolando datos de {len(df_iso)} estaciones..."):
+                        # Grid de alta resolución (200x200)
+                        gx, gy = np.mgrid[minx:maxx:200j, miny:maxy:200j]
+                        grid_z = interpolacion_suave(df_iso[['lon', 'lat']].values, df_iso['valor'].values, gx, gy)
+                        
+                        fig_m = go.Figure()
+                        
+                        # 1. Isoyetas Suaves
+                        fig_m.add_trace(go.Contour(
+                            z=grid_z.T, x=np.linspace(minx, maxx, 200), y=np.linspace(miny, maxy, 200),
+                            colorscale="YlGnBu", 
+                            colorbar=dict(title="mm/año"),
+                            hovertemplate="Lluvia: %{z:.0f} mm<extra></extra>",
+                            contours=dict(coloring='heatmap', showlabels=True, labelfont=dict(size=10, color='white')),
+                            opacity=0.8, connectgaps=True, line_smoothing=1.3
+                        ))
+                        
+                        # 2. Capas Fantasma (Municipios/Cuencas)
+                        add_context_layers_ghost(fig_m, gdf_zona)
+                        
+                        # 3. Puntos Estaciones
+                        fig_m.add_trace(go.Scatter(
+                            x=df_iso['lon'], y=df_iso['lat'], mode='markers',
+                            marker=dict(size=6, color='black', line=dict(width=1, color='white')),
+                            text=df_iso['nom_est'] + ': ' + df_iso['valor'].round(0).astype(str) + ' mm',
+                            hoverinfo='text'
+                        ))
+                        
+                        fig_m.update_layout(
+                            title=f"Isoyetas Año {year_iso}", 
+                            height=650, 
+                            xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False),
+                            margin=dict(l=0,r=0,t=40,b=0), plot_bgcolor='white'
+                        )
+                        st.plotly_chart(fig_m, use_container_width=True)
+                else:
+                    st.warning("⚠️ Datos insuficientes en esta zona/año para interpolar.")
+            except Exception as e:
+                st.error(f"Error al generar mapa: {e}")
+    else:
+        st.info("👈 Seleccione una cuenca en el menú lateral para generar el mapa.")
 
     # Ajuste CSS para Tabs internas
     st.markdown("""<style>.stTabs [data-baseweb="tab-panel"] { padding-top: 1rem; }</style>""", unsafe_allow_html=True)
