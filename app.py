@@ -21,36 +21,64 @@ Esta plataforma integra datos climáticos, hidrológicos y de biodiversidad para
 
 st.divider()
 
-# --- DATOS DEL GRÁFICO SUNBURST (Estructura del Sistema) ---
+# --- DATOS DEL GRÁFICO SUNBURST (Estructura Profunda) ---
 data = {
     'id': [
         'SIHCLI-POTER', 
-        # NIVEL 1
+        # NIVEL 1: MÓDULOS PRINCIPALES
         'Clima e Hidrología', 'Aguas Subterráneas', 'Biodiversidad', 'Toma de Decisiones', 'Herramientas',
-        # NIVEL 2
-        'Precipitación', 'Índices (ENSO)', 'Caudales',
+        
+        # NIVEL 2: SUBMÓDULOS
+        # Hijos de Clima
+        'Precipitación', 'Índices (ENSO)', 'Caudales', 'Temperaturas',
+        # Hijos de Aguas Sub
         'Modelo Turc', 'Mapa Recarga', 'Escenarios', 'Balance Hídrico',
+        # Hijos de Biodiversidad
         'Monitor GBIF', 'Taxonomía', 'Amenazas IUCN', 'Servicios Ecosistémicos',
+        # Hijos de Decisiones
         'Matriz Prioridad', 'Análisis Multicriterio', 'Predios',
-        'Diagnóstico Calidad', 'Detective de Datos'
+        # Hijos de Herramientas
+        'Diagnóstico Calidad', 'Detective de Datos',
+
+        # --- NIVEL 3: DESAGREGACIÓN CLIMA (NUEVO) ---
+        # Hijos de Precipitación
+        'Mapas Isoyetas', 'Series Temporales', 'Análisis de Tendencias', 'Anomalías',
+        # Hijos de Índices
+        'ONI (Oceanic Niño)', 'SOI (Southern)', 'MEI (Multivariate)',
+        # Hijos de Caudales
+        'Oferta Hídrica', 'Curvas de Duración', 'Caudales Ecológicos'
     ],
     'parent': [
         '', 
+        # Padres Nivel 1
         'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER',
-        'Clima e Hidrología', 'Clima e Hidrología', 'Clima e Hidrología',
-        'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas',
-        'Biodiversidad', 'Biodiversidad', 'Biodiversidad', 'Biodiversidad',
-        'Toma de Decisiones', 'Toma de Decisiones', 'Toma de Decisiones',
-        'Herramientas', 'Herramientas'
+        
+        # Padres Nivel 2
+        'Clima e Hidrología', 'Clima e Hidrología', 'Clima e Hidrología', 'Clima e Hidrología', # Clima
+        'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas', # Aguas
+        'Biodiversidad', 'Biodiversidad', 'Biodiversidad', 'Biodiversidad', # Bio
+        'Toma de Decisiones', 'Toma de Decisiones', 'Toma de Decisiones', # Decisiones
+        'Herramientas', 'Herramientas', # Herramientas
+
+        # Padres Nivel 3 (Clima)
+        'Precipitación', 'Precipitación', 'Precipitación', 'Precipitación',
+        'Índices (ENSO)', 'Índices (ENSO)', 'Índices (ENSO)',
+        'Caudales', 'Caudales', 'Caudales'
     ],
     'value': [
         100, 
-        20, 25, 20, 20, 15, 
-        6, 7, 7,            
-        6, 7, 6, 6,         
-        5, 5, 5, 5,         
-        7, 7, 6,            
-        7, 8                
+        30, 20, 20, 20, 10, # Ajuste de pesos Nivel 1
+        # Nivel 2 (Los valores de Clima se ignoran, se calculan por la suma de sus hijos)
+        0, 0, 0, 4, # Precip, Indices, Caudales (0 porque tienen hijos), Temp (4 fijo)
+        5, 5, 5, 5, # Aguas
+        5, 5, 5, 5, # Bio
+        7, 7, 6,    # Decisiones
+        5, 5,       # Herramientas
+        
+        # Nivel 3 (Valores Reales de Clima)
+        3, 3, 2, 2, # Precipitación (Total 10)
+        3, 3, 2,    # Índices (Total 8)
+        3, 3, 2     # Caudales (Total 8)
     ]
 }
 
