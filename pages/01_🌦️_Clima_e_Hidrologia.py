@@ -383,60 +383,101 @@ def main():
             if pdf:
                 st.download_button("Descargar", pdf, "reporte.pdf", "application/pdf")
 
-    # --- NUEVO MÓDULO INTEGRADO (Isoyetas HD) ---
+    # --- NUEVO MÓDULO INTEGRADO MEJORADO (Isoyetas HD + RBF) ---
     elif selected_module == "✨ Mapas Isoyetas HD":
         st.header("🗺️ Mapas de Isoyetas de Alta Definición")
-        st.info("Interpolación espacial suavizada (Cubic Spline) con capas de contexto fantasma.")
         
-        # Usamos gdf_filtered (que ya está calculado en app.py) para definir el zoom inicial
+        # 1. Conexión con Filtros del Sidebar
+        # Usamos 'gdf_filtered' que YA viene filtrado por Región/Municipio/Altitud desde el inicio de app.py
         if gdf_filtered is not None and not gdf_filtered.empty:
+            
+            # Recuperamos los límites de la zona FILTRADA
             minx, miny, maxx, maxy = gdf_filtered.total_bounds
             
-            # Inicializamos motor de BD localmente para este bloque
+            # Inicializamos motor local
             engine = create_engine(st.secrets["DATABASE_URL"])
             
             col_iso1, col_iso2 = st.columns([1, 3])
             
             with col_iso1:
                 st.subheader("Configuración")
-                year_iso = st.selectbox("Seleccionar Año:", range(2025, 1980, -1))
+                # Usamos el rango de años global del sidebar para dar contexto, o permitimos selección libre
+                year_iso = st.selectbox("Seleccionar Año:", range(int(year_range[1]), int(year_range[0])-1, -1))
+                
+                st.info(f"📍 Estaciones en zona: {len(gdf_filtered)}")
+                
+                # Control de Suavizado (Nuevo)
+                suavidad = st.slider("Nivel de Suavizado (RBF):", 0.0, 2.0, 0.5, help="0 = Datos crudos, 2 = Muy suavizado")
             
             with col_iso2:
                 try:
+                    # Obtenemos los IDs de las estaciones FILTRADAS en el sidebar
+                    ids_validos = tuple(gdf_filtered[Config.STATION_NAME_COL].unique())
+                    
+                    # Evitamos error SQL si hay una sola estación
+                    if len(ids_validos) == 1:
+                        ids_sql = f"('{ids_validos[0]}')" 
+                    else:
+                        ids_sql = str(ids_validos)
+
+                    # Consulta optimizada que respeta los filtros
                     q_iso = text(f"""
                         SELECT e.id_estacion, e.nom_est, ST_X(e.geom::geometry) as lon, ST_Y(e.geom::geometry) as lat,
                                SUM(p.precipitation) as valor
                         FROM precipitacion_mensual p
                         JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
                         WHERE extract(year from p.fecha_mes_año) = :anio
-                        AND ST_X(e.geom::geometry) BETWEEN :minx AND :maxx 
-                        AND ST_Y(e.geom::geometry) BETWEEN :miny AND :maxy
+                        AND e.nom_est IN {ids_sql} 
                         GROUP BY e.id_estacion, e.nom_est, e.geom
                     """)
                     
-                    df_iso = pd.read_sql(q_iso, engine, params={"anio": year_iso, "minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy})
+                    df_iso = pd.read_sql(q_iso, engine, params={"anio": year_iso})
                     
+                    # Aplicar filtros de limpieza de datos (Ceros/Nulos)
+                    if ignore_zeros:
+                        df_iso = df_iso[df_iso['valor'] > 0]
+                    if ignore_nulls:
+                        df_iso = df_iso.dropna(subset=['valor'])
+
                     if len(df_iso) >= 3:
-                        with st.spinner(f"Interpolando datos de {len(df_iso)} estaciones..."):
-                            gx, gy = np.mgrid[minx:maxx:200j, miny:maxy:200j]
-                            grid_z = interpolacion_suave(df_iso[['lon', 'lat']].values, df_iso['valor'].values, gx, gy)
+                        with st.spinner(f"Generando superficie RBF para {len(df_iso)} estaciones..."):
                             
+                            # --- MAGIA MATEMÁTICA: RBF (Radial Basis Function) ---
+                            from scipy.interpolate import Rbf
+                            
+                            # 1. Crear malla de alta resolución
+                            grid_res = 200 # 200x200 pixeles
+                            gx, gy = np.mgrid[minx:maxx:complex(0, grid_res), miny:maxy:complex(0, grid_res)]
+                            
+                            # 2. Interpolación RBF (Thin Plate Spline es ideal para topografía/lluvia)
+                            # El parámetro 'smooth' ayuda a evitar el efecto "ojo de buey"
+                            rbf = Rbf(df_iso['lon'], df_iso['lat'], df_iso['valor'], function='thin_plate', smooth=suavidad)
+                            grid_z = rbf(gx, gy)
+                            
+                            # 3. Visualización
                             fig_m = go.Figure()
                             
-                            # 1. Isoyetas Suaves
+                            # Isoyetas Suaves
                             fig_m.add_trace(go.Contour(
-                                z=grid_z.T, x=np.linspace(minx, maxx, 200), y=np.linspace(miny, maxy, 200),
+                                z=grid_z.T, x=np.linspace(minx, maxx, grid_res), y=np.linspace(miny, maxy, grid_res),
                                 colorscale="YlGnBu", 
-                                colorbar=dict(title="mm/año"),
+                                colorbar=dict(title="Lluvia (mm)"),
                                 hovertemplate="Lluvia: %{z:.0f} mm<extra></extra>",
-                                contours=dict(coloring='heatmap', showlabels=True, labelfont=dict(size=10, color='white')),
-                                opacity=0.8, connectgaps=True, line_smoothing=1.3
+                                contours=dict(
+                                    coloring='heatmap', 
+                                    showlabels=True, 
+                                    labelfont=dict(size=10, color='white'),
+                                    start=0, # Forzar inicio en 0
+                                ),
+                                opacity=0.8, 
+                                connectgaps=True, 
+                                line_smoothing=1.3 # Suavizado visual final de Plotly
                             ))
                             
-                            # 2. Capas Fantasma (Usamos gdf_filtered como zona base)
-                            add_context_layers_ghost(fig_m, gdf_filtered)
+                            # Contexto Fantasma
+                            add_context_layers_ghost(fig_m, gdf_filtered) # Pasamos el gdf filtrado para zoom correcto
                             
-                            # 3. Puntos Estaciones
+                            # Puntos Estaciones
                             fig_m.add_trace(go.Scatter(
                                 x=df_iso['lon'], y=df_iso['lat'], mode='markers',
                                 marker=dict(size=6, color='black', line=dict(width=1, color='white')),
@@ -445,18 +486,18 @@ def main():
                             ))
                             
                             fig_m.update_layout(
-                                title=f"Isoyetas Año {year_iso}", 
-                                height=650, 
+                                title=f"Isoyetas Año {year_iso} (Método RBF)", 
+                                height=700, 
                                 xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False),
                                 margin=dict(l=0,r=0,t=40,b=0), plot_bgcolor='white'
                             )
                             st.plotly_chart(fig_m, use_container_width=True)
                     else:
-                        st.warning("⚠️ Datos insuficientes en esta zona/año para interpolar.")
+                        st.warning("⚠️ Datos insuficientes. Intente seleccionar más estaciones o cambiar el año.")
                 except Exception as e:
                     st.error(f"Error al generar mapa: {e}")
         else:
-            st.info("👈 Seleccione estaciones en el menú lateral para generar el mapa.")
+            st.info("👈 Seleccione una cuenca o región en el menú lateral para empezar.")
 
     # Ajuste CSS para Tabs internas
     st.markdown("""<style>.stTabs [data-baseweb="tab-panel"] { padding-top: 1rem; }</style>""", unsafe_allow_html=True)
