@@ -6,7 +6,7 @@ import numpy as np
 import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
 import geopandas as gpd
-from scipy.interpolate import griddata, Rbf
+from scipy.interpolate import Rbf
 import os
 import sys
 
@@ -25,7 +25,6 @@ st.title("🗺️ Mapas de Isoyetas de Alta Definición (RBF)")
 # --- 2. FUNCIONES DE SOPORTE (Estilo Fantasma y Carga) ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
-    # Ajusta esta ruta si tu carpeta data está en otro nivel
     filepath = os.path.join(os.path.dirname(__file__), '..', 'data', filename)
     if os.path.exists(filepath):
         try:
@@ -94,16 +93,16 @@ with st.expander("📘 Ficha Técnica: Metodología e Interpretación", expanded
 
     ### 2. Metodología RBF (Radial Basis Function)
     Se implementa el algoritmo **Thin-Plate Spline** de la librería `SciPy`. 
-    * A diferencia de la interpolación lineal (que crea triángulos y picos), el RBF simula el comportamiento de una hoja de metal delgada que se dobla suavemente para pasar por los puntos de medición.
-    * Esto elimina el efecto artificial de "conos" o "ojos de buey" alrededor de las estaciones.
+    * A diferencia de la interpolación lineal, el RBF simula el comportamiento de una hoja flexible que se dobla suavemente para pasar por los puntos de medición.
+    * Esto elimina el efecto artificial de "conos" o "ojos de buey".
 
     ### 3. Interpretación del Mapa
-    * **🟦 Azul Oscuro:** Alta precipitación (> 3000 mm). Zonas de oferta hídrica o riesgo de saturación.
-    * **🟨 Amarillo/Claro:** Baja precipitación (< 1500 mm). Posible déficit hídrico o sombra de lluvia.
+    * **🟦 Azul Oscuro:** Alta precipitación (> 3000 mm). Oferta hídrica.
+    * **🟨 Amarillo/Claro:** Baja precipitación (< 1500 mm). Déficit hídrico.
     
     ### 4. Fuentes de Datos
-    * **Precipitación:** Base de datos SIHCLI (Consolidado IDEAM, EPM, Cenicafé).
-    * **Cartografía:** IGAC (Municipios) y Corporación CuencaVerde (Delimitación hidrográfica).
+    * **Precipitación:** Base de datos SIHCLI.
+    * **Cartografía:** IGAC y Corporación CuencaVerde.
     """)
 
 # --- 4. SIDEBAR DE HIDROLOGÍA (FILTROS) ---
@@ -113,22 +112,28 @@ st.sidebar.header("🔍 Filtros Hidrológicos")
 try:
     engine = create_engine(st.secrets["DATABASE_URL"])
     
-    # Cargar metadatos de estaciones para los filtros
-    q_meta = "SELECT id_estacion, nom_est, lat, lon, alt_est, municipio, cuenca FROM estaciones"
+    # --- CORRECCIÓN AQUÍ: Usamos ST_X y ST_Y para extraer lat/lon ---
+    q_meta = """
+        SELECT id_estacion, nom_est, 
+               ST_Y(geom::geometry) as lat, 
+               ST_X(geom::geometry) as lon, 
+               alt_est, municipio, cuenca 
+        FROM estaciones
+    """
     df_meta = pd.read_sql(q_meta, engine)
     
-    # Filtro 1: CUENCA (Lo que pediste)
+    # Filtro 1: CUENCA
     cuencas_disp = sorted(df_meta['cuenca'].dropna().unique())
     sel_cuenca = st.sidebar.multiselect("🌊 Seleccionar Cuenca:", cuencas_disp)
     
-    # Filtro 2: MUNICIPIO (Reactivo a la cuenca)
+    # Filtro 2: MUNICIPIO
     if sel_cuenca:
         df_meta = df_meta[df_meta['cuenca'].isin(sel_cuenca)]
         
     munis_disp = sorted(df_meta['municipio'].dropna().unique())
     sel_muni = st.sidebar.multiselect("🏙️ Seleccionar Municipio:", munis_disp)
     
-    # Aplicar Filtros al DF Metadata
+    # Aplicar Filtros
     if sel_muni:
         df_meta = df_meta[df_meta['municipio'].isin(sel_muni)]
         
@@ -146,7 +151,7 @@ try:
     suavidad = st.sidebar.slider("🎨 Suavizado (RBF):", 0.0, 2.0, 0.5, help="Mayor valor = curvas más relajadas")
 
 except Exception as e:
-    st.error(f"Error de conexión: {e}")
+    st.error(f"Error de conexión o consulta SQL: {e}")
     st.stop()
 
 # --- 5. LÓGICA PRINCIPAL ---
@@ -155,11 +160,10 @@ if len(df_meta) > 0:
     gdf_puntos = gpd.GeoDataFrame(df_meta, geometry=gpd.points_from_xy(df_meta.lon, df_meta.lat), crs="EPSG:4326")
     minx, miny, maxx, maxy = gdf_puntos.total_bounds
     
-    # PESTAÑAS PARA ORGANIZAR
+    # PESTAÑAS
     tab_mapa, tab_datos = st.tabs(["🗺️ Visualización Espacial", "💾 Datos y Descargas"])
     
     with tab_mapa:
-        # Consulta de DATOS DE LLUVIA
         try:
             if len(ids_filtrados) == 1: ids_sql = f"('{ids_filtrados[0]}')"
             else: ids_sql = str(ids_filtrados)
@@ -173,7 +177,7 @@ if len(df_meta) > 0:
             """)
             df_rain = pd.read_sql(q_data, engine, params={"anio": year_iso})
             
-            # Unir con metadatos (Lat/Lon)
+            # Unir con metadatos (Lat/Lon ya corregidos)
             df_final = pd.merge(df_rain, df_meta, on='id_estacion')
             
             # Limpieza
