@@ -25,7 +25,7 @@ except:
 
 st.title("🗺️ Generador Avanzado de Isoyetas (Escenarios & Pronósticos)")
 
-# --- 2. FICHA TÉCNICA (RESTAURADA) ---
+# --- 2. FICHA TÉCNICA (TEXTO ACTUALIZADO) ---
 with st.expander("📘 Ficha Técnica: Metodología, Utilidad y Fuentes", expanded=False):
     st.markdown("""
     ### 1. Concepto y Utilidad
@@ -43,14 +43,12 @@ with st.expander("📘 Ficha Técnica: Metodología, Utilidad y Fuentes", expand
     ### 4. Fuentes de Información
     * **Datos:** Base de datos consolidada SIHCLI (IDEAM, EPM, Cenicafé, etc.).
     * **Cartografía:** Límites político-administrativos (IGAC) y zonificación hidrográfica (CuencaVerde).
-### 🛠️ Modos de Análisis Disponibles
-    1.  **Año Específico:** Muestra la lluvia real acumulada en un año histórico.
-    2.  **Mínimos/Máximos Históricos:** Identifica los extremos climáticos (años más secos o lluviosos) registrados en cada estación. Útil para mapas de amenaza.
-    3.  **Promedio Multianual:** Calcula la "Normal Climatológica" promediando la lluvia en un rango de años seleccionado (ej. 1981-2010).
-    4.  **Pronóstico (Tendencia):** Proyecta la lluvia futura (2026-2040) basándose en la tendencia lineal histórica de cada estación. *Nota: Es una proyección estadística, no un modelo físico.*
 
-    ### 📐 Metodología de Interpolación
-    Se utiliza **RBF (Thin-Plate Spline)** para generar superficies suaves a partir de los puntos, extendiendo el análisis a zonas sin medición mediante un buffer de búsqueda inteligente.
+    ### 🛠️ Modos de Análisis Disponibles
+    1.  **Año Específico:** Muestra la lluvia real acumulada en un año histórico.
+    2.  **Mínimos/Máximos Históricos:** Identifica los extremos climáticos (años más secos o lluviosos) registrados en cada estación. Útil para mapas de amenaza. *Nota: Se filtran años incompletos para evitar falsos mínimos.*
+    3.  **Promedio Multianual:** Calcula la "Normal Climatológica" promediando la lluvia en un rango de años seleccionado (ej. 1981-2010).
+    4.  **Pronóstico (Tendencia):** Proyecta la lluvia futura (2026-2040) basándose en la tendencia lineal histórica de cada estación.
     """)
 
 # --- 3. FUNCIONES DE SOPORTE ---
@@ -128,33 +126,33 @@ def add_context_layers_ghost(fig, gdf_zona):
                     fig.add_trace(go.Scatter(x=list(x), y=list(y), mode='lines', line=dict(width=0.8, color='rgba(50,100,200,0.4)', dash='dash'), hoverinfo='skip', showlegend=False))
     except: pass
 
-def calcular_pronostico(df_hist, target_year):
-    """Regresión lineal simple (y = mx + b) para proyectar lluvia."""
+def calcular_pronostico(df_anual, target_year):
+    """Regresión lineal simple sobre datos anuales VALIDADOS."""
     proyecciones = []
-    # df_hist debe tener: station_id, year, value
-    for station in df_hist['station_id'].unique():
-        datos_est = df_hist[df_hist['station_id'] == station].dropna()
-        if len(datos_est) >= 5: # Mínimo 5 años de datos para que la tendencia tenga sentido
+    # df_anual tiene: station_id, year, total_anual
+    for station in df_anual['station_id'].unique():
+        datos_est = df_anual[df_anual['station_id'] == station].dropna()
+        if len(datos_est) >= 5: # Mínimo 5 años válidos
             try:
                 x = datos_est['year'].values
-                y = datos_est['value'].values
+                y = datos_est['total_anual'].values
                 slope, intercept = np.polyfit(x, y, 1)
                 pred = (slope * target_year) + intercept
-                proyecciones.append({'station_id': station, 'valor': max(0, pred)}) # Evitar lluvia negativa
+                proyecciones.append({'station_id': station, 'valor': max(0, pred)}) 
             except: pass
     return pd.DataFrame(proyecciones)
 
-# --- 4. SIDEBAR (FILTROS Y CONFIGURACIÓN) ---
+# --- 4. SIDEBAR (FILTROS) ---
 st.sidebar.header("🔍 Filtros & Escenarios")
 
 with st.spinner("Cargando ecosistema espacial..."):
     gdf_meta, exito_cruce = obtener_estaciones_enriquecidas()
 
 if gdf_meta.empty:
-    st.error("Error crítico: No se pudo cargar la base de datos de estaciones.")
+    st.error("Error crítico de base de datos.")
     st.stop()
 
-# Detectar columnas (Nombres agnósticos)
+# Detectar columnas
 col_id = detectar_columna(gdf_meta, ['id_estacion', 'codigo']) or 'id_estacion'
 col_nom = detectar_columna(gdf_meta, ['nom_est', 'nombre']) or 'nom_est'
 col_region = detectar_columna(gdf_meta, ['region', 'subregion', 'depto_region'])
@@ -162,7 +160,7 @@ col_muni = detectar_columna(gdf_meta, ['municipio', 'mpio'])
 col_alt = detectar_columna(gdf_meta, ['alt_est', 'altitud'])
 col_cuenca = 'CUENCA_GIS' if 'CUENCA_GIS' in gdf_meta.columns else None
 
-# --- FILTROS (CON KEYS ÚNICAS PARA EVITAR ERROR DUPLICATE ID) ---
+# Filtros Jerárquicos
 df_filtered_meta = gdf_meta.copy()
 
 if col_region:
@@ -201,19 +199,25 @@ elif tipo_analisis == "Promedio Multianual":
 
 elif tipo_analisis == "Pronóstico Futuro":
     params_analisis['target'] = st.sidebar.slider("🔮 Año a Proyectar:", 2026, 2040, 2026, key='sel_proj')
-    st.sidebar.caption("Proyección lineal basada en datos históricos.")
 
-# Buffer y Opciones Visuales
+# Buffer
 buffer_km = st.sidebar.slider("📡 Buffer Búsqueda (km):", 0, 50, 10, key='buff_km')
 buffer_deg = buffer_km / 111.0
 
+# Opciones de Datos
 c1, c2 = st.sidebar.columns(2)
 ignore_zeros = c1.checkbox("🚫 No Ceros", value=True, key='chk_zeros')
 ignore_nulls = c2.checkbox("🚫 No Nulos", value=True, key='chk_nulls')
 
+# --- RECUPERACIÓN DE INTERPOLACIÓN (PARA TODOS LOS MODOS) ---
 do_interp_temp = False
-if complete_series and tipo_analisis == "Año Específico":
-    do_interp_temp = st.sidebar.checkbox("🔄 Interpolación Temporal", value=False, key='chk_interp')
+if complete_series:
+    do_interp_temp = st.sidebar.checkbox(
+        "🔄 Interpolación Temporal", 
+        value=False, 
+        key='chk_interp',
+        help="Rellena meses faltantes antes de calcular anuales. Crítico para datos incompletos."
+    )
 
 suavidad = st.sidebar.slider("🎨 Suavizado (RBF):", 0.0, 2.0, 0.5, key='slider_smooth')
 
@@ -231,83 +235,84 @@ if len(df_filtered_meta) > 0:
             engine = create_engine(st.secrets["DATABASE_URL"])
             df_agg = pd.DataFrame()
             
-            # --- CASO A: AÑO ESPECÍFICO ---
-            if tipo_analisis == "Año Específico":
-                # Nota: Usamos 'precipitation' en la query, pero lo renombraremos a 'value' inmediatamente
-                q_data = text(f"""
-                    SELECT p.id_estacion_fk as station_id, p.fecha_mes_año as fecha_orig, p.precipitation
-                    FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-                    WHERE extract(year from p.fecha_mes_año) = :y
-                    AND ST_X(e.geom::geometry) BETWEEN :mx AND :Mx AND ST_Y(e.geom::geometry) BETWEEN :my AND :My
-                """)
-                df_raw = pd.read_sql(q_data, engine, params={"y": params_analisis['year'], "mx":q_minx, "my":q_miny, "Mx":q_maxx, "My":q_maxy})
+            # --- QUERY RAW (Mensual) ---
+            # Traemos datos mensuales crudos para poder validar completitud
+            # Alias 'fecha_mes_año' para compatibilidad con data_processor
+            q_raw = text(f"""
+                SELECT p.id_estacion_fk as station_id, p.fecha_mes_año, p.precipitation as value
+                FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+                WHERE ST_X(e.geom::geometry) BETWEEN :mx AND :Mx AND ST_Y(e.geom::geometry) BETWEEN :my AND :My
+            """)
+            
+            df_raw = pd.read_sql(q_raw, engine, params={"mx":q_minx, "my":q_miny, "Mx":q_maxx, "My":q_maxy})
+            df_raw['fecha_mes_año'] = pd.to_datetime(df_raw['fecha_mes_año'])
+            
+            if not df_raw.empty:
                 
-                if not df_raw.empty:
-                    # Estandarizar nombre de columna de lluvia a 'value'
-                    df_raw = df_raw.rename(columns={'precipitation': 'value'})
-                    
-                    if do_interp_temp and complete_series:
-                        # Preparar para complete_series (necesita 'fecha_mes_año')
-                        df_proc = df_raw.rename(columns={'fecha_orig': 'fecha_mes_año'})
-                        df_proc['fecha_mes_año'] = pd.to_datetime(df_proc['fecha_mes_año'])
-                        
-                        with st.spinner("Rellenando series..."):
-                            df_filled = complete_series(df_proc)
-                            # complete_series devuelve columna 'value' o 'precipitation'? Asumamos devuelve lo que entró
-                            # Si devuelve 'precipitation', lo renombramos de nuevo
-                            if 'precipitation' in df_filled.columns:
-                                df_filled = df_filled.rename(columns={'precipitation': 'value'})
-                                
-                            df_agg = df_filled.groupby('station_id')['value'].sum().reset_index()
-                    else:
-                        df_agg = df_raw.groupby('station_id')['value'].sum().reset_index()
-                    
-                    df_agg.columns = [col_id, 'valor']
-
-            # --- CASO B: ESCENARIOS AGREGADOS (Multianual, Min, Max, Pronóstico) ---
-            else:
-                # Traemos la historia anual completa para las estaciones en la zona
-                q_hist = text(f"""
-                    SELECT p.id_estacion_fk as station_id, extract(year from p.fecha_mes_año) as year, SUM(p.precipitation) as value
-                    FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-                    WHERE ST_X(e.geom::geometry) BETWEEN :mx AND :Mx AND ST_Y(e.geom::geometry) BETWEEN :my AND :My
-                    GROUP BY 1, 2
-                """)
-                df_hist = pd.read_sql(q_hist, engine, params={"mx":q_minx, "my":q_miny, "Mx":q_maxx, "My":q_maxy})
+                # 1. INTERPOLACIÓN TEMPORAL (OPCIONAL)
+                if do_interp_temp and complete_series:
+                    with st.spinner("🔄 Rellenando huecos temporales..."):
+                        df_processed = complete_series(df_raw) # Debe devolver DF con huecos llenos
+                else:
+                    df_processed = df_raw.copy()
                 
-                if not df_hist.empty:
-                    if tipo_analisis == "Promedio Multianual":
-                        mask = (df_hist['year'] >= params_analisis['start']) & (df_hist['year'] <= params_analisis['end'])
-                        df_agg = df_hist[mask].groupby('station_id')['value'].mean().reset_index()
+                # 2. AGRUPACIÓN ANUAL INTELIGENTE
+                # Agregamos columna año
+                df_processed['year'] = df_processed['fecha_mes_año'].dt.year
+                
+                # Contamos registros por año para validar
+                year_counts = df_processed.groupby(['station_id', 'year'])['value'].count().reset_index(name='count')
+                
+                # Regla de Negocio: Un año es válido si tiene >= 10 meses de datos (o si fue interpolado)
+                # Si se usó interpolación, asumimos que complete_series ya hizo el trabajo sucio.
+                # Si NO se usó, filtramos los incompletos.
+                if not do_interp_temp:
+                    valid_years = year_counts[year_counts['count'] >= 10] # Umbral estricto
+                    df_processed = pd.merge(df_processed, valid_years[['station_id', 'year']], on=['station_id', 'year'])
+                
+                # Calcular Totales Anuales
+                df_annual_sums = df_processed.groupby(['station_id', 'year'])['value'].sum().reset_index(name='total_anual')
+                
+                # --- 3. LÓGICA DE ESCENARIOS SOBRE DATOS ANUALES VALIDADOS ---
+                
+                if tipo_analisis == "Año Específico":
+                    df_agg = df_annual_sums[df_annual_sums['year'] == params_analisis['year']].copy()
+                    df_agg = df_agg.rename(columns={'total_anual': 'valor'})
+                
+                elif tipo_analisis == "Mínimo Histórico":
+                    # El mínimo de los TOTALES ANUALES (Ya no de meses sueltos)
+                    df_agg = df_annual_sums.groupby('station_id')['total_anual'].min().reset_index(name='valor')
                     
-                    elif tipo_analisis == "Mínimo Histórico":
-                        df_agg = df_hist.groupby('station_id')['value'].min().reset_index()
-                        
-                    elif tipo_analisis == "Máximo Histórico":
-                        df_agg = df_hist.groupby('station_id')['value'].max().reset_index()
-                        
-                    elif tipo_analisis == "Pronóstico Futuro":
-                        df_agg = calcular_pronostico(df_hist, params_analisis['target'])
+                elif tipo_analisis == "Máximo Histórico":
+                    df_agg = df_annual_sums.groupby('station_id')['total_anual'].max().reset_index(name='valor')
                     
-                    if not df_agg.empty:
-                        df_agg.columns = [col_id, 'valor']
+                elif tipo_analisis == "Promedio Multianual":
+                    mask = (df_annual_sums['year'] >= params_analisis['start']) & (df_annual_sums['year'] <= params_analisis['end'])
+                    df_agg = df_annual_sums[mask].groupby('station_id')['total_anual'].mean().reset_index(name='valor')
+                    
+                elif tipo_analisis == "Pronóstico Futuro":
+                    with st.spinner(f"Proyectando al {params_analisis['target']}..."):
+                        df_agg = calcular_pronostico(df_annual_sums, params_analisis['target'])
 
-            # --- RENDERIZADO DEL MAPA ---
+            # --- 4. RENDERIZADO ---
             if not df_agg.empty:
-                # Merge final
-                cols_to_merge = [col_id, col_nom, 'lat_calc', 'lon_calc']
-                if col_muni: cols_to_merge.append(col_muni)
-                if col_alt: cols_to_merge.append(col_alt)
-                if col_cuenca: cols_to_merge.append(col_cuenca)
-                cols_to_merge = list(set(cols_to_merge))
+                df_agg = df_agg.rename(columns={'station_id': col_id}) # Estandarizar ID para merge
                 
-                df_final = pd.merge(df_agg, gdf_meta[cols_to_merge], on=col_id)
+                # Merge con metadatos
+                cols_merge = [col_id, col_nom, 'lat_calc', 'lon_calc']
+                if col_muni: cols_merge.append(col_muni)
+                if col_alt: cols_merge.append(col_alt)
+                if col_cuenca: cols_merge.append(col_cuenca)
+                cols_merge = list(set(cols_merge))
                 
-                if ignore_zeros: df_final = df_final[df_final['valor'] > 0]
+                df_final = pd.merge(df_agg, gdf_meta[cols_merge], on=col_id)
+                
+                # Filtros Finales
+                if ignore_zeros: df_final = df_final[df_final['valor'] > 10] # Filtramos ruido < 10mm anual
                 if ignore_nulls: df_final = df_final.dropna(subset=['valor'])
                 
                 if len(df_final) >= 3:
-                    with st.spinner(f"Interpolando {len(df_final)} estaciones..."):
+                    with st.spinner(f"Generando isoyetas ({len(df_final)} estaciones)..."):
                         grid_res = 200
                         gx, gy = np.mgrid[q_minx:q_maxx:complex(0, grid_res), q_miny:q_maxy:complex(0, grid_res)]
                         rbf = Rbf(df_final['lon_calc'], df_final['lat_calc'], df_final['valor'], function='thin_plate', smooth=suavidad)
@@ -315,40 +320,46 @@ if len(df_filtered_meta) > 0:
                         
                         fig = go.Figure()
                         
-                        # Titulo
+                        # Título dinámico
                         tit = f"Isoyetas: {tipo_analisis}"
                         if tipo_analisis == "Año Específico": tit += f" ({params_analisis['year']})"
-                        if tipo_analisis == "Pronóstico Futuro": tit += f" ({params_analisis['target']})"
-
-                        # Hover Data
+                        
+                        # POPUP ARREGLADO
+                        # Creamos una columna formateada para el hover
+                        df_final['hover_val'] = df_final['valor'].apply(lambda x: f"{x:,.0f}")
+                        
                         c_muni = df_final[col_muni].fillna('-') if col_muni else ["-"]*len(df_final)
                         c_alt = df_final[col_alt].fillna(0) if col_alt else [0]*len(df_final)
                         c_cuenca = df_final[col_cuenca].fillna('-') if col_cuenca else ["-"]*len(df_final)
-                        custom_data = np.stack((c_muni, c_alt, c_cuenca), axis=-1)
-
-                        # Mapa Contornos
+                        c_val = df_final['hover_val']
+                        
+                        # Stack para customdata: [0:Muni, 1:Alt, 2:Cuenca, 3:Valor]
+                        custom_data = np.stack((c_muni, c_alt, c_cuenca, c_val), axis=-1)
+                        
                         fig.add_trace(go.Contour(
                             z=grid_z.T, x=np.linspace(q_minx, q_maxx, grid_res), y=np.linspace(q_miny, q_maxy, grid_res),
                             colorscale="YlGnBu", colorbar=dict(title="Lluvia (mm)"),
-                            hovertemplate="Lluvia: %{z:.0f} mm<extra></extra>",
+                            hovertemplate="Lluvia Interpolada: %{z:.0f} mm<extra></extra>",
                             contours=dict(coloring='heatmap', showlabels=True, labelfont=dict(size=10, color='white')),
                             opacity=0.8, connectgaps=True, line_smoothing=1.3
                         ))
                         add_context_layers_ghost(fig, gdf_target)
+                        
                         fig.add_trace(go.Scatter(
                             x=df_final['lon_calc'], y=df_final['lat_calc'], mode='markers',
                             marker=dict(size=6, color='black', line=dict(width=1, color='white')),
                             text=df_final[col_nom], customdata=custom_data,
-                            hovertemplate="<b>%{text}</b><br>🌧️: %{marker.color:.0f} mm<br>🏙️: %{customdata[0]}<br>⛰️: %{customdata[1]} m<br>🌊: %{customdata[2]}<extra></extra>",
+                            # FIX POPUP: Usamos customdata[3] que es el valor formateado
+                            hovertemplate="<b>%{text}</b><br>🌧️: %{customdata[3]} mm<br>🏙️: %{customdata[0]}<br>⛰️: %{customdata[1]} m<br>🌊: %{customdata[2]}<extra></extra>",
                             name="Estaciones"
                         ))
                         fig.add_shape(type="rect", x0=minx, y0=miny, x1=maxx, y1=maxy, line=dict(color="Red", width=2, dash="dot"))
                         fig.update_layout(title=tit, height=650, margin=dict(l=0,r=0,t=30,b=0), xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False), plot_bgcolor='white')
                         st.plotly_chart(fig, use_container_width=True)
                 else:
-                    st.warning("⚠️ Datos insuficientes (Mínimo 3 estaciones requeridas).")
+                    st.warning("⚠️ Datos insuficientes. Intente aumentar el Buffer o cambiar el año.")
             else:
-                st.warning("No hay datos disponibles para este escenario.")
+                st.warning("No hay datos disponibles para los parámetros seleccionados.")
 
         except Exception as e:
             st.error(f"Error técnico: {e}")
