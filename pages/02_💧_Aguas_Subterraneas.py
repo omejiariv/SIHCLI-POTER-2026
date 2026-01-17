@@ -30,11 +30,31 @@ st.title("💧 Estimación de Recarga (Modelo Turc + Escenarios)")
 # --- 1. DOCUMENTACIÓN ---
 with st.expander("📘 Metodología: Modelo Turc y Proyecciones", expanded=False):
     st.markdown("""
-    * **Balance Hídrico (Turc):** Estima la recarga como el excedente de la precipitación menos la evapotranspiración real (ETR), corregido por un coeficiente de infiltración ($K_i$).
-    * **Datos Históricos:** Se utilizan los registros reales de precipitación para calcular la recarga histórica, capturando la variabilidad climática natural (ENSO).
-    * **Proyección:** Se utiliza Prophet para modelar la tendencia futura.
-    """)
+    ### 1. Marco Conceptual
+    La recarga de aguas subterráneas es la fracción de la precipitación que se infiltra en el suelo y alcanza el nivel freático, renovando los acuíferos. Este módulo estima la **Recarga      Potencial** mediante un balance hídrico climático corregido por la capacidad de infiltración del terreno.
 
+    ### 2. Metodología: Método de Turc (1954)
+    Se utiliza el modelo empírico de Turc para estimar la Evapotranspiración Real (ETR) a partir de la precipitación y la temperatura media.
+
+    #### Ecuaciones:
+    1.  **Temperatura Estimada ($T$):** Se calcula mediante el gradiente altitudinal.
+        $$ T = 30 - (0.0065 \times Altitud) $$
+    2.  **Capacidad Evaporativa del Aire ($L_t$):**
+        $$ L(t) = 300 + 25T + 0.05T^3 $$
+    3.  **Evapotranspiración Real ($ETR$):**
+        $$ ETR = \\frac{P}{\\sqrt{0.9 + (\\frac{P}{L(t)})^2}} $$
+    4.  **Excedente Hídrico ($Exc$):**
+        $$ Exc = P - ETR $$
+    5.  **Recarga Potencial ($R$):** Se aplica un Coeficiente de Infiltración ($K_i$) dependiente del uso del suelo.
+        $$ R = Exc \times K_i $$
+
+    ### 3. Proyecciones
+    Se utiliza el algoritmo **Facebook Prophet** (o un modelo estadístico simplificado si no está disponible) para proyectar la serie temporal de precipitación. Luego, se recalcula el balance de Turc para cada mes futuro, permitiendo visualizar escenarios de estrés hídrico.
+    
+    ### 4. Fuentes
+    * **Clima:** Series históricas mensuales IDEAM/EPM (Tabla `precipitacion_mensual`).
+    * **Cartografía:** Capas oficiales de la Gobernación de Antioquia.
+    """)
 # --- FUNCIONES GIS ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
