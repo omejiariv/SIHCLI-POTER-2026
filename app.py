@@ -1,59 +1,128 @@
-# app.py
 import streamlit as st
+import plotly.express as px
+import pandas as pd
+from PIL import Image
+import os
 
-# Configuración de página (debe ser la primera línea)
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="SIHCLI-POTER 2026",
-    page_icon="🌊",
-    layout="wide"
+    page_title="SIHCLI-POTER",
+    page_icon="💧",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Título y Bienvenida
-st.title("🌊 SIHCLI-POTER 2026")
-st.markdown("### Sistema de Información Hidro-Climatológica y Eco-Hidrológica")
-st.markdown("**Corporación CuencaVerde | Fondo de Agua de Medellín y la Región Central**")
+# --- TÍTULO Y BIENVENIDA ---
+st.title("🌊 Sistema de Información Hidroclimática (SIHCLI-POTER)")
+st.markdown("""
+**Bienvenido al ecosistema de inteligencia territorial para la seguridad hídrica.**
+Esta plataforma integra datos climáticos, hidrológicos y de biodiversidad para soportar la toma de decisiones estratégicas en la cuenca.
+""")
 
 st.divider()
 
-col1, col2 = st.columns([1, 2])
+# --- DATOS DEL GRÁFICO SUNBURST (Estructura del Sistema) ---
+# Aquí definimos la jerarquía: Abuelo -> Padre -> Hijo
+data = {
+    'id': [
+        'SIHCLI-POTER', 
+        # --- NIVEL 1: MÓDULOS PRINCIPALES ---
+        'Clima e Hidrología', 'Aguas Subterráneas', 'Biodiversidad', 'Toma de Decisiones', 'Herramientas',
+        
+        # --- NIVEL 2: SUBMÓDULOS (HIJOS) ---
+        # Hijos de Clima
+        'Precipitación', 'Índices (ENSO)', 'Caudales',
+        # Hijos de Aguas Sub
+        'Modelo Turc', 'Mapa Recarga', 'Escenarios', 'Balance Hídrico',
+        # Hijos de Biodiversidad
+        'Monitor GBIF', 'Taxonomía', 'Amenazas IUCN', 'Servicios Ecosistémicos',
+        # Hijos de Decisiones
+        'Matriz Prioridad', 'Análisis Multicriterio', 'Predios',
+        # Hijos de Herramientas (Diagnóstico/Detective)
+        'Diagnóstico Calidad', 'Detective de Datos'
+    ],
+    'parent': [
+        '', # Raíz (No tiene padre)
+        # Padres Nivel 1
+        'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER',
+        # Padres Nivel 2 (Conectan con Nivel 1)
+        'Clima e Hidrología', 'Clima e Hidrología', 'Clima e Hidrología',
+        'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas',
+        'Biodiversidad', 'Biodiversidad', 'Biodiversidad', 'Biodiversidad',
+        'Toma de Decisiones', 'Toma de Decisiones', 'Toma de Decisiones',
+        'Herramientas', 'Herramientas'
+    ],
+    'value': [
+        100, # Valor Central
+        20, 25, 20, 20, 15, # Pesos Nivel 1
+        6, 7, 7,            # Clima
+        6, 7, 6, 6,         # Aguas
+        5, 5, 5, 5,         # Bio
+        7, 7, 6,            # Decisiones
+        7, 8                # Herramientas
+    ]
+}
 
-with col1:
-    st.info("👋 **Bienvenido al nuevo sistema integrado.**")
-    st.markdown("""
-    Esta plataforma ha evolucionado para integrar nuevos módulos estratégicos.
+# --- CREACIÓN DEL GRÁFICO ---
+def create_system_map():
+    df = pd.DataFrame(data)
     
-    **👈 Usa el menú lateral para navegar entre:**
+    fig = px.sunburst(
+        df,
+        names='id',
+        parents='parent',
+        values='value',
+        color='parent', # Colorear según el módulo padre
+        color_discrete_sequence=px.colors.qualitative.Pastel1, # Paleta profesional y suave
+        branchvalues='total' # El tamaño del padre es la suma de los hijos
+    )
     
-    * **01 🌦️ Clima e Hidrología:** Tu tablero de monitoreo actual.
-    * **02 💧 Aguas Subterráneas:** (Nuevo) Recarga y acuíferos.
-    * **03 🍃 Biodiversidad:** (Nuevo) Ecosistemas.
-    * **04 📊 Toma de Decisiones:** (Nuevo) Gestión.
-    """)
+    fig.update_layout(
+        title={
+            'text': "🗺️ Mapa de Navegación del Sistema",
+            'y':0.95,
+            'x':0.5,
+            'xanchor': 'center',
+            'yanchor': 'top'
+        },
+        font=dict(family="Arial", size=14),
+        margin=dict(t=60, l=0, r=0, b=0),
+        height=650,
+        paper_bgcolor='rgba(0,0,0,0)', # Fondo transparente
+    )
+    
+    # Efecto Hover personalizado
+    fig.update_traces(
+        hovertemplate='<b>%{label}</b><br>Módulo: %{parent}<extra></extra>',
+        textinfo='label+percent parent'
+    )
+    
+    return fig
 
-with col2:
-    st.success("🎯 **Objetivo 2026**")
-    st.markdown("""
-    > *"Gestionar integralmente el recurso hídrico entendiendo la cuenca 
-    > como un sistema vivo."*
-    """)
-    st.warning("⚠️ Nota: Si no ves el menú lateral de páginas, haz clic en la flecha pequeña `>` en la esquina superior izquierda.")
+# --- LAYOUT PRINCIPAL ---
+c1, c2 = st.columns([2, 1])
 
+with c1:
+    st.plotly_chart(create_system_map(), use_container_width=True)
+
+with c2:
+    st.subheader("📌 Acceso Rápido")
+    st.info("Utiliza este gráfico interactivo para entender la estructura del sistema. Haz clic en un sector para hacer zoom.")
+    
+    st.markdown("### Módulos Destacados")
+    
+    with st.expander("💧 Aguas Subterráneas", expanded=True):
+        st.write("Cálculo de recarga potencial y proyección de escenarios climáticos.")
+        st.caption("Estado: ✅ Operativo")
+        
+    with st.expander("🍃 Biodiversidad"):
+        st.write("Conexión con GBIF para monitoreo de especies y amenazas.")
+        st.caption("Estado: ✅ Operativo")
+        
+    with st.expander("🎯 Toma de Decisiones"):
+        st.write("Priorización espacial de predios para inversión basada en multicriterio.")
+        st.caption("Estado: ✅ Operativo")
+
+# --- FOOTER ---
 st.divider()
-
-# --- CÓDIGO TEMPORAL PARA VER TABLAS ---
-import pandas as pd
-from sqlalchemy import create_engine, text
-
-# Solo si quieres ver los nombres de las tablas
-if st.checkbox("🕵️‍♂️ Ver nombres reales de las tablas"):
-    try:
-        engine = create_engine(st.secrets["DATABASE_URL"])
-        with engine.connect() as conn:
-            # Esta consulta le pide a PostgreSQL que liste todas las tablas públicas
-            query = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';"
-            df_tablas = pd.read_sql(text(query), conn)
-            st.write("### Tablas encontradas en tu base de datos:")
-            st.write(df_tablas)
-    except Exception as e:
-        st.error(f"Error: {e}")
-# ---------------------------------------
+st.caption("© 2026 CuencaVerde & Nutresa | SIHCLI-POTER v2.0")
