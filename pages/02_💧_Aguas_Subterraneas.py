@@ -56,7 +56,7 @@ with st.expander("📘 Metodología: Modelo Turc y Proyecciones", expanded=False
     * **Cartografía:** Capas oficiales de la Gobernación de Antioquia.
     """)
 
-# --- FUNCIONES GIS (ESTILO FANTASMA) ---
+# --- FUNCIONES GIS MEJORADAS (Nombres Exactos) ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
     filepath = os.path.join(os.path.dirname(__file__), '..', 'data', filename)
@@ -68,46 +68,85 @@ def load_geojson_cached(filename):
         except: pass
     return None
 
+def get_name_from_row(row, type_layer):
+    """
+    Busca el nombre en las columnas disponibles.
+    Normalizamos a minúsculas para evitar errores de mayúsculas/minúsculas.
+    """
+    cols = row.index.str.lower()
+    
+    # 1. MUNICIPIOS
+    if type_layer == 'muni':
+        # Buscamos columnas comunes de municipios
+        for c in ['mpio_cnmbr', 'nombre', 'municipio', 'mpio_nomb']:
+            if c in cols: return row[c]
+            
+    # 2. CUENCAS (Actualizado con tu lista: N-NSS3)
+    elif type_layer == 'cuenca':
+        # Prioridad estricta según tu archivo
+        for c in ['n-nss3', 'subc_lbl', 'n_nss1', 'nom_cuenca', 'nombre']:
+            if c in cols: return row[c]
+            
+    return "Desconocido"
+
 def add_context_layers_cartesian(fig, gdf_zona):
-    """Añade capas de contexto con estilo sutil (Punteado y Transparente)."""
+    """
+    Añade capas de contexto (Municipios y Cuencas) con estilo sutil y nombres reales.
+    """
     try:
         roi = gdf_zona.buffer(0.05)
         
-        # 1. MUNICIPIOS (Gris muy suave, punteado)
+        # A. MUNICIPIOS
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         if gdf_m is not None:
             gdf_c = gpd.clip(gdf_m, roi)
+            # Normalizamos nombres de columnas para facilitar búsqueda
+            gdf_c.columns = gdf_c.columns.str.lower()
+            
             for _, r in gdf_c.iterrows():
+                name = get_name_from_row(r, 'muni')
                 geom = r.geometry
                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
+                
                 for p in polys:
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), 
                         mode='lines', 
-                        line=dict(width=0.5, color='rgba(100, 100, 100, 0.3)', dash='dot'), # <--- SUTIL
-                        hoverinfo='text', text="Municipio", showlegend=False
+                        # Gris fantasma punteado
+                        line=dict(width=0.7, color='rgba(100, 100, 100, 0.3)', dash='dot'), 
+                        hoverinfo='text', 
+                        text=f"Mpio: {name}",
+                        showlegend=False
                     ))
         
-        # 2. CUENCAS (Azul muy suave, punteado)
+        # B. CUENCAS
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         if gdf_cu is not None:
             gdf_c = gpd.clip(gdf_cu, roi)
+            gdf_c.columns = gdf_c.columns.str.lower()
+            
             for _, r in gdf_c.iterrows():
+                name = get_name_from_row(r, 'cuenca')
                 geom = r.geometry
                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
+                
                 for p in polys:
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), 
                         mode='lines', 
-                        line=dict(width=0.5, color='rgba(50, 50, 50, 0.2)', dash='dot'), # <--- MUY SUTIL
-                        hoverinfo='text', text="Cuenca", showlegend=False
+                        # Azul fantasma punteado
+                        line=dict(width=0.7, color='rgba(50, 100, 200, 0.3)', dash='dash'), 
+                        hoverinfo='text', 
+                        text=f"Cuenca: {name}", 
+                        showlegend=False
                     ))
-    except: pass
+    except Exception as e:
+        print(f"Error cargando capas contexto: {e}")
 
 def interpolacion_segura(points, values, grid_x, grid_y):
-    """Interpolación Robusta (Linear + Nearest)."""
+    """Interpolación Híbrida (Linear + Nearest)."""
     grid_z0 = griddata(points, values, (grid_x, grid_y), method='linear')
     mask = np.isnan(grid_z0)
     if np.any(mask):
@@ -140,7 +179,7 @@ def calculate_turc_advanced(df, ki):
     df['recarga_mm'] = df['excedente_mm'] * ki
     return df
 
-# --- FORECASTING HÍBRIDO ---
+# --- FORECASTING ---
 def run_prophet_forecast_hybrid(df_hist, months_ahead, altitud_ref, ki, ruido_factor):
     if not PROPHET_AVAILABLE: return pd.DataFrame()
 
@@ -257,7 +296,6 @@ if gdf_zona is not None and not gdf_zona.empty:
                 
                 st.divider()
                 
-                # --- PESTAÑAS ---
                 tab_evol, tab_mapa, tab_data = st.tabs(["📈 Evolución & Pronóstico", "🗺️ Mapa de Recarga", "💾 Descargas"])
                 
                 with tab_evol:
@@ -283,7 +321,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 # 2. ETR
                                 fig.add_trace(go.Scatter(
                                     x=df_forecast['ds'], y=df_forecast['etr_est'],
-                                    name='ETR (Evapotranspiración)', line=dict(color='orange', width=1.5, dash='dot')
+                                    name='ETR', line=dict(color='orange', width=1.5, dash='dot')
                                 ))
                                 
                                 # 3. Recarga Histórica
@@ -293,7 +331,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                                     fill='tozeroy', fillcolor='rgba(0,0,255,0.1)'
                                 ))
                                 
-                                # 4. Recarga Proyectada
+                                # 4. Proyección
                                 fig.add_trace(go.Scatter(
                                     x=fut['ds'], y=fut['recarga_est'],
                                     name='Recarga Proyectada', line=dict(color='dodgerblue', width=2, dash='dash')
@@ -310,7 +348,10 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 
                                 fig.update_layout(
                                     title="Dinámica de Recarga: Datos Reales + Proyección",
-                                    yaxis_title="Tasa (mm/año)", hovermode="x unified", height=500
+                                    yaxis_title="Tasa (mm/año)", 
+                                    hovermode="x unified", 
+                                    height=550,
+                                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                                 )
                                 st.plotly_chart(fig, use_container_width=True)
                             else:
@@ -322,6 +363,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                     if len(df_res_avg) >= 3:
                         with st.spinner("Generando superficie continua (Cartesiana)..."):
                             gx, gy = np.mgrid[minx:maxx:100j, miny:maxy:100j]
+                            
                             grid_R = interpolacion_segura(
                                 df_res_avg[['lon', 'lat']].values, 
                                 df_res_avg['recarga_mm'].values, gx, gy
@@ -329,7 +371,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                             
                             fig_m = go.Figure()
                             
-                            # 1. Superficie Continua
+                            # 1. Superficie
                             fig_m.add_trace(go.Contour(
                                 z=grid_R.T, 
                                 x=np.linspace(minx, maxx, 100), 
@@ -343,10 +385,10 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 line_smoothing=0.85
                             ))
                             
-                            # 2. Contexto (ESTILO FANTASMA)
+                            # 2. Contexto (FANTASMA + NOMBRES REALES)
                             add_context_layers_cartesian(fig_m, gdf_zona)
                             
-                            # 3. Puntos Estaciones
+                            # 3. Estaciones
                             fig_m.add_trace(go.Scatter(
                                 x=df_res_avg['lon'], y=df_res_avg['lat'],
                                 mode='markers', marker=dict(size=8, color='black', line=dict(width=1, color='white')),
@@ -354,7 +396,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 hoverinfo='text', name='Estaciones'
                             ))
                             
-                            # 4. Borde Zona (Negro Fuerte)
+                            # 4. Borde Zona
                             for _, row in gdf_zona.iterrows():
                                 geom = row.geometry
                                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
