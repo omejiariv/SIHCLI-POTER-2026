@@ -52,6 +52,11 @@ with st.expander("📘 Ficha Técnica: Metodología, Utilidad y Fuentes", expand
     * **🔮 Pronóstico Futuro:** Proyección lineal a 2026-2040.
     ### 6. Metodología
     Interpolación **Thin-Plate Spline (RBF)** con corrección de escala dinámica y recorte de valores negativos.
+
+    ### 7. Interpretación Visual
+    * **Líneas Negras Punteadas:** Límites Municipales.
+    * **Líneas Azules:** Límites de Cuencas Hidrográficas.
+    * **Colores:** Representan la intensidad de la precipitación según la escala seleccionada.
     """)
 
 # --- 3. FUNCIONES DE SOPORTE ---
@@ -121,7 +126,7 @@ def add_context_layers_ghost(fig, gdf_zona):
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         
-        # Capa Municipios (Con Hover Activado)
+        # Capa Municipios (ALTO CONTRASTE)
         if gdf_m is not None:
             gdf_c = gpd.clip(gdf_m, roi)
             for _, r in gdf_c.iterrows():
@@ -132,12 +137,12 @@ def add_context_layers_ghost(fig, gdf_zona):
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), mode='lines', 
-                        line=dict(width=0.6, color='rgba(80,80,80,0.3)', dash='dot'), 
-                        hoverinfo='text', text=f"🏙️ Mpio: {name}", # Texto visible al pasar mouse
+                        line=dict(width=1.0, color='rgba(0, 0, 0, 0.6)', dash='dot'), # Negro semitransparente
+                        hoverinfo='text', text=f"🏙️ Mpio: {name}",
                         showlegend=False
                     ))
         
-        # Capa Cuencas (Con Hover Activado)
+        # Capa Cuencas (ALTO CONTRASTE)
         if gdf_cu is not None:
             gdf_c = gpd.clip(gdf_cu, roi)
             for _, r in gdf_c.iterrows():
@@ -148,8 +153,8 @@ def add_context_layers_ghost(fig, gdf_zona):
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), mode='lines', 
-                        line=dict(width=1, color='rgba(0,100,200,0.5)', dash='dash'), 
-                        hoverinfo='text', text=f"🌊 Cuenca: {name}", # Texto visible al pasar mouse
+                        line=dict(width=1.5, color='rgba(0, 80, 200, 0.8)'), # Azul Fuerte
+                        hoverinfo='text', text=f"🌊 Cuenca: {name}",
                         showlegend=False
                     ))
     except: pass
@@ -167,6 +172,43 @@ def calcular_pronostico(df_anual, target_year):
                 proyecciones.append({'station_id': station, 'valor': max(0, pred)}) 
             except: pass
     return pd.DataFrame(proyecciones)
+
+def generar_analisis_texto(df_stats, tipo_analisis):
+    """Genera un reporte textual inteligente basado en los datos del mapa."""
+    if df_stats.empty: return "No hay datos suficientes para generar análisis."
+    
+    avg_val = df_stats['valor'].mean()
+    min_val = df_stats['valor'].min()
+    max_val = df_stats['valor'].max()
+    std_val = df_stats['valor'].std()
+    
+    # Identificar estaciones extremas
+    est_max = df_stats.loc[df_stats['valor'].idxmax()]['nom_est']
+    est_min = df_stats.loc[df_stats['valor'].idxmin()]['nom_est']
+    
+    # Clasificación de Variabilidad
+    cv = (std_val / avg_val) * 100 if avg_val > 0 else 0
+    if cv < 10: var_text = "Homogénea (Baja Variabilidad)"
+    elif cv < 30: var_text = "Moderada"
+    else: var_text = "Heterogénea (Alta Variabilidad Espacial)"
+    
+    unit = "mm"
+    
+    reporte = f"""
+    ### 📝 Análisis Automático del Territorio
+    
+    **1. Comportamiento General:**
+    * El promedio de precipitación en la zona analizada ({tipo_analisis}) es de **{avg_val:,.0f} {unit}**.
+    * La distribución espacial es **{var_text}**, con un Coeficiente de Variación del {cv:.1f}%.
+    
+    **2. Extremos Climáticos:**
+    * 🌧️ **Máximo:** La mayor oferta hídrica se encuentra en la estación **{est_max}** con **{max_val:,.0f} {unit}**.
+    * ☀️ **Mínimo:** La zona más seca corresponde a **{est_min}** con **{min_val:,.0f} {unit}**.
+    
+    **3. Gradiente Espacial:**
+    * Existe una diferencia de **{max_val - min_val:,.0f} {unit}** entre la zona más húmeda y la más seca, lo que sugiere { "fuertes efectos orográficos" if cv > 30 else "un comportamiento regional uniforme" }.
+    """
+    return reporte
 
 # --- 4. SIDEBAR ---
 st.sidebar.header("🔍 Configuración")
@@ -312,25 +354,17 @@ if len(df_filtered_meta) > 0:
                     with st.spinner(f"Generando isoyetas..."):
                         grid_res = 200
                         
-                        # --- NORMALIZACIÓN DE COORDENADAS (SOLUCIÓN MAPA PLANO) ---
-                        # Convertimos Lat/Lon a una escala 0-1 relativa para que RBF funcione bien
-                        x_raw = df_final['lon_calc'].values
-                        y_raw = df_final['lat_calc'].values
-                        z_raw = df_final['valor'].values
-                        
+                        # Normalización Z-Score para evitar mapas planos
+                        x_raw, y_raw, z_raw = df_final['lon_calc'].values, df_final['lat_calc'].values, df_final['valor'].values
                         x_mean, x_std = x_raw.mean(), x_raw.std()
                         y_mean, y_std = y_raw.mean(), y_raw.std()
-                        
-                        # Normalizamos puntos
                         x_norm = (x_raw - x_mean) / x_std
                         y_norm = (y_raw - y_mean) / y_std
                         
-                        # Ajustamos el Grid de destino también normalizado
                         gx_raw, gy_raw = np.mgrid[q_minx:q_maxx:complex(0, grid_res), q_miny:q_maxy:complex(0, grid_res)]
                         gx_norm = (gx_raw - x_mean) / x_std
                         gy_norm = (gy_raw - y_mean) / y_std
                         
-                        # Interpolación con coordenadas normalizadas
                         rbf = Rbf(x_norm, y_norm, z_raw, function='thin_plate', smooth=suavidad)
                         grid_z = rbf(gx_norm, gy_norm)
                         grid_z = np.maximum(grid_z, 0)
@@ -367,6 +401,10 @@ if len(df_filtered_meta) > 0:
                         fig.add_shape(type="rect", x0=minx, y0=miny, x1=maxx, y1=maxy, line=dict(color="Red", width=2, dash="dot"))
                         fig.update_layout(title=tit, height=650, margin=dict(l=0,r=0,t=30,b=0), xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False), plot_bgcolor='white')
                         st.plotly_chart(fig, use_container_width=True)
+                        
+                        # --- ANÁLISIS AUTOMÁTICO (NUEVO) ---
+                        st.info(generar_analisis_texto(df_final, tipo_analisis))
+                        
                 else:
                     st.warning("⚠️ Datos insuficientes. Aumente el Buffer (km).")
             else:
