@@ -129,6 +129,7 @@ def add_context_layers_ghost(fig, gdf_zona):
 def calcular_pronostico(df_anual, target_year):
     """Regresión lineal simple sobre datos anuales VALIDADOS."""
     proyecciones = []
+    # df_anual tiene: station_id, year, total_anual
     for station in df_anual['station_id'].unique():
         datos_est = df_anual[df_anual['station_id'] == station].dropna()
         if len(datos_est) >= 5: 
@@ -141,16 +142,17 @@ def calcular_pronostico(df_anual, target_year):
             except: pass
     return pd.DataFrame(proyecciones)
 
-# --- 4. SIDEBAR ---
-st.sidebar.header("🔍 Filtros & Escenarios")
+# --- 4. SIDEBAR DE CONTROL ---
+st.sidebar.header("🔍 Configuración")
 
-with st.spinner("Cargando ecosistema espacial..."):
+with st.spinner("Cargando datos espaciales..."):
     gdf_meta, exito_cruce = obtener_estaciones_enriquecidas()
 
 if gdf_meta.empty:
-    st.error("Error crítico de base de datos.")
+    st.error("Error crítico: Base de datos no disponible.")
     st.stop()
 
+# Detectar columnas
 col_id = detectar_columna(gdf_meta, ['id_estacion', 'codigo']) or 'id_estacion'
 col_nom = detectar_columna(gdf_meta, ['nom_est', 'nombre']) or 'nom_est'
 col_region = detectar_columna(gdf_meta, ['region', 'subregion', 'depto_region'])
@@ -158,6 +160,7 @@ col_muni = detectar_columna(gdf_meta, ['municipio', 'mpio'])
 col_alt = detectar_columna(gdf_meta, ['alt_est', 'altitud'])
 col_cuenca = 'CUENCA_GIS' if 'CUENCA_GIS' in gdf_meta.columns else None
 
+# --- FILTROS GEOGRÁFICOS ---
 df_filtered_meta = gdf_meta.copy()
 
 if col_region:
@@ -178,7 +181,7 @@ if col_muni:
 st.sidebar.markdown(f"**Estaciones en zona:** {len(df_filtered_meta)}")
 st.sidebar.divider()
 
-# --- CONFIGURACIÓN DE ESCENARIOS ---
+# --- SELECCIÓN DE ESCENARIO (RECUPERADO) ---
 tipo_analisis = st.sidebar.selectbox(
     "📊 Modo de Análisis:", 
     ["Año Específico", "Promedio Multianual", "Mínimo Histórico", "Máximo Histórico", "Pronóstico Futuro"],
@@ -194,7 +197,8 @@ elif tipo_analisis == "Promedio Multianual":
 elif tipo_analisis == "Pronóstico Futuro":
     params_analisis['target'] = st.sidebar.slider("🔮 Año a Proyectar:", 2026, 2040, 2026, key='sel_proj')
 
-buffer_km = st.sidebar.slider("📡 Buffer Búsqueda (km):", 0, 100, 20, key='buff_km')
+# Buffer y Parámetros GIS
+buffer_km = st.sidebar.slider("📡 Buffer Búsqueda (km):", 0, 100, 20, key='buff_km', help="Aumentar para evitar mapas vacíos o círculos.")
 buffer_deg = buffer_km / 111.0
 
 c1, c2 = st.sidebar.columns(2)
@@ -203,11 +207,12 @@ ignore_nulls = c2.checkbox("🚫 No Nulos", value=True, key='chk_nulls')
 
 do_interp_temp = False
 if complete_series:
-    do_interp_temp = st.sidebar.checkbox("🔄 Interpolación Temporal", value=False, key='chk_interp')
+    do_interp_temp = st.sidebar.checkbox("🔄 Interpolación Temporal", value=False, key='chk_interp', help="Rellena huecos en los datos históricos.")
 
-suavidad = st.sidebar.slider("🎨 Suavizado (RBF):", 0.0, 2.0, 0.5, key='slider_smooth')
+# Suavizado en 0.0 por defecto para que los colores coincidan
+suavidad = st.sidebar.slider("🎨 Suavizado (RBF):", 0.0, 2.0, 0.0, key='slider_smooth')
 
-# --- 5. MOTOR DE CÁLCULO ---
+# --- 5. LÓGICA DE PROCESAMIENTO ---
 if len(df_filtered_meta) > 0:
     gdf_target = df_filtered_meta
     minx, miny, maxx, maxy = gdf_target.total_bounds
@@ -221,7 +226,7 @@ if len(df_filtered_meta) > 0:
             engine = create_engine(st.secrets["DATABASE_URL"])
             df_agg = pd.DataFrame()
             
-            # Query RAW
+            # --- OBTENCIÓN DE DATOS RAW ---
             q_raw = text(f"""
                 SELECT p.id_estacion_fk, p.fecha_mes_año, p.precipitation
                 FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
@@ -231,56 +236,55 @@ if len(df_filtered_meta) > 0:
             df_raw = pd.read_sql(q_raw, engine, params={"mx":q_minx, "my":q_miny, "Mx":q_maxx, "My":q_maxy})
             
             if not df_raw.empty:
-                # 1. LIMPIEZA DE DUPLICADOS (CORRECCIÓN 50,000 MM)
-                # Estandarizamos y convertimos fecha
-                df_proc = df_raw.rename(columns={
-                    'id_estacion_fk': 'id_estacion', 
-                    'fecha_mes_año': 'fecha_mes_año',
-                    'precipitation': 'precipitation'
-                })
+                # 1. PRE-PROCESAMIENTO (Estandarización y Promedio de Duplicados)
+                df_proc = df_raw.rename(columns={'id_estacion_fk': 'id_estacion'})
                 df_proc['fecha_mes_año'] = pd.to_datetime(df_proc['fecha_mes_año'])
-                
-                # REGLA DE ORO: Si hay duplicados para la misma estación/mes, tomamos el promedio (evita sumas locas)
+                # Limpieza crítica: Promediar si hay duplicados para el mismo mes
                 df_proc = df_proc.groupby(['id_estacion', 'fecha_mes_año'])['precipitation'].mean().reset_index()
                 
-                # 2. INTERPOLACIÓN TEMPORAL
+                # 2. INTERPOLACIÓN TEMPORAL (Si se seleccionó)
                 if do_interp_temp and complete_series:
-                    with st.spinner("🔄 Procesando series..."):
+                    with st.spinner("Interpolando series temporales..."):
                         df_processed = complete_series(df_proc) 
                 else:
                     df_processed = df_proc.copy()
                 
-                # 3. AGRUPACIÓN ANUAL
+                # 3. AGREGACIÓN ANUAL
                 df_processed['year'] = df_processed['fecha_mes_año'].dt.year
                 year_counts = df_processed.groupby(['id_estacion', 'year'])['precipitation'].count().reset_index(name='count')
                 
                 if not do_interp_temp:
+                    # Filtramos años incompletos (<10 meses) para evitar falsos mínimos
                     valid_years = year_counts[year_counts['count'] >= 10]
                     df_processed = pd.merge(df_processed, valid_years[['id_estacion', 'year']], on=['id_estacion', 'year'])
                 
                 df_annual_sums = df_processed.groupby(['id_estacion', 'year'])['precipitation'].sum().reset_index(name='total_anual')
                 df_annual_sums = df_annual_sums.rename(columns={'id_estacion': 'station_id'})
 
-                # 4. LÓGICA DE ESCENARIOS
+                # --- 4. CÁLCULO DE ESCENARIOS ---
                 if tipo_analisis == "Año Específico":
                     df_agg = df_annual_sums[df_annual_sums['year'] == params_analisis['year']].copy()
                     df_agg = df_agg.rename(columns={'total_anual': 'valor'})
+                
                 elif tipo_analisis == "Mínimo Histórico":
                     df_agg = df_annual_sums.groupby('station_id')['total_anual'].min().reset_index(name='valor')
+                    
                 elif tipo_analisis == "Máximo Histórico":
                     df_agg = df_annual_sums.groupby('station_id')['total_anual'].max().reset_index(name='valor')
+                    
                 elif tipo_analisis == "Promedio Multianual":
                     mask = (df_annual_sums['year'] >= params_analisis['start']) & (df_annual_sums['year'] <= params_analisis['end'])
                     df_agg = df_annual_sums[mask].groupby('station_id')['total_anual'].mean().reset_index(name='valor')
+                    
                 elif tipo_analisis == "Pronóstico Futuro":
-                    with st.spinner(f"Proyectando..."):
+                    with st.spinner("Proyectando escenario futuro..."):
                         df_agg = calcular_pronostico(df_annual_sums, params_analisis['target'])
 
-            # --- 5. RENDERIZADO ---
+            # --- 5. RENDERIZADO MAPA ---
             if not df_agg.empty:
                 df_agg = df_agg.rename(columns={'station_id': col_id})
                 
-                # Merge
+                # Merge con metadatos
                 cols_merge = [col_id, col_nom, 'lat_calc', 'lon_calc']
                 if col_muni: cols_merge.append(col_muni)
                 if col_alt: cols_merge.append(col_alt)
@@ -289,39 +293,47 @@ if len(df_filtered_meta) > 0:
                 
                 df_final = pd.merge(df_agg, gdf_meta[cols_merge], on=col_id)
                 
-                # Filtros
-                if ignore_zeros: df_final = df_final[df_final['valor'] > 10]
+                # Filtros de valor (Evitar ceros irreales)
+                if ignore_zeros: df_final = df_final[df_final['valor'] > 5]
                 if ignore_nulls: df_final = df_final.dropna(subset=['valor'])
                 
                 if len(df_final) >= 3:
-                    with st.spinner(f"Generando mapa..."):
+                    with st.spinner(f"Generando superficie RBF ({len(df_final)} puntos)..."):
                         grid_res = 200
                         gx, gy = np.mgrid[q_minx:q_maxx:complex(0, grid_res), q_miny:q_maxy:complex(0, grid_res)]
                         rbf = Rbf(df_final['lon_calc'], df_final['lat_calc'], df_final['valor'], function='thin_plate', smooth=suavidad)
                         grid_z = rbf(gx, gy)
                         
-                        # CORRECCIÓN DE NEGATIVOS: CLIPPING
+                        # Clipping (Evitar negativos)
                         grid_z = np.maximum(grid_z, 0)
+                        
+                        # CALCULO DINÁMICO DE ESCALA DE COLOR (Solución "Amarillo")
+                        # Forzamos que la escala de colores empiece y termine en los valores reales de los datos
+                        z_min_val = df_final['valor'].min()
+                        z_max_val = df_final['valor'].max()
                         
                         fig = go.Figure()
                         
-                        # Titulo
+                        # Titulo Dinámico
                         tit = f"Isoyetas: {tipo_analisis}"
                         if tipo_analisis == "Año Específico": tit += f" ({params_analisis['year']})"
+                        if tipo_analisis == "Pronóstico Futuro": tit += f" ({params_analisis['target']})"
                         
-                        # POPUP
+                        # Datos Popup
                         df_final['hover_val'] = df_final['valor'].apply(lambda x: f"{x:,.0f}")
                         c_muni = df_final[col_muni].fillna('-') if col_muni else ["-"]*len(df_final)
                         c_alt = df_final[col_alt].fillna(0) if col_alt else [0]*len(df_final)
                         c_cuenca = df_final[col_cuenca].fillna('-') if col_cuenca else ["-"]*len(df_final)
                         custom_data = np.stack((c_muni, c_alt, c_cuenca, df_final['hover_val']), axis=-1)
                         
+                        # Mapa
                         fig.add_trace(go.Contour(
                             z=grid_z.T, x=np.linspace(q_minx, q_maxx, grid_res), y=np.linspace(q_miny, q_maxy, grid_res),
                             colorscale="YlGnBu", 
                             colorbar=dict(title="Lluvia (mm)"),
+                            zmin=z_min_val, zmax=z_max_val, # CLAVE: Escala forzada
                             hovertemplate="Lluvia: %{z:.0f} mm<extra></extra>",
-                            contours=dict(coloring='heatmap', showlabels=True, labelfont=dict(size=10, color='white'), start=0),
+                            contours=dict(coloring='heatmap', showlabels=True, labelfont=dict(size=10, color='white')),
                             opacity=0.8, connectgaps=True, line_smoothing=1.3
                         ))
                         add_context_layers_ghost(fig, gdf_target)
@@ -336,11 +348,11 @@ if len(df_filtered_meta) > 0:
                         fig.update_layout(title=tit, height=650, margin=dict(l=0,r=0,t=30,b=0), xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False), plot_bgcolor='white')
                         st.plotly_chart(fig, use_container_width=True)
                 else:
-                    st.warning("⚠️ Datos insuficientes en esta zona. Aumente el Buffer (km).")
+                    st.warning(f"⚠️ Datos insuficientes en esta zona ({len(df_final)} estaciones). Aumente el Buffer (km).")
             else:
                 st.warning("No se encontraron datos para los filtros seleccionados.")
                 
-            with st.expander("🔍 Ver Datos Crudos", expanded=False):
+            with st.expander("🔍 Ver Datos Crudos (Validación)", expanded=False):
                 if not df_agg.empty: st.dataframe(df_final)
 
         except Exception as e:
