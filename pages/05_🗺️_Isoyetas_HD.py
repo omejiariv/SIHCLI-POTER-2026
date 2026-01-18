@@ -104,6 +104,16 @@ def generar_raster_ascii(grid_z, minx, miny, cellsize, nrows, ncols):
         body += " ".join([f"{val:.2f}" for val in row]) + "\n"
     return header + body
 
+def get_name_from_row_v2(row, type_layer):
+    cols = row.index.str.lower()
+    if type_layer == 'muni':
+        for c in ['mpio_cnmbr', 'nombre', 'municipio', 'mpio_nomb']:
+            if c in cols: return row[c]
+    elif type_layer == 'cuenca':
+        for c in ['n-nss3', 'subc_lbl', 'nom_cuenca', 'nombre', 'cuenca']:
+            if c in cols: return row[c]
+    return "Zona"
+
 def add_context_layers_ghost(fig, gdf_zona):
     if gdf_zona is None or gdf_zona.empty: return
     try:
@@ -111,22 +121,37 @@ def add_context_layers_ghost(fig, gdf_zona):
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         
+        # Capa Municipios (Con Hover Activado)
         if gdf_m is not None:
             gdf_c = gpd.clip(gdf_m, roi)
             for _, r in gdf_c.iterrows():
+                name = get_name_from_row_v2(r, 'muni')
                 geom = r.geometry
                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
                 for p in polys:
                     x, y = p.exterior.xy
-                    fig.add_trace(go.Scatter(x=list(x), y=list(y), mode='lines', line=dict(width=0.5, color='rgba(100,100,100,0.2)', dash='dot'), hoverinfo='skip', showlegend=False))
+                    fig.add_trace(go.Scatter(
+                        x=list(x), y=list(y), mode='lines', 
+                        line=dict(width=0.6, color='rgba(80,80,80,0.3)', dash='dot'), 
+                        hoverinfo='text', text=f"🏙️ Mpio: {name}", # Texto visible al pasar mouse
+                        showlegend=False
+                    ))
+        
+        # Capa Cuencas (Con Hover Activado)
         if gdf_cu is not None:
             gdf_c = gpd.clip(gdf_cu, roi)
             for _, r in gdf_c.iterrows():
+                name = get_name_from_row_v2(r, 'cuenca')
                 geom = r.geometry
                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
                 for p in polys:
                     x, y = p.exterior.xy
-                    fig.add_trace(go.Scatter(x=list(x), y=list(y), mode='lines', line=dict(width=0.8, color='rgba(50,100,200,0.4)', dash='dash'), hoverinfo='skip', showlegend=False))
+                    fig.add_trace(go.Scatter(
+                        x=list(x), y=list(y), mode='lines', 
+                        line=dict(width=1, color='rgba(0,100,200,0.5)', dash='dash'), 
+                        hoverinfo='text', text=f"🌊 Cuenca: {name}", # Texto visible al pasar mouse
+                        showlegend=False
+                    ))
     except: pass
 
 def calcular_pronostico(df_anual, target_year):
@@ -160,9 +185,9 @@ col_muni = detectar_columna(gdf_meta, ['municipio', 'mpio'])
 col_alt = detectar_columna(gdf_meta, ['alt_est', 'altitud'])
 col_cuenca = 'CUENCA_GIS' if 'CUENCA_GIS' in gdf_meta.columns else None
 
-# Filtros
 df_filtered_meta = gdf_meta.copy()
 
+# Filtros
 if col_region:
     regs = sorted(df_filtered_meta[col_region].dropna().astype(str).unique())
     sel_reg = st.sidebar.multiselect("📍 Región:", regs, key='filter_reg')
@@ -181,30 +206,19 @@ if col_muni:
 st.sidebar.markdown(f"**Estaciones en zona:** {len(df_filtered_meta)}")
 st.sidebar.divider()
 
-# --- ESCENARIOS & PARÁMETROS ---
-tipo_analisis = st.sidebar.selectbox(
-    "📊 Modo de Análisis:", 
-    ["Año Específico", "Promedio Multianual", "Variabilidad Temporal (Desv. Estándar)", "Mínimo Histórico", "Máximo Histórico", "Pronóstico Futuro"],
-    key='analisis_mode'
-)
+# Escenarios
+tipo_analisis = st.sidebar.selectbox("📊 Modo de Análisis:", ["Año Específico", "Promedio Multianual", "Variabilidad Temporal", "Mínimo Histórico", "Máximo Histórico", "Pronóstico Futuro"], key='analisis_mode')
 
 params_analisis = {}
 if tipo_analisis == "Año Específico":
     params_analisis['year'] = st.sidebar.selectbox("📅 Año:", range(2025, 1980, -1), key='sel_year')
-elif tipo_analisis in ["Promedio Multianual", "Variabilidad Temporal (Desv. Estándar)"]:
-    rango = st.sidebar.slider("📅 Periodo de Referencia:", 1980, 2025, (1990, 2020), key='sel_period')
+elif tipo_analisis in ["Promedio Multianual", "Variabilidad Temporal"]:
+    rango = st.sidebar.slider("📅 Periodo:", 1980, 2025, (1990, 2020), key='sel_period')
     params_analisis['start'], params_analisis['end'] = rango
 elif tipo_analisis == "Pronóstico Futuro":
-    params_analisis['target'] = st.sidebar.slider("🔮 Año a Proyectar:", 2026, 2040, 2026, key='sel_proj')
+    params_analisis['target'] = st.sidebar.slider("🔮 Proyección:", 2026, 2040, 2026, key='sel_proj')
 
-# --- NUEVO: SELECTOR DE COLOR ---
-paleta_colores = st.sidebar.selectbox(
-    "🎨 Escala de Color:",
-    options=["YlGnBu", "Jet", "Portland", "Viridis", "RdBu"],
-    index=0,
-    help="Seleccione 'Jet' o 'Portland' para mayor contraste en la variabilidad."
-)
-
+paleta_colores = st.sidebar.selectbox("🎨 Escala de Color:", options=["YlGnBu", "Jet", "Portland", "Viridis", "RdBu"], index=0)
 buffer_km = st.sidebar.slider("📡 Buffer Búsqueda (km):", 0, 100, 20, key='buff_km')
 buffer_deg = buffer_km / 111.0
 
@@ -213,12 +227,11 @@ ignore_zeros = c1.checkbox("🚫 No Ceros", value=True, key='chk_zeros')
 ignore_nulls = c2.checkbox("🚫 No Nulos", value=True, key='chk_nulls')
 
 do_interp_temp = False
-if complete_series:
-    do_interp_temp = st.sidebar.checkbox("🔄 Interpolación Temporal", value=False, key='chk_interp')
+if complete_series: do_interp_temp = st.sidebar.checkbox("🔄 Interpolación Temporal", value=False, key='chk_interp')
 
 suavidad = st.sidebar.slider("🖌️ Suavizado (RBF):", 0.0, 2.0, 0.0, key='slider_smooth')
 
-# --- 5. LÓGICA ---
+# --- 5. LÓGICA ESPACIAL ---
 if len(df_filtered_meta) > 0:
     gdf_target = df_filtered_meta
     minx, miny, maxx, maxy = gdf_target.total_bounds
@@ -237,11 +250,9 @@ if len(df_filtered_meta) > 0:
                 FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
                 WHERE ST_X(e.geom::geometry) BETWEEN :mx AND :Mx AND ST_Y(e.geom::geometry) BETWEEN :my AND :My
             """)
-            
             df_raw = pd.read_sql(q_raw, engine, params={"mx":q_minx, "my":q_miny, "Mx":q_maxx, "My":q_maxy})
             
             if not df_raw.empty:
-                # Procesamiento
                 df_proc = df_raw.rename(columns={'id_estacion_fk': 'id_estacion', 'precipitation': 'precipitation'})
                 df_proc['fecha_mes_año'] = pd.to_datetime(df_proc['fecha_mes_año'])
                 df_proc = df_proc.groupby(['id_estacion', 'fecha_mes_año'])['precipitation'].mean().reset_index()
@@ -252,7 +263,6 @@ if len(df_filtered_meta) > 0:
                 else:
                     df_processed = df_proc.copy()
                 
-                # Agrupación Anual
                 df_processed['year'] = df_processed['fecha_mes_año'].dt.year
                 year_counts = df_processed.groupby(['id_estacion', 'year'])['precipitation'].count().reset_index(name='count')
                 
@@ -263,51 +273,66 @@ if len(df_filtered_meta) > 0:
                 df_annual_sums = df_processed.groupby(['id_estacion', 'year'])['precipitation'].sum().reset_index(name='total_anual')
                 df_annual_sums = df_annual_sums.rename(columns={'id_estacion': 'station_id'})
 
-                # --- ESCENARIOS ---
                 if tipo_analisis == "Año Específico":
                     df_agg = df_annual_sums[df_annual_sums['year'] == params_analisis['year']].copy()
                     df_agg = df_agg.rename(columns={'total_anual': 'valor'})
-                
                 elif tipo_analisis == "Mínimo Histórico":
                     df_agg = df_annual_sums.groupby('station_id')['total_anual'].min().reset_index(name='valor')
-                
                 elif tipo_analisis == "Máximo Histórico":
                     df_agg = df_annual_sums.groupby('station_id')['total_anual'].max().reset_index(name='valor')
-                
                 elif tipo_analisis == "Promedio Multianual":
                     mask = (df_annual_sums['year'] >= params_analisis['start']) & (df_annual_sums['year'] <= params_analisis['end'])
                     df_agg = df_annual_sums[mask].groupby('station_id')['total_anual'].mean().reset_index(name='valor')
-                
-                elif tipo_analisis == "Variabilidad Temporal (Desv. Estándar)":
+                elif tipo_analisis == "Variabilidad Temporal":
                     mask = (df_annual_sums['year'] >= params_analisis['start']) & (df_annual_sums['year'] <= params_analisis['end'])
-                    # Calculamos la Desviación Estándar de los totales anuales
                     df_agg = df_annual_sums[mask].groupby('station_id')['total_anual'].std().reset_index(name='valor')
-                
                 elif tipo_analisis == "Pronóstico Futuro":
                     with st.spinner("Proyectando..."):
                         df_agg = calcular_pronostico(df_annual_sums, params_analisis['target'])
 
-            # --- RENDER ---
             if not df_agg.empty:
                 df_agg = df_agg.rename(columns={'station_id': col_id})
-                
                 cols_merge = [col_id, col_nom, 'lat_calc', 'lon_calc']
                 if col_muni: cols_merge.append(col_muni)
                 if col_alt: cols_merge.append(col_alt)
                 if col_cuenca: cols_merge.append(col_cuenca)
-                cols_merge = list(set(cols_merge))
                 
-                df_final = pd.merge(df_agg, gdf_meta[cols_merge], on=col_id)
+                df_final = pd.merge(df_agg, gdf_meta[list(set(cols_merge))], on=col_id)
                 
+                # Eliminar duplicados espaciales
+                df_final = df_final.groupby(['lat_calc', 'lon_calc']).agg({
+                    col_id: 'first', col_nom: 'first', 'valor': 'mean', 
+                    col_muni: 'first', col_alt: 'first', col_cuenca: 'first'
+                }).reset_index()
+
                 if ignore_zeros: df_final = df_final[df_final['valor'] > 5]
                 if ignore_nulls: df_final = df_final.dropna(subset=['valor'])
                 
                 if len(df_final) >= 3:
                     with st.spinner(f"Generando isoyetas..."):
                         grid_res = 200
-                        gx, gy = np.mgrid[q_minx:q_maxx:complex(0, grid_res), q_miny:q_maxy:complex(0, grid_res)]
-                        rbf = Rbf(df_final['lon_calc'], df_final['lat_calc'], df_final['valor'], function='thin_plate', smooth=suavidad)
-                        grid_z = rbf(gx, gy)
+                        
+                        # --- NORMALIZACIÓN DE COORDENADAS (SOLUCIÓN MAPA PLANO) ---
+                        # Convertimos Lat/Lon a una escala 0-1 relativa para que RBF funcione bien
+                        x_raw = df_final['lon_calc'].values
+                        y_raw = df_final['lat_calc'].values
+                        z_raw = df_final['valor'].values
+                        
+                        x_mean, x_std = x_raw.mean(), x_raw.std()
+                        y_mean, y_std = y_raw.mean(), y_raw.std()
+                        
+                        # Normalizamos puntos
+                        x_norm = (x_raw - x_mean) / x_std
+                        y_norm = (y_raw - y_mean) / y_std
+                        
+                        # Ajustamos el Grid de destino también normalizado
+                        gx_raw, gy_raw = np.mgrid[q_minx:q_maxx:complex(0, grid_res), q_miny:q_maxy:complex(0, grid_res)]
+                        gx_norm = (gx_raw - x_mean) / x_std
+                        gy_norm = (gy_raw - y_mean) / y_std
+                        
+                        # Interpolación con coordenadas normalizadas
+                        rbf = Rbf(x_norm, y_norm, z_raw, function='thin_plate', smooth=suavidad)
+                        grid_z = rbf(gx_norm, gy_norm)
                         grid_z = np.maximum(grid_z, 0)
                         
                         z_min = df_final['valor'].min()
@@ -315,24 +340,19 @@ if len(df_filtered_meta) > 0:
                         if z_max == z_min: z_max += 0.1
                         
                         fig = go.Figure()
-                        
-                        # Labels
-                        unit = "mm (Desv. Std)" if "Variabilidad" in tipo_analisis else "mm"
                         tit = f"Isoyetas: {tipo_analisis}"
                         if tipo_analisis == "Año Específico": tit += f" ({params_analisis['year']})"
                         
-                        # --- POPUP MEJORADO ---
                         df_final['hover_val'] = df_final['valor'].apply(lambda x: f"{x:,.0f}")
-                        c_muni = df_final[col_muni].fillna('Desconocido') if col_muni else ["-"]*len(df_final)
+                        c_muni = df_final[col_muni].fillna('-') if col_muni else ["-"]*len(df_final)
                         c_alt = df_final[col_alt].fillna(0) if col_alt else [0]*len(df_final)
-                        c_cuenca = df_final[col_cuenca].fillna('Fuera de Jurisdicción') if col_cuenca else ["-"]*len(df_final)
+                        c_cuenca = df_final[col_cuenca].fillna('-') if col_cuenca else ["-"]*len(df_final)
                         custom_data = np.stack((c_muni, c_alt, c_cuenca, df_final['hover_val']), axis=-1)
                         
                         fig.add_trace(go.Contour(
                             z=grid_z.T, x=np.linspace(q_minx, q_maxx, grid_res), y=np.linspace(q_miny, q_maxy, grid_res),
-                            colorscale=paleta_colores, # Selector de color aplicado aquí
-                            zmin=z_min, zmax=z_max,
-                            colorbar=dict(title=unit),
+                            colorscale=paleta_colores, zmin=z_min, zmax=z_max,
+                            colorbar=dict(title="mm"),
                             contours=dict(coloring='heatmap', showlabels=True, labelfont=dict(size=10, color='white')),
                             opacity=0.8, connectgaps=True, line_smoothing=1.3
                         ))
@@ -341,7 +361,7 @@ if len(df_filtered_meta) > 0:
                             x=df_final['lon_calc'], y=df_final['lat_calc'], mode='markers',
                             marker=dict(size=6, color='black', line=dict(width=1, color='white')),
                             text=df_final[col_nom], customdata=custom_data,
-                            hovertemplate="<b>%{text}</b><br>Valor: %{customdata[3]} " + unit + "<br>🏙️: %{customdata[0]}<br>⛰️: %{customdata[1]} m<br>🌊: %{customdata[2]}<extra></extra>",
+                            hovertemplate="<b>%{text}</b><br>Valor: %{customdata[3]}<br>🏙️: %{customdata[0]}<br>⛰️: %{customdata[1]} m<br>🌊: %{customdata[2]}<extra></extra>",
                             name="Estaciones"
                         ))
                         fig.add_shape(type="rect", x0=minx, y0=miny, x1=maxx, y1=maxy, line=dict(color="Red", width=2, dash="dot"))
