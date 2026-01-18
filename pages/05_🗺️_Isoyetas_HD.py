@@ -62,12 +62,18 @@ with st.expander("📘 Ficha Técnica: Metodología, Utilidad y Fuentes", expand
 # --- 3. FUNCIONES DE SOPORTE ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
-    possible_paths = [os.path.join("data", filename), os.path.join("..", "data", filename), os.path.join(os.path.dirname(__file__), '..', 'data', filename)]
+    # Buscamos en varias rutas posibles
+    possible_paths = [
+        os.path.join("data", filename),
+        os.path.join("..", "data", filename),
+        os.path.join(os.path.dirname(__file__), '..', 'data', filename)
+    ]
     for path in possible_paths:
         if os.path.exists(path):
             try:
                 gdf = gpd.read_file(path)
-                if gdf.crs and gdf.crs != "EPSG:4326": gdf = gdf.to_crs("EPSG:4326")
+                if gdf.crs and gdf.crs != "EPSG:4326": 
+                    gdf = gdf.to_crs("EPSG:4326")
                 return gdf
             except: continue
     return None
@@ -119,16 +125,27 @@ def get_name_from_row_v2(row, type_layer):
             if c in cols: return row[c]
     return "Zona"
 
-def add_context_layers_ghost(fig, gdf_zona):
-    if gdf_zona is None or gdf_zona.empty: return
+def add_context_layers_robust(fig, minx, miny, maxx, maxy):
+    """
+    Versión mejorada: Usa .cx para filtrar por caja delimitadora en lugar de clip.
+    Es más rápido y menos propenso a errores geométricos.
+    """
     try:
-        roi = gdf_zona.buffer(0.1)
+        # Buffer de visualización para asegurar que los contornos cubran todo el mapa
+        pad = 0.05 
+        b_minx, b_miny, b_maxx, b_maxy = minx - pad, miny - pad, maxx + pad, maxy + pad
+        
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         
-        # Capa Municipios (ALTO CONTRASTE)
+        # 1. Capa Municipios
         if gdf_m is not None:
-            gdf_c = gpd.clip(gdf_m, roi)
+            # Filtrado espacial rápido
+            try:
+                gdf_c = gdf_m.cx[b_minx:b_maxx, b_miny:b_maxy]
+            except:
+                gdf_c = gdf_m # Si falla el filtro, usa todo (fallback)
+
             for _, r in gdf_c.iterrows():
                 name = get_name_from_row_v2(r, 'muni')
                 geom = r.geometry
@@ -137,14 +154,18 @@ def add_context_layers_ghost(fig, gdf_zona):
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), mode='lines', 
-                        line=dict(width=1.0, color='rgba(0, 0, 0, 0.6)', dash='dot'), # Negro semitransparente
-                        hoverinfo='text', text=f"🏙️ Mpio: {name}",
+                        line=dict(width=1.5, color='rgba(50, 50, 50, 0.8)'), # Gris oscuro sólido
+                        text=f"🏙️ {name}", hoverinfo='text',
                         showlegend=False
                     ))
         
-        # Capa Cuencas (ALTO CONTRASTE)
+        # 2. Capa Cuencas
         if gdf_cu is not None:
-            gdf_c = gpd.clip(gdf_cu, roi)
+            try:
+                gdf_c = gdf_cu.cx[b_minx:b_maxx, b_miny:b_maxy]
+            except:
+                gdf_c = gdf_cu
+
             for _, r in gdf_c.iterrows():
                 name = get_name_from_row_v2(r, 'cuenca')
                 geom = r.geometry
@@ -153,11 +174,14 @@ def add_context_layers_ghost(fig, gdf_zona):
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), mode='lines', 
-                        line=dict(width=1.5, color='rgba(0, 80, 200, 0.8)'), # Azul Fuerte
-                        hoverinfo='text', text=f"🌊 Cuenca: {name}",
+                        line=dict(width=2.0, color='rgba(0, 100, 255, 0.9)'), # Azul brillante sólido
+                        text=f"🌊 {name}", hoverinfo='text',
                         showlegend=False
                     ))
-    except: pass
+        return True
+    except Exception as e:
+        print(f"Error pintando capas: {e}")
+        return False
 
 def calcular_pronostico(df_anual, target_year):
     proyecciones = []
@@ -173,40 +197,44 @@ def calcular_pronostico(df_anual, target_year):
             except: pass
     return pd.DataFrame(proyecciones)
 
-def generar_analisis_texto(df_stats, tipo_analisis):
-    """Genera un reporte textual inteligente basado en los datos del mapa."""
-    if df_stats.empty: return "No hay datos suficientes para generar análisis."
+def generar_analisis_texto_corregido(df_stats, tipo_analisis):
+    """Lógica calibrada para reportar la realidad del gradiente."""
+    if df_stats.empty: return "No hay datos suficientes."
     
     avg_val = df_stats['valor'].mean()
     min_val = df_stats['valor'].min()
     max_val = df_stats['valor'].max()
-    std_val = df_stats['valor'].std()
+    
+    # Diferencia absoluta
+    diff = max_val - min_val
     
     # Identificar estaciones extremas
     est_max = df_stats.loc[df_stats['valor'].idxmax()]['nom_est']
     est_min = df_stats.loc[df_stats['valor'].idxmin()]['nom_est']
     
-    # Clasificación de Variabilidad
-    cv = (std_val / avg_val) * 100 if avg_val > 0 else 0
-    if cv < 10: var_text = "Homogénea (Baja Variabilidad)"
-    elif cv < 30: var_text = "Moderada"
-    else: var_text = "Heterogénea (Alta Variabilidad Espacial)"
+    # Lógica de interpretación CORREGIDA
+    if diff < 500:
+        conclusion = "un comportamiento regional relativamente uniforme."
+    elif diff < 1500:
+        conclusion = "un gradiente de precipitación moderado."
+    else:
+        conclusion = "una **fuerte variabilidad orográfica** y contrastes climáticos marcados."
     
     unit = "mm"
     
     reporte = f"""
     ### 📝 Análisis Automático del Territorio
     
-    **1. Comportamiento General:**
-    * El promedio de precipitación en la zona analizada ({tipo_analisis}) es de **{avg_val:,.0f} {unit}**.
-    * La distribución espacial es **{var_text}**, con un Coeficiente de Variación del {cv:.1f}%.
+    **1. Resumen Ejecutivo:**
+    * Promedio Regional: **{avg_val:,.0f} {unit}**.
+    * Rango de Variación: **{diff:,.0f} {unit}**.
     
-    **2. Extremos Climáticos:**
-    * 🌧️ **Máximo:** La mayor oferta hídrica se encuentra en la estación **{est_max}** con **{max_val:,.0f} {unit}**.
-    * ☀️ **Mínimo:** La zona más seca corresponde a **{est_min}** con **{min_val:,.0f} {unit}**.
+    **2. Diagnóstico de Variabilidad:**
+    * Existe una diferencia de **{diff:,.0f} {unit}** entre los extremos, lo que sugiere {conclusion}
     
-    **3. Gradiente Espacial:**
-    * Existe una diferencia de **{max_val - min_val:,.0f} {unit}** entre la zona más húmeda y la más seca, lo que sugiere { "fuertes efectos orográficos" if cv > 30 else "un comportamiento regional uniforme" }.
+    **3. Puntos Críticos:**
+    * 🌧️ **Zona más Húmeda:** Estación **{est_max}** ({max_val:,.0f} {unit}).
+    * ☀️ **Zona más Seca:** Estación **{est_min}** ({min_val:,.0f} {unit}).
     """
     return reporte
 
@@ -220,6 +248,13 @@ if gdf_meta.empty:
     st.error("Error crítico: Base de datos no disponible.")
     st.stop()
 
+# Depuración de Archivos GIS (Nuevo)
+with st.sidebar.expander("🛠️ Diagnóstico de Archivos GIS"):
+    geo_muni = load_geojson_cached("MunicipiosAntioquia.geojson")
+    geo_cuenca = load_geojson_cached("SubcuencasAinfluencia.geojson")
+    st.write(f"Municipios cargado: {'✅' if geo_muni is not None else '❌'}")
+    st.write(f"Cuencas cargado: {'✅' if geo_cuenca is not None else '❌'}")
+
 col_id = detectar_columna(gdf_meta, ['id_estacion', 'codigo']) or 'id_estacion'
 col_nom = detectar_columna(gdf_meta, ['nom_est', 'nombre']) or 'nom_est'
 col_region = detectar_columna(gdf_meta, ['region', 'subregion', 'depto_region'])
@@ -229,7 +264,6 @@ col_cuenca = 'CUENCA_GIS' if 'CUENCA_GIS' in gdf_meta.columns else None
 
 df_filtered_meta = gdf_meta.copy()
 
-# Filtros
 if col_region:
     regs = sorted(df_filtered_meta[col_region].dropna().astype(str).unique())
     sel_reg = st.sidebar.multiselect("📍 Región:", regs, key='filter_reg')
@@ -277,6 +311,7 @@ suavidad = st.sidebar.slider("🖌️ Suavizado (RBF):", 0.0, 2.0, 0.0, key='sli
 if len(df_filtered_meta) > 0:
     gdf_target = df_filtered_meta
     minx, miny, maxx, maxy = gdf_target.total_bounds
+    # Ampliamos zona query
     q_minx, q_miny = minx - buffer_deg, miny - buffer_deg
     q_maxx, q_maxy = maxx + buffer_deg, maxy + buffer_deg
     
@@ -341,7 +376,6 @@ if len(df_filtered_meta) > 0:
                 
                 df_final = pd.merge(df_agg, gdf_meta[list(set(cols_merge))], on=col_id)
                 
-                # Eliminar duplicados espaciales
                 df_final = df_final.groupby(['lat_calc', 'lon_calc']).agg({
                     col_id: 'first', col_nom: 'first', 'valor': 'mean', 
                     col_muni: 'first', col_alt: 'first', col_cuenca: 'first'
@@ -354,7 +388,6 @@ if len(df_filtered_meta) > 0:
                     with st.spinner(f"Generando isoyetas..."):
                         grid_res = 200
                         
-                        # Normalización Z-Score para evitar mapas planos
                         x_raw, y_raw, z_raw = df_final['lon_calc'].values, df_final['lat_calc'].values, df_final['valor'].values
                         x_mean, x_std = x_raw.mean(), x_raw.std()
                         y_mean, y_std = y_raw.mean(), y_raw.std()
@@ -390,7 +423,10 @@ if len(df_filtered_meta) > 0:
                             contours=dict(coloring='heatmap', showlabels=True, labelfont=dict(size=10, color='white')),
                             opacity=0.8, connectgaps=True, line_smoothing=1.3
                         ))
-                        add_context_layers_ghost(fig, gdf_target)
+                        
+                        # --- CAPAS DE CONTEXTO ROBUSTAS ---
+                        add_context_layers_robust(fig, q_minx, q_miny, q_maxx, q_maxy)
+                        
                         fig.add_trace(go.Scatter(
                             x=df_final['lon_calc'], y=df_final['lat_calc'], mode='markers',
                             marker=dict(size=6, color='black', line=dict(width=1, color='white')),
@@ -399,11 +435,11 @@ if len(df_filtered_meta) > 0:
                             name="Estaciones"
                         ))
                         fig.add_shape(type="rect", x0=minx, y0=miny, x1=maxx, y1=maxy, line=dict(color="Red", width=2, dash="dot"))
-                        fig.update_layout(title=tit, height=650, margin=dict(l=0,r=0,t=30,b=0), xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False), plot_bgcolor='white')
+                        fig.update_layout(title=tit, height=650, margin=dict(l=0,r=0,t=30,b=0), xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False), plot_bgcolor='white', hovermode='closest')
                         st.plotly_chart(fig, use_container_width=True)
                         
-                        # --- ANÁLISIS AUTOMÁTICO (NUEVO) ---
-                        st.info(generar_analisis_texto(df_final, tipo_analisis))
+                        # --- ANÁLISIS AUTOMÁTICO CORREGIDO ---
+                        st.info(generar_analisis_texto_corregido(df_final, tipo_analisis))
                         
                 else:
                     st.warning("⚠️ Datos insuficientes. Aumente el Buffer (km).")
