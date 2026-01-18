@@ -130,65 +130,66 @@ def get_name_from_row_v2(row, type_layer):
 
 def add_context_layers_robust(fig, minx, miny, maxx, maxy):
     """
-    Dibuja TODAS las geometrías con estilo definido y simplificación ligera para rendimiento.
-    Garantiza visibilidad ignorando filtros espaciales complejos.
+    Dibuja TODAS las geometrías de contexto sin filtrar para garantizar visibilidad.
     """
     try:
+        # Cargamos los archivos
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         
-        # 1. Capa Municipios
+        # 1. Capa Municipios (Color Negro/Gris Oscuro)
         if gdf_m is not None:
-            # Simplificar geometría para que renderice rápido (0.001 grados ~ 100m)
-            gdf_m['geom_simp'] = gdf_m.geometry.simplify(0.001)
-            
+            # Iteramos sobre todos los municipios (sin filtrar con .cx)
             for _, r in gdf_m.iterrows():
-                name = get_name_from_row_v2(r, 'muni')
-                geom = r['geom_simp']
+                # Extracción segura del nombre
+                name = "Municipio"
+                for c in ['mpio_cnmbr', 'nombre', 'municipio', 'mpio_nomb']:
+                    if c in gdf_m.columns: 
+                        name = r[c]
+                        break
                 
-                # Manejo universal de geometrías
-                if geom.geom_type == 'Polygon': polys = [geom]
-                elif geom.geom_type == 'MultiPolygon': polys = list(geom.geoms)
-                else: continue
+                # Manejo de geometría
+                geom = r.geometry
+                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
                 
                 for p in polys:
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), 
                         mode='lines', 
-                        line=dict(width=1, color='rgba(0, 0, 0, 0.5)', dash='dot'), # Negro semitransparente punteado
-                        text=f"🏙️ {name}", 
-                        hoverinfo='text', # HOVER ACTIVADO
+                        line=dict(width=1.0, color='rgba(20, 20, 20, 0.6)'), # Gris casi negro
+                        text=f"🏙️ {name}", # HOVER VISIBLE
+                        hoverinfo='text', 
                         showlegend=False,
-                        hoverlabel=dict(bgcolor="white", font_size=12, namelength=-1)
+                        hoverlabel=dict(bgcolor="white", font_size=12)
                     ))
         
-        # 2. Capa Cuencas
+        # 2. Capa Cuencas (Color Azul)
         if gdf_cu is not None:
-            gdf_cu['geom_simp'] = gdf_cu.geometry.simplify(0.001)
-            
             for _, r in gdf_cu.iterrows():
-                name = get_name_from_row_v2(r, 'cuenca')
-                geom = r['geom_simp']
-                
-                if geom.geom_type == 'Polygon': polys = [geom]
-                elif geom.geom_type == 'MultiPolygon': polys = list(geom.geoms)
-                else: continue
+                name = "Cuenca"
+                for c in ['n-nss3', 'subc_lbl', 'nom_cuenca', 'nombre', 'cuenca']:
+                    if c in gdf_cu.columns: 
+                        name = r[c]
+                        break
+
+                geom = r.geometry
+                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
                 
                 for p in polys:
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), 
                         mode='lines', 
-                        line=dict(width=1.5, color='rgba(0, 100, 255, 0.8)'), # Azul solido y visible
-                        text=f"🌊 {name}", 
-                        hoverinfo='text', # HOVER ACTIVADO
+                        line=dict(width=1.5, color='rgba(0, 80, 255, 0.8)'), # Azul brillante
+                        text=f"🌊 {name}", # HOVER VISIBLE
+                        hoverinfo='text',
                         showlegend=False,
-                        hoverlabel=dict(bgcolor="#E3F2FD", font_size=12, namelength=-1)
+                        hoverlabel=dict(bgcolor="#E3F2FD", font_size=12)
                     ))
         return True
     except Exception as e:
-        print(f"Error visualizando capas: {e}")
+        print(f"Error dibujando capas: {e}")
         return False
 
 def calcular_pronostico(df_anual, target_year):
