@@ -62,7 +62,6 @@ with st.expander("📘 Ficha Técnica: Metodología, Utilidad y Fuentes", expand
 # --- 3. FUNCIONES DE SOPORTE ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
-    # Buscamos en varias rutas posibles
     possible_paths = [
         os.path.join("data", filename),
         os.path.join("..", "data", filename),
@@ -127,11 +126,10 @@ def get_name_from_row_v2(row, type_layer):
 
 def add_context_layers_robust(fig, minx, miny, maxx, maxy):
     """
-    Versión mejorada: Usa .cx para filtrar por caja delimitadora en lugar de clip.
-    Es más rápido y menos propenso a errores geométricos.
+    Versión mejorada: Usa .cx para filtrar por caja delimitadora + iteración robusta de geometrías.
     """
     try:
-        # Buffer de visualización para asegurar que los contornos cubran todo el mapa
+        # Buffer visual para traer geometrías cercanas al borde
         pad = 0.05 
         b_minx, b_miny, b_maxx, b_maxy = minx - pad, miny - pad, maxx + pad, maxy + pad
         
@@ -140,22 +138,22 @@ def add_context_layers_robust(fig, minx, miny, maxx, maxy):
         
         # 1. Capa Municipios
         if gdf_m is not None:
-            # Filtrado espacial rápido
             try:
                 gdf_c = gdf_m.cx[b_minx:b_maxx, b_miny:b_maxy]
-            except:
-                gdf_c = gdf_m # Si falla el filtro, usa todo (fallback)
+            except: gdf_c = gdf_m 
 
             for _, r in gdf_c.iterrows():
                 name = get_name_from_row_v2(r, 'muni')
                 geom = r.geometry
-                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
+                # Manejo robusto de MultiPolygon
+                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
+                
                 for p in polys:
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), mode='lines', 
-                        line=dict(width=1.5, color='rgba(50, 50, 50, 0.8)'), # Gris oscuro sólido
-                        text=f"🏙️ {name}", hoverinfo='text',
+                        line=dict(width=1.5, color='rgba(50, 50, 50, 0.7)', dash='dot'), # Gris oscuro visible
+                        text=f"🏙️ Mpio: {name}", hoverinfo='text',
                         showlegend=False
                     ))
         
@@ -163,25 +161,23 @@ def add_context_layers_robust(fig, minx, miny, maxx, maxy):
         if gdf_cu is not None:
             try:
                 gdf_c = gdf_cu.cx[b_minx:b_maxx, b_miny:b_maxy]
-            except:
-                gdf_c = gdf_cu
+            except: gdf_c = gdf_cu
 
             for _, r in gdf_c.iterrows():
                 name = get_name_from_row_v2(r, 'cuenca')
                 geom = r.geometry
-                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
+                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
+                
                 for p in polys:
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), mode='lines', 
-                        line=dict(width=2.0, color='rgba(0, 100, 255, 0.9)'), # Azul brillante sólido
-                        text=f"🌊 {name}", hoverinfo='text',
+                        line=dict(width=2.0, color='rgba(0, 100, 255, 0.8)'), # Azul brillante sólido
+                        text=f"🌊 Cuenca: {name}", hoverinfo='text',
                         showlegend=False
                     ))
-        return True
     except Exception as e:
         print(f"Error pintando capas: {e}")
-        return False
 
 def calcular_pronostico(df_anual, target_year):
     proyecciones = []
@@ -212,8 +208,8 @@ def generar_analisis_texto_corregido(df_stats, tipo_analisis):
     est_max = df_stats.loc[df_stats['valor'].idxmax()]['nom_est']
     est_min = df_stats.loc[df_stats['valor'].idxmin()]['nom_est']
     
-    # Lógica de interpretación CORREGIDA
-    if diff < 500:
+    # Lógica de interpretación CORREGIDA (Basada en Rango Absoluto)
+    if diff < 600:
         conclusion = "un comportamiento regional relativamente uniforme."
     elif diff < 1500:
         conclusion = "un gradiente de precipitación moderado."
@@ -227,7 +223,7 @@ def generar_analisis_texto_corregido(df_stats, tipo_analisis):
     
     **1. Resumen Ejecutivo:**
     * Promedio Regional: **{avg_val:,.0f} {unit}**.
-    * Rango de Variación: **{diff:,.0f} {unit}**.
+    * Rango de Variación (Max - Min): **{diff:,.0f} {unit}**.
     
     **2. Diagnóstico de Variabilidad:**
     * Existe una diferencia de **{diff:,.0f} {unit}** entre los extremos, lo que sugiere {conclusion}
@@ -248,7 +244,7 @@ if gdf_meta.empty:
     st.error("Error crítico: Base de datos no disponible.")
     st.stop()
 
-# Depuración de Archivos GIS (Nuevo)
+# Depuración de Archivos GIS
 with st.sidebar.expander("🛠️ Diagnóstico de Archivos GIS"):
     geo_muni = load_geojson_cached("MunicipiosAntioquia.geojson")
     geo_cuenca = load_geojson_cached("SubcuencasAinfluencia.geojson")
@@ -311,7 +307,6 @@ suavidad = st.sidebar.slider("🖌️ Suavizado (RBF):", 0.0, 2.0, 0.0, key='sli
 if len(df_filtered_meta) > 0:
     gdf_target = df_filtered_meta
     minx, miny, maxx, maxy = gdf_target.total_bounds
-    # Ampliamos zona query
     q_minx, q_miny = minx - buffer_deg, miny - buffer_deg
     q_maxx, q_maxy = maxx + buffer_deg, maxy + buffer_deg
     
@@ -424,7 +419,7 @@ if len(df_filtered_meta) > 0:
                             opacity=0.8, connectgaps=True, line_smoothing=1.3
                         ))
                         
-                        # --- CAPAS DE CONTEXTO ROBUSTAS ---
+                        # --- CAPAS DE CONTEXTO VISIBLES ---
                         add_context_layers_robust(fig, q_minx, q_miny, q_maxx, q_maxy)
                         
                         fig.add_trace(go.Scatter(
