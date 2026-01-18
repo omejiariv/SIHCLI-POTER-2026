@@ -62,19 +62,23 @@ with st.expander("📘 Ficha Técnica: Metodología, Utilidad y Fuentes", expand
 # --- 3. FUNCIONES DE SOPORTE ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
+    # Intentamos rutas relativas y absolutas para garantizar la carga
     possible_paths = [
         os.path.join("data", filename),
-        os.path.join("..", "data", filename),
-        os.path.join(os.path.dirname(__file__), '..', 'data', filename)
+        os.path.join(os.getcwd(), "data", filename),
+        os.path.join(os.path.dirname(__file__), '..', 'data', filename),
+        filename # Intento directo
     ]
     for path in possible_paths:
         if os.path.exists(path):
             try:
                 gdf = gpd.read_file(path)
+                # Forzar conversión a Lat/Lon (WGS84) para coincidir con Plotly
                 if gdf.crs and gdf.crs != "EPSG:4326": 
                     gdf = gdf.to_crs("EPSG:4326")
                 return gdf
-            except: continue
+            except Exception as e:
+                continue
     return None
 
 def detectar_columna(df, keywords):
@@ -126,58 +130,66 @@ def get_name_from_row_v2(row, type_layer):
 
 def add_context_layers_robust(fig, minx, miny, maxx, maxy):
     """
-    Versión mejorada: Usa .cx para filtrar por caja delimitadora + iteración robusta de geometrías.
+    Dibuja TODAS las geometrías con estilo definido y simplificación ligera para rendimiento.
+    Garantiza visibilidad ignorando filtros espaciales complejos.
     """
     try:
-        # Buffer visual para traer geometrías cercanas al borde
-        pad = 0.05 
-        b_minx, b_miny, b_maxx, b_maxy = minx - pad, miny - pad, maxx + pad, maxy + pad
-        
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         
         # 1. Capa Municipios
         if gdf_m is not None:
-            try:
-                gdf_c = gdf_m.cx[b_minx:b_maxx, b_miny:b_maxy]
-            except: gdf_c = gdf_m 
-
-            for _, r in gdf_c.iterrows():
+            # Simplificar geometría para que renderice rápido (0.001 grados ~ 100m)
+            gdf_m['geom_simp'] = gdf_m.geometry.simplify(0.001)
+            
+            for _, r in gdf_m.iterrows():
                 name = get_name_from_row_v2(r, 'muni')
-                geom = r.geometry
-                # Manejo robusto de MultiPolygon
-                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
+                geom = r['geom_simp']
+                
+                # Manejo universal de geometrías
+                if geom.geom_type == 'Polygon': polys = [geom]
+                elif geom.geom_type == 'MultiPolygon': polys = list(geom.geoms)
+                else: continue
                 
                 for p in polys:
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
-                        x=list(x), y=list(y), mode='lines', 
-                        line=dict(width=1.5, color='rgba(50, 50, 50, 0.7)', dash='dot'), # Gris oscuro visible
-                        text=f"🏙️ Mpio: {name}", hoverinfo='text',
-                        showlegend=False
+                        x=list(x), y=list(y), 
+                        mode='lines', 
+                        line=dict(width=1, color='rgba(0, 0, 0, 0.5)', dash='dot'), # Negro semitransparente punteado
+                        text=f"🏙️ {name}", 
+                        hoverinfo='text', # HOVER ACTIVADO
+                        showlegend=False,
+                        hoverlabel=dict(bgcolor="white", font_size=12, namelength=-1)
                     ))
         
         # 2. Capa Cuencas
         if gdf_cu is not None:
-            try:
-                gdf_c = gdf_cu.cx[b_minx:b_maxx, b_miny:b_maxy]
-            except: gdf_c = gdf_cu
-
-            for _, r in gdf_c.iterrows():
+            gdf_cu['geom_simp'] = gdf_cu.geometry.simplify(0.001)
+            
+            for _, r in gdf_cu.iterrows():
                 name = get_name_from_row_v2(r, 'cuenca')
-                geom = r.geometry
-                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
+                geom = r['geom_simp']
+                
+                if geom.geom_type == 'Polygon': polys = [geom]
+                elif geom.geom_type == 'MultiPolygon': polys = list(geom.geoms)
+                else: continue
                 
                 for p in polys:
                     x, y = p.exterior.xy
                     fig.add_trace(go.Scatter(
-                        x=list(x), y=list(y), mode='lines', 
-                        line=dict(width=2.0, color='rgba(0, 100, 255, 0.8)'), # Azul brillante sólido
-                        text=f"🌊 Cuenca: {name}", hoverinfo='text',
-                        showlegend=False
+                        x=list(x), y=list(y), 
+                        mode='lines', 
+                        line=dict(width=1.5, color='rgba(0, 100, 255, 0.8)'), # Azul solido y visible
+                        text=f"🌊 {name}", 
+                        hoverinfo='text', # HOVER ACTIVADO
+                        showlegend=False,
+                        hoverlabel=dict(bgcolor="#E3F2FD", font_size=12, namelength=-1)
                     ))
+        return True
     except Exception as e:
-        print(f"Error pintando capas: {e}")
+        print(f"Error visualizando capas: {e}")
+        return False
 
 def calcular_pronostico(df_anual, target_year):
     proyecciones = []
