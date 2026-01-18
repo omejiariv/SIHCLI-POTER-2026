@@ -62,32 +62,32 @@ with st.expander("📘 Ficha Técnica: Metodología, Utilidad y Fuentes", expand
 # --- 3. FUNCIONES DE SOPORTE ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
-    # Intentamos rutas relativas y absolutas para garantizar la carga
     possible_paths = [
         os.path.join("data", filename),
-        os.path.join(os.getcwd(), "data", filename),
+        os.path.join("..", "data", filename),
         os.path.join(os.path.dirname(__file__), '..', 'data', filename),
-        filename # Intento directo
+        os.path.join(os.getcwd(), "data", filename)
     ]
     for path in possible_paths:
         if os.path.exists(path):
             try:
                 gdf = gpd.read_file(path)
-                # Forzar conversión a Lat/Lon (WGS84) para coincidir con Plotly
                 if gdf.crs and gdf.crs != "EPSG:4326": 
                     gdf = gdf.to_crs("EPSG:4326")
                 return gdf
-            except Exception as e:
-                continue
+            except: continue
     return None
 
 def detectar_columna(df, keywords):
+    """Busca columnas ignorando mayúsculas y caracteres especiales."""
     if df is None or df.empty: return None
     cols_orig = df.columns.tolist()
     for kw in keywords:
         kw_clean = kw.lower().replace('-', '').replace('_', '')
         for col in cols_orig:
-            if kw_clean in col.lower().replace('-', '').replace('_', ''): return col
+            col_clean = col.lower().replace('-', '').replace('_', '')
+            if kw_clean in col_clean:
+                return col
     return None
 
 @st.cache_data(ttl=600)
@@ -100,6 +100,7 @@ def obtener_estaciones_enriquecidas():
         
         gdf_cuencas = load_geojson_cached("SubcuencasAinfluencia.geojson")
         if gdf_cuencas is not None:
+            # Prioridad exacta a N-NSS3
             col_cuenca_geo = detectar_columna(gdf_cuencas, ['n-nss3', 'n_nss3', 'nnss3', 'nombre', 'subcuenca'])
             if col_cuenca_geo:
                 gdf_joined = gpd.sjoin(gdf_est, gdf_cuencas[[col_cuenca_geo, 'geometry']], how='left', predicate='within')
@@ -119,37 +120,44 @@ def generar_raster_ascii(grid_z, minx, miny, cellsize, nrows, ncols):
     return header + body
 
 def get_name_from_row_v2(row, type_layer):
-    cols = row.index.str.lower()
+    """Extrae el nombre correcto priorizando los campos específicos solicitados."""
+    actual_cols = row.index.tolist()
+    # Mapa de columnas reales a minúsculas para búsqueda insensible
+    cols_map = {c.lower(): c for c in actual_cols}
+    
     if type_layer == 'muni':
-        for c in ['mpio_cnmbr', 'nombre', 'municipio', 'mpio_nomb']:
-            if c in cols: return row[c]
+        # Prioridad 1: MPIO_CNMBR (Exacto o variantes)
+        targets = ['mpio_cnmbr', 'municipio', 'nombre', 'mpio_nomb']
     elif type_layer == 'cuenca':
-        for c in ['n-nss3', 'subc_lbl', 'nom_cuenca', 'nombre', 'cuenca']:
-            if c in cols: return row[c]
-    return "Zona"
+        # Prioridad 1: N-NSS3 (Exacto o variantes)
+        targets = ['n-nss3', 'n_nss3', 'subc_lbl', 'nom_cuenca', 'nombre']
+    else:
+        return "Zona"
+
+    for t in targets:
+        if t in cols_map: # Si encuentra la clave en minúscula
+            real_col_name = cols_map[t] # Obtiene el nombre real (Ej: MPIO_CNMBR)
+            return row[real_col_name]
+            
+    return "Desconocido"
 
 def add_context_layers_robust(fig, minx, miny, maxx, maxy):
     """
-    Dibuja TODAS las geometrías de contexto sin filtrar para garantizar visibilidad.
+    Dibuja TODAS las geometrías con nombres corregidos.
     """
     try:
-        # Cargamos los archivos
         gdf_m = load_geojson_cached("MunicipiosAntioquia.geojson")
         gdf_cu = load_geojson_cached("SubcuencasAinfluencia.geojson")
         
-        # 1. Capa Municipios (Color Negro/Gris Oscuro)
+        # 1. Capa Municipios
         if gdf_m is not None:
-            # Iteramos sobre todos los municipios (sin filtrar con .cx)
+            # Simplificar para rendimiento visual
+            gdf_m['geom_simp'] = gdf_m.geometry.simplify(0.001)
+            
             for _, r in gdf_m.iterrows():
-                # Extracción segura del nombre
-                name = "Municipio"
-                for c in ['mpio_cnmbr', 'nombre', 'municipio', 'mpio_nomb']:
-                    if c in gdf_m.columns: 
-                        name = r[c]
-                        break
+                name = get_name_from_row_v2(r, 'muni') # Ahora busca MPIO_CNMBR
+                geom = r['geom_simp']
                 
-                # Manejo de geometría
-                geom = r.geometry
                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
                 
                 for p in polys:
@@ -157,23 +165,21 @@ def add_context_layers_robust(fig, minx, miny, maxx, maxy):
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), 
                         mode='lines', 
-                        line=dict(width=1.0, color='rgba(20, 20, 20, 0.6)'), # Gris casi negro
-                        text=f"🏙️ {name}", # HOVER VISIBLE
-                        hoverinfo='text', 
+                        line=dict(width=1.0, color='rgba(50, 50, 50, 0.6)', dash='dot'), 
+                        text=f"🏙️ {name}", # Hover con nombre real
+                        hoverinfo='text',
                         showlegend=False,
                         hoverlabel=dict(bgcolor="white", font_size=12)
                     ))
         
-        # 2. Capa Cuencas (Color Azul)
+        # 2. Capa Cuencas
         if gdf_cu is not None:
+            gdf_cu['geom_simp'] = gdf_cu.geometry.simplify(0.001)
+            
             for _, r in gdf_cu.iterrows():
-                name = "Cuenca"
-                for c in ['n-nss3', 'subc_lbl', 'nom_cuenca', 'nombre', 'cuenca']:
-                    if c in gdf_cu.columns: 
-                        name = r[c]
-                        break
-
-                geom = r.geometry
+                name = get_name_from_row_v2(r, 'cuenca') # Ahora busca N-NSS3
+                geom = r['geom_simp']
+                
                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms) if geom.geom_type == 'MultiPolygon' else []
                 
                 for p in polys:
@@ -181,15 +187,15 @@ def add_context_layers_robust(fig, minx, miny, maxx, maxy):
                     fig.add_trace(go.Scatter(
                         x=list(x), y=list(y), 
                         mode='lines', 
-                        line=dict(width=1.5, color='rgba(0, 80, 255, 0.8)'), # Azul brillante
-                        text=f"🌊 {name}", # HOVER VISIBLE
+                        line=dict(width=1.5, color='rgba(0, 100, 255, 0.8)'), 
+                        text=f"🌊 {name}", # Hover con nombre real
                         hoverinfo='text',
                         showlegend=False,
                         hoverlabel=dict(bgcolor="#E3F2FD", font_size=12)
                     ))
         return True
     except Exception as e:
-        print(f"Error dibujando capas: {e}")
+        print(f"Error visualizando capas: {e}")
         return False
 
 def calcular_pronostico(df_anual, target_year):
