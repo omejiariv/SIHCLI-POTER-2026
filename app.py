@@ -3,7 +3,7 @@ import plotly.express as px
 import pandas as pd
 import os
 
-# --- 1. CONFIGURACIÓN DE PÁGINA (Debe ser lo primero) ---
+# --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="SIHCLI-POTER",
     page_icon="💧",
@@ -20,79 +20,94 @@ Esta plataforma integra datos climáticos, hidrológicos y de biodiversidad para
 
 st.divider()
 
-# --- 3. DATOS DEL GRÁFICO SUNBURST (Estructura Profunda Corregida) ---
-# Se definen las listas por separado para asegurar la integridad de los datos
+# --- 3. DATOS DEL GRÁFICO SUNBURST (ACTUALIZADO v2.0) ---
+# Hemos expandido la rama de Precipitación para mostrar la potencia del nuevo módulo
 
-# A. Identificadores únicos de cada sección
+# A. Identificadores únicos
 ids = [
     'SIHCLI-POTER', 
-    # NIVEL 1: MÓDULOS
+    # NIVEL 1: MÓDULOS PRINCIPALES
     'Clima e Hidrología', 'Aguas Subterráneas', 'Biodiversidad', 'Toma de Decisiones', 'Herramientas',
     
-    # NIVEL 2: SUBMÓDULOS
-    # Clima (Padres de Nivel 3)
+    # NIVEL 2: SUBMÓDULOS CLIMA
     'Precipitación', 'Índices (ENSO)', 'Caudales', 'Temperaturas',
-    # Aguas
-    'Modelo Turc', 'Mapa Recarga', 'Escenarios', 'Balance Hídrico',
-    # Bio
-    'Monitor GBIF', 'Taxonomía', 'Amenazas IUCN', 'Servicios Ecosistémicos',
-    # Decisiones
-    'Matriz Prioridad', 'Análisis Multicriterio', 'Predios',
-    # Herramientas
-    'Diagnóstico Calidad', 'Detective de Datos',
+    
+    # NIVEL 3: DETALLES PRECIPITACIÓN (Aquí está la actualización)
+    'Isoyetas HD', 'Series Temporales', 'Anomalías',
+    
+    # NIVEL 4: CAPACIDADES ISOYETAS (NUEVO)
+    'Escenarios (Min/Max)', 'Pronósticos (2026-40)', 'Variabilidad (Desv.Std)', 'Interpolación RBF',
 
-    # NIVEL 3: DETALLES CLIMA
-    # Hijos de Precipitación
-    'Mapas Isoyetas', 'Series Temporales', 'Análisis de Tendencias', 'Anomalías',
-    # Hijos de Índices
-    'ONI (Oceanic Niño)', 'SOI (Southern)', 'MEI (Multivariate)',
-    # Hijos de Caudales
-    'Oferta Hídrica', 'Curvas de Duración', 'Caudales Ecológicos'
+    # NIVEL 2: OTROS MÓDULOS (Manteniendo estructura original)
+    'Modelo Turc', 'Mapa Recarga', 'Balance Hídrico', # Aguas
+    'Monitor GBIF', 'Taxonomía', 'Amenazas IUCN',     # Bio
+    'Matriz Prioridad', 'Análisis Multicriterio',     # Decisiones
+    'Diagnóstico Calidad', 'Detective de Datos',      # Herramientas
+    
+    # NIVEL 3: DETALLES ÍNDICES Y CAUDALES
+    'ONI', 'SOI', 'MEI',               # Índices
+    'Oferta Hídrica', 'Curvas Duración' # Caudales
 ]
 
-# B. Padres (De quién depende cada ID)
+# B. Padres (Jerarquía)
 parents = [
     '', # Raíz
-    # Padres Nivel 1
+    # Hijos de Raíz
     'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER', 'SIHCLI-POTER',
     
-    # Padres Nivel 2
-    'Clima e Hidrología', 'Clima e Hidrología', 'Clima e Hidrología', 'Clima e Hidrología', # Clima
-    'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas', # Aguas
-    'Biodiversidad', 'Biodiversidad', 'Biodiversidad', 'Biodiversidad', # Bio
-    'Toma de Decisiones', 'Toma de Decisiones', 'Toma de Decisiones', # Decisiones
-    'Herramientas', 'Herramientas', # Herramientas
+    # Hijos de Clima e Hidrología
+    'Clima e Hidrología', 'Clima e Hidrología', 'Clima e Hidrología', 'Clima e Hidrología',
+    
+    # Hijos de Precipitación (Actualizado)
+    'Precipitación', 'Precipitación', 'Precipitación',
+    
+    # Hijos de Isoyetas HD (NUEVO - Mostramos lo que hace el módulo)
+    'Isoyetas HD', 'Isoyetas HD', 'Isoyetas HD', 'Isoyetas HD',
 
-    # Padres Nivel 3 (Dependen de los submódulos de Clima)
-    'Precipitación', 'Precipitación', 'Precipitación', 'Precipitación',
+    # Hijos de Aguas Subterráneas
+    'Aguas Subterráneas', 'Aguas Subterráneas', 'Aguas Subterráneas',
+    # Hijos de Biodiversidad
+    'Biodiversidad', 'Biodiversidad', 'Biodiversidad',
+    # Hijos de Toma de Decisiones
+    'Toma de Decisiones', 'Toma de Decisiones',
+    # Hijos de Herramientas
+    'Herramientas', 'Herramientas',
+    
+    # Hijos de Índices
     'Índices (ENSO)', 'Índices (ENSO)', 'Índices (ENSO)',
-    'Caudales', 'Caudales', 'Caudales'
+    # Hijos de Caudales
+    'Caudales', 'Caudales'
 ]
 
-# C. Valores (Peso visual)
-# Nota: En Sunburst 'total', el valor del padre debe ser >= suma de hijos
+# C. Valores (Peso Visual)
 values = [
-    100, # SIHCLI (Raíz)
-    30, 20, 20, 20, 10, # Nivel 1 (Suman 100)
+    100, # Raíz
+    35, 20, 15, 20, 10, # Nivel 1 (Clima pesa más ahora)
     
-    # Nivel 2 (Clima tiene hijos, su valor se calcula automático o debe coincidir)
-    10, 8, 8, 4, # Precip(10), Indices(8), Caudales(8), Temp(4) -> Suma 30 (Correcto)
-    5, 5, 5, 5,  # Aguas (Suma 20)
-    5, 5, 5, 5,  # Bio (Suma 20)
-    7, 7, 6,     # Decisiones (Suma 20)
-    5, 5,        # Herramientas (Suma 10)
-
-    # Nivel 3 (Hijos de Clima)
-    3, 3, 2, 2,  # Hijos Precipitación (Suman 10)
-    3, 3, 2,     # Hijos Índices (Suman 8)
-    3, 3, 2      # Hijos Caudales (Suman 8)
+    # Clima (Suma 35)
+    15, 8, 8, 4, # Precipitación(15), Índices(8), Caudales(8), Temp(4)
+    
+    # Precipitación (Suma 15)
+    10, 3, 2, # Isoyetas HD(10) es el protagonista, Series(3), Anomalías(2)
+    
+    # Hijos de Isoyetas HD (Suma 10)
+    2.5, 2.5, 2.5, 2.5, # Repartido equitativamente
+    
+    # Otros Módulos (Pesos referenciales)
+    7, 7, 6,    # Aguas
+    5, 5, 5,    # Bio
+    10, 10,     # Decisiones
+    5, 5,       # Herramientas
+    
+    3, 3, 2,    # Índices
+    4, 4        # Caudales
 ]
 
 # --- 4. CREACIÓN DEL GRÁFICO ---
 def create_system_map():
-    # Verificación de seguridad para evitar pantalla blanca
+    # Validación de integridad
     if len(ids) != len(parents) or len(ids) != len(values):
-        st.error(f"Error de Estructura: IDs({len(ids)}), Parents({len(parents)}), Values({len(values)}) no coinciden.")
+        st.error(f"Error Estructural: IDs({len(ids)}) vs Parents({len(parents)}) vs Values({len(values)})")
         return None
 
     df = pd.DataFrame(dict(ids=ids, parents=parents, values=values))
@@ -102,14 +117,14 @@ def create_system_map():
         names='ids',
         parents='parents',
         values='values',
-        branchvalues='total', # Importante para que los tamaños sean proporcionales reales
-        color='parents', # Colorear por módulo padre
+        branchvalues='total',
+        color='parents',
         color_discrete_sequence=px.colors.qualitative.Pastel1
     )
     
     fig.update_layout(
         title={
-            'text': "🗺️ Mapa de Navegación del Sistema",
+            'text': "🗺️ Mapa de Navegación del Sistema (v2.0)",
             'y':0.95, 'x':0.5, 'xanchor': 'center', 'yanchor': 'top'
         },
         font=dict(family="Arial", size=14),
@@ -134,26 +149,31 @@ with c1:
         st.plotly_chart(fig, use_container_width=True)
 
 with c2:
-    st.subheader("📌 Acceso Rápido")
-    st.info("Utiliza el gráfico interactivo para explorar la estructura. Haz clic en un sector para hacer zoom.")
+    st.subheader("📌 Novedades del Sistema")
+    st.info("Utiliza el gráfico interactivo para explorar la estructura actualizada.")
     
-    st.markdown("### Módulos Destacados")
+    st.markdown("### 🚀 Módulo Estrella")
     
-    with st.expander("🌦️ Clima e Hidrología"):
-        st.write("Tablero de control con series temporales, análisis de isoyetas, anomalías e índices climáticos (ENSO).")
-        st.caption("Estado: ✅ Operativo")
+    with st.expander("🗺️ Isoyetas HD (Nuevo)", expanded=True):
+        st.write("""
+        **Generador Avanzado de Escenarios & Pronósticos:**
+        * ✅ Interpolación RBF Normalizada.
+        * ✅ Análisis de Mínimos y Máximos Históricos.
+        * ✅ Mapa de Variabilidad Temporal.
+        * ✅ Pronóstico Climático Lineal (2026-2040).
+        * ✅ Descargas GIS (Raster/Vector).
+        """)
+        st.caption("Estado: ✅ Operativo y Calibrado")
 
+    st.markdown("### Otros Módulos")
+    with st.expander("🌦️ Clima e Hidrología"):
+        st.write("Tablero de control con series temporales e índices climáticos (ENSO).")
+    
     with st.expander("💧 Aguas Subterráneas"):
-        st.write("Cálculo de recarga potencial (Turc), mapas de infiltración y proyección de escenarios.")
-        st.caption("Estado: ✅ Operativo")
-        
-    with st.expander("🍃 Biodiversidad"):
-        st.write("Monitor de especies (GBIF), taxonomía y análisis de amenazas IUCN.")
-        st.caption("Estado: ✅ Operativo")
-        
+        st.write("Modelo Turc y balance hídrico.")
+
     with st.expander("🎯 Toma de Decisiones"):
-        st.write("Priorización espacial de predios para inversión basada en análisis multicriterio.")
-        st.caption("Estado: ✅ Operativo")
+        st.write("Priorización espacial basada en análisis multicriterio.")
 
 # --- FOOTER ---
 st.divider()
