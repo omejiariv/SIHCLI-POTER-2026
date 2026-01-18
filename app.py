@@ -79,7 +79,17 @@ with tab_modulos:
 with tab_clima:
     with st.expander("🏔️ La Complejidad de los Andes", expanded=False):
         st.write("""
-        La región Andina presenta uno de los sistemas climáticos más complejos del mundo. La interacción entre la Zona de Convergencia Intertropical (ZCIT), los vientos alisios y la topografía escarpada genera microclimas que cambian en distancias cortas.
+        La región Andina presenta uno de los sistemas climáticos más complejos del mundo. La interacción entre la Zona de Convergencia Intertropical (ZCIT), los vientos alisios y la topografía escarpada genera microclimas que cambian en distancias cortas. La región Andina es un mosaico climático de una complejidad fascinante. Aquí, la geografía no es solo un escenario, sino un actor protagonista que esculpe el clima kilómetro a kilómetro.
+
+La Verticalidad como Destino: En los Andes, viajar hacia arriba es como viajar hacia los polos. En pocos kilómetros lineales, pasamos del calor húmedo de los valles interandinos (bosque seco tropical) a la neblina perpetua de los bosques de niebla, y finalmente al gélido silencio de los páramos y las nieves perpetuas. Esta zonificación altitudinal (bien descrita por Holdridge) define la vocación del suelo y la biodiversidad.
+
+El Pulso de Dos Océanos: Colombia es un país anfibio, respirando la humedad que llega tanto del Pacífico (Chocó Biogeográfico) como de la Amazonía. Los vientos alisios chocan contra El Sistema Cordillerano de los Andes, descargando su humedad en las vertientes orientales y creando "remolinos de agua" que dan lugar a una Hidrodiversidad magica representada en los grandes ríos, quebradas, arroyos, caños, cañadas, acuiferos, lagunas, embalses y todo tipo de humedales.
+
+La Variabilidad (ENSO): Este sistema complejo no es estático. Está sometido al latido irregular del Pacífico Ecuatorial:
+
+El Niño (Fase Cálida): Cuando el océano se calienta, la atmósfera sobre nosotros se estabiliza, las nubes se disipan y la sequía amenaza, trayendo consigo el riesgo de incendios y desabastecimiento.
+La Niña (Fase Fría): Cuando el océano se enfría, los vientos se aceleran y la humedad se condensa con furia, desbordando ríos y saturando laderas.
+Entender esta climatología no es solo leer termómetros; es comprender la interacción dinámica entre la montaña, el viento y el océano.
         
         **SIHCLI-POTER** está diseñado específicamente para capturar esta variabilidad, integrando estaciones en tierra con modelos satelitales para llenar los vacíos de información en zonas de alta montaña.
         """)
