@@ -8,36 +8,36 @@ import time
 # --- 1. CONFIGURACIÓN Y SEGURIDAD ---
 st.set_page_config(page_title="Admin Panel", page_icon="👑", layout="wide")
 
-# Contraseña simple para proteger el módulo (Idealmente mover a st.secrets)
 ADMIN_PASSWORD = "sihcli2026" 
 
 def check_password():
-    """Retorna True si el usuario ingresó la contraseña correcta."""
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
 
     if st.session_state.password_correct:
         return True
 
-    st.title("🔐 Acceso Restringido")
-    pwd = st.text_input("Ingrese la contraseña de administrador:", type="password")
-    
-    if st.button("Ingresar"):
-        if pwd == ADMIN_PASSWORD:
-            st.session_state.password_correct = True
-            st.rerun()
-        else:
-            st.error("Contraseña incorrecta.")
+    c1, c2, c3 = st.columns([1,2,1])
+    with c2:
+        st.title("🔐 Acceso Restringido")
+        st.info("Área exclusiva para la gestión de datos maestros.")
+        pwd = st.text_input("Contraseña de Administrador:", type="password")
+        if st.button("Ingresar al Panel"):
+            if pwd == ADMIN_PASSWORD:
+                st.session_state.password_correct = True
+                st.rerun()
+            else:
+                st.error("⛔ Acceso Denegado")
     return False
 
 if not check_password():
     st.stop()
 
-# --- 2. CONEXIÓN A BASE DE DATOS ---
+# --- 2. CONEXIÓN ---
 def get_engine():
     return create_engine(st.secrets["DATABASE_URL"])
 
-# --- 3. INTERFAZ PRINCIPAL ---
+# --- 3. INTERFAZ ---
 st.title("👑 Panel de Administración y Edición de Datos")
 st.markdown("---")
 
@@ -48,118 +48,154 @@ tab_estaciones, tab_predios, tab_sql = st.tabs([
 ])
 
 # ==============================================================================
-# TAB 1: EDITOR DE ESTACIONES
+# TAB 1: EDITOR DE ESTACIONES (CALIBRADO PARA TU ESQUEMA)
 # ==============================================================================
 with tab_estaciones:
     st.subheader("Modificar Metadatos de Estaciones")
     
-    # 1. Cargar lista de estaciones para el selector
     try:
         engine = get_engine()
-        # Traemos ID y Nombre para facilitar la búsqueda
+        # 1. Selector de Estación
         df_list = pd.read_sql("SELECT id_estacion, nom_est FROM estaciones ORDER BY nom_est", engine)
-        
-        # Crear un diccionario para el selectbox: "Nombre (ID)" -> ID
         opciones = {f"{row['nom_est']} ({row['id_estacion']})": row['id_estacion'] for index, row in df_list.iterrows()}
+        
         seleccion = st.selectbox("🔍 Buscar Estación a Editar:", options=list(opciones.keys()))
         
         if seleccion:
             id_sel = opciones[seleccion]
             
-            # 2. Cargar datos completos de la estación seleccionada
+            # 2. Cargar datos específicos (Usando tus nombres de columna reales)
             query_data = text(f"SELECT * FROM estaciones WHERE id_estacion = '{id_sel}'")
             with engine.connect() as conn:
                 df_est = pd.read_sql(query_data, conn)
             
             if not df_est.empty:
-                st.info(f"Editando: **{df_est.iloc[0]['nom_est']}**")
+                curr = df_est.iloc[0]
                 
-                # Formulario de Edición
+                st.info(f"Editando ID: **{id_sel}**")
+                
                 with st.form("form_estacion"):
                     c1, c2 = st.columns(2)
-                    # Usamos los valores actuales como default
-                    curr = df_est.iloc[0]
                     
-                    new_name = c1.text_input("Nombre de la Estación:", value=curr['nom_est'])
-                    new_lat = c2.number_input("Latitud:", value=float(curr['latitud']) if curr['latitud'] else 0.0, format="%.5f")
-                    new_lon = c2.number_input("Longitud:", value=float(curr['longitud']) if curr['longitud'] else 0.0, format="%.5f")
-                    new_muni = c1.text_input("Municipio:", value=curr['municipio'] if 'municipio' in curr else "")
-                    new_cat = c1.selectbox("Categoría:", ["Pluviométrica", "Climatológica", "Limnimétrica"], index=0) # Ajustar según tus datos reales
+                    # Campos de Texto (Manejando posibles nulos)
+                    val_nombre = curr['nom_est'] if pd.notnull(curr['nom_est']) else ""
+                    val_muni = curr['municipio'] if pd.notnull(curr['municipio']) else ""
                     
-                    submitted = st.form_submit_button("💾 Guardar Cambios en Base de Datos")
+                    new_name = c1.text_input("Nombre Estación:", value=val_nombre)
+                    new_muni = c2.text_input("Municipio:", value=val_muni)
+                    
+                    c3, c4 = st.columns(2)
+                    
+                    # Campos Numéricos (Tus columnas son 'latitude' y 'longitude')
+                    val_lat = float(curr['latitude']) if pd.notnull(curr['latitude']) else 0.0
+                    val_lon = float(curr['longitude']) if pd.notnull(curr['longitude']) else 0.0
+                    
+                    new_lat = c3.number_input("Latitud (latitude):", value=val_lat, format="%.6f")
+                    new_lon = c4.number_input("Longitud (longitude):", value=val_lon, format="%.6f")
+                    
+                    st.caption("Nota: Al guardar, se actualizarán las columnas 'latitude', 'longitude' y la geometría 'geometry' para los mapas.")
+                    
+                    # Botón de Guardar
+                    submitted = st.form_submit_button("💾 Guardar Cambios")
                     
                     if submitted:
                         try:
-                            # 3. Ejecutar UPDATE
-                            update_query = text("""
+                            # 3. SQL UPDATE (Sincronizando columnas planas y geometría PostGIS)
+                            sql_update = text("""
                                 UPDATE estaciones 
-                                SET nom_est = :nm, latitud = :la, longitud = :lo, municipio = :mu
+                                SET 
+                                    nom_est = :nm, 
+                                    municipio = :mu,
+                                    latitude = :la,
+                                    longitude = :lo,
+                                    geometry = ST_SetSRID(ST_Point(:lo, :la), 4326)
                                 WHERE id_estacion = :id
                             """)
+                            
+                            params = {
+                                "nm": new_name, 
+                                "mu": new_muni, 
+                                "la": new_lat, 
+                                "lo": new_lon, 
+                                "id": id_sel
+                            }
+                            
                             with engine.connect() as conn:
-                                conn.execute(update_query, {"nm": new_name, "la": new_lat, "lo": new_lon, "mu": new_muni, "id": id_sel})
+                                conn.execute(sql_update, params)
                                 conn.commit()
-                            st.success("✅ Estación actualizada correctamente.")
-                            time.sleep(1)
+                            
+                            st.success("✅ Datos actualizados correctamente.")
+                            time.sleep(1.5)
                             st.rerun()
+                            
                         except Exception as e:
-                            st.error(f"Error al guardar: {e}")
-            else:
-                st.error("No se encontraron datos para esta estación.")
-                
+                            st.error(f"Error crítico al guardar en base de datos: {e}")
+
     except Exception as e:
-        st.error(f"Error de conexión: {e}")
+        st.error(f"Error cargando el módulo de edición: {e}")
 
 # ==============================================================================
 # TAB 2: GESTIÓN DE PREDIOS
 # ==============================================================================
 with tab_predios:
-    st.subheader("Estado de Ejecución de Predios")
-    st.caption("Cambie el estado de gestión de un predio (Ej: De 'Identificado' a 'Ejecutado').")
-    
-    # Simulación: Asumimos que tienes una tabla 'predios' con columna 'estado' y 'codigo_catastral'
-    # Si no tienes tabla aún, esto servirá de plantilla.
+    st.subheader("🏡 Gestión de Predios y Adquisiciones")
     
     try:
-        # Aquí deberías ajustar el query a tu tabla real de predios
-        # q_predios = "SELECT codigo, propietario, estado FROM predios LIMIT 100" 
-        # df_predios = pd.read_sql(q_predios, engine)
+        engine = get_engine()
+        # Verificar si la tabla existe
+        check_table = text("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'predios_gestion')")
+        with engine.connect() as conn:
+            existe_tabla = conn.execute(check_table).scalar()
         
-        st.warning("⚠️ Módulo en construcción: Requiere conectar con la tabla real de 'Predios'.")
-        
-        # Ejemplo Visual de cómo funcionará:
-        col_id_predio = st.text_input("Ingrese Código Catastral o ID del Predio:")
-        
-        if st.button("Buscar Predio"):
-            # Lógica futura: Buscar en DB
-            st.success("Predio encontrado: La Finca (ID: 12345)")
-            new_status = st.selectbox("Actualizar Estado:", ["Pendiente", "En Negociación", "Ejecutado/Conservado", "Descartado"])
-            
-            if st.button("Actualizar Estado"):
-                # update_query = text("UPDATE predios SET estado = :st WHERE codigo = :cd")
-                # conn.execute(update_query, ...)
-                st.toast(f"Predio 12345 actualizado a: {new_status}")
+        if not existe_tabla:
+            st.warning("⚠️ La tabla 'predios_gestion' no existe en la base de datos.")
+            with st.expander("🛠️ Script SQL para crear la tabla"):
+                st.code("""
+                CREATE TABLE predios_gestion (
+                    id SERIAL PRIMARY KEY,
+                    codigo_catastral VARCHAR(50),
+                    propietario VARCHAR(100),
+                    estado_gestion VARCHAR(50), 
+                    area_ha FLOAT,
+                    geom GEOMETRY(Polygon, 4326)
+                );
+                """, language="sql")
+        else:
+            col_busqueda, col_accion = st.columns([2, 1])
+            with col_busqueda:
+                id_predio = st.text_input("🔍 Buscar por Cédula Catastral:", placeholder="Ej: 001-234-567")
+                if st.button("Buscar Predio"):
+                    st.info("Funcionalidad de búsqueda lista para conectar.")
 
     except Exception as e:
-        st.error(f"Error cargando predios: {e}")
+        st.error(f"Error de conexión: {e}")
 
 # ==============================================================================
-# TAB 3: CONSOLA SQL (SOLO EXPERTOS)
+# TAB 3: CONSOLA SQL
 # ==============================================================================
 with tab_sql:
-    with st.expander("⚠️ Consola de Comandos Directos (Peligro)", expanded=False):
-        st.warning("Esta herramienta ejecuta SQL directo. Úsela solo para correcciones rápidas de nombres de municipios o cuencas.")
-        
-        sql_command = st.text_area("Comando SQL:", placeholder="UPDATE municipios SET nombre = 'Nuevo Nombre' WHERE id = 5;")
-        
-        if st.button("Ejecutar Comando SQL"):
-            if "DROP" in sql_command.upper() or "DELETE" in sql_command.upper():
-                st.error("🚫 Comandos destructivos bloqueados por seguridad.")
+    st.error("⚠️ Zona de Peligro: Los cambios aquí son irreversibles.")
+    
+    col_q, col_res = st.columns([1, 1])
+    
+    with col_q:
+        sql_query = st.text_area("Comando SQL:", height=200, placeholder="SELECT * FROM estaciones LIMIT 5;")
+        run_btn = st.button("▶️ Ejecutar Sentencia", type="primary")
+    
+    with col_res:
+        if run_btn and sql_query:
+            if any(x in sql_query.upper() for x in ["DROP", "DELETE", "TRUNCATE"]):
+                st.error("🚫 Comandos destructivos bloqueados.")
             else:
                 try:
+                    engine = get_engine()
                     with engine.connect() as conn:
-                        result = conn.execute(text(sql_command))
-                        conn.commit()
-                        st.success(f"Comando ejecutado. Filas afectadas: {result.rowcount}")
+                        if sql_query.strip().upper().startswith("SELECT"):
+                            df_res = pd.read_sql(text(sql_query), conn)
+                            st.dataframe(df_res)
+                        else:
+                            res = conn.execute(text(sql_query))
+                            conn.commit()
+                            st.success(f"✅ Ejecutado. Filas afectadas: {res.rowcount}")
                 except Exception as e:
                     st.error(f"Error SQL: {e}")
