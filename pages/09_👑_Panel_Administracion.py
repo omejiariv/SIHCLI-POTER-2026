@@ -5,7 +5,6 @@ import pandas as pd
 import geopandas as gpd
 from sqlalchemy import create_engine, text
 import time
-from datetime import date
 
 # --- 1. CONFIGURACIÓN Y SEGURIDAD ---
 st.set_page_config(page_title="Admin Panel", page_icon="👑", layout="wide")
@@ -57,7 +56,6 @@ with tab_est:
     
     try:
         engine = get_engine()
-        # Selector Global
         df_list = pd.read_sql("SELECT id_estacion, nom_est FROM estaciones ORDER BY nom_est", engine)
         opciones = {f"{row['nom_est']} ({row['id_estacion']})": row['id_estacion'] for index, row in df_list.iterrows()}
         
@@ -68,8 +66,7 @@ with tab_est:
         if seleccion:
             id_sel = opciones[seleccion]
             
-            # --- SUB-PESTAÑAS INTERNAS ---
-            sub_meta, sub_data = st.tabs(["📝 Editar Metadatos (Ubicación)", "✏️ Corregir Datos de Lluvia"])
+            sub_meta, sub_data = st.tabs(["📝 Editar Metadatos", "✏️ Corregir Datos de Lluvia"])
             
             # --- A. EDITAR METADATOS ---
             with sub_meta:
@@ -115,15 +112,14 @@ with tab_est:
                                 except Exception as e:
                                     st.error(f"Error: {e}")
             
-            # --- B. CORREGIR DATOS DE LLUVIA (NUEVO) ---
+            # --- B. CORREGIR DATOS DE LLUVIA (CORREGIDO) ---
             with sub_data:
                 st.info(f"Corregir registros históricos para: **{seleccion}**")
                 
                 c_year, c_month = st.columns(2)
-                sel_year = c_year.number_input("Año:", min_value=1980, max_value=2030, value=2024)
+                sel_year = c_year.number_input("Año:", min_value=1980, max_value=2030, value=2022)
                 sel_month = c_month.selectbox("Mes:", range(1, 13))
                 
-                # 1. Buscar dato existente
                 check_sql = text("""
                     SELECT precipitation FROM precipitacion_mensual 
                     WHERE id_estacion_fk = :id 
@@ -135,19 +131,26 @@ with tab_est:
                     with engine.connect() as conn:
                         res = conn.execute(check_sql, {"id": id_sel, "y": sel_year, "m": sel_month}).fetchone()
                     
-                    current_val = float(res[0]) if res else 0.0
-                    msg_exist = f"Valor actual en base de datos: **{current_val} mm**" if res else "⚠️ No existe registro para esta fecha."
+                    # --- CORRECCIÓN CRÍTICA: MANEJO DE NONE ---
+                    # Si res existe pero res[0] es None (dato nulo en DB), usamos 0.0
+                    if res is not None and res[0] is not None:
+                        current_val = float(res[0])
+                        exists = True
+                    else:
+                        current_val = 0.0
+                        exists = False
+                    
+                    msg_exist = f"Valor actual: **{current_val} mm**" if exists else "⚠️ No existe dato (se creará uno nuevo)."
                     st.markdown(msg_exist)
                     
                     with st.form("form_data_rain"):
-                        new_rain = st.number_input("Nuevo valor de precipitación (mm):", value=current_val, min_value=0.0)
+                        new_rain = st.number_input("Nuevo valor (mm):", value=current_val, min_value=0.0)
                         
-                        if st.form_submit_button("💾 Guardar Dato Corregido"):
-                            # Fecha construida para el primer día del mes
+                        if st.form_submit_button("💾 Guardar Dato"):
                             date_str = f"{sel_year}-{sel_month:02d}-01"
                             
-                            if res:
-                                # UPDATE si existe
+                            # Si la fila existe (aunque sea nula), actualizamos (UPDATE)
+                            if res is not None: 
                                 upd_sql = text("""
                                     UPDATE precipitacion_mensual 
                                     SET precipitation = :val 
@@ -160,7 +163,7 @@ with tab_est:
                                     conn.commit()
                                 st.success(f"✅ Registro actualizado a {new_rain} mm.")
                             else:
-                                # INSERT si no existe
+                                # Si la fila NO existe, insertamos (INSERT)
                                 ins_sql = text("""
                                     INSERT INTO precipitacion_mensual (id_estacion_fk, fecha_mes_año, precipitation)
                                     VALUES (:id, :date, :val)
@@ -169,6 +172,8 @@ with tab_est:
                                     conn.execute(ins_sql, {"id": id_sel, "date": date_str, "val": new_rain})
                                     conn.commit()
                                 st.success(f"✅ Nuevo registro creado: {new_rain} mm.")
+                            time.sleep(1)
+                            st.rerun()
                             
                 except Exception as e:
                     st.error(f"Error consultando datos: {e}")
@@ -177,7 +182,7 @@ with tab_est:
         st.error(f"Error de conexión: {e}")
 
 # ==============================================================================
-# TAB 2: GESTIÓN DE PREDIOS (CALIBRADO PARA TU GEOJSON)
+# TAB 2: GESTIÓN DE PREDIOS
 # ==============================================================================
 with tab_predios:
     st.subheader("🏡 Gestión de Predios")
@@ -186,10 +191,9 @@ with tab_predios:
     st.markdown("#### 🔍 Buscar y Editar")
     try:
         engine = get_engine()
-        search_term = st.text_input("Buscar por 'PK_PREDIOS' (Código) o 'NOMBRE_PRE' (Nombre):", placeholder="Ej: 400200...")
+        search_term = st.text_input("Buscar por Código o Propietario:", placeholder="Ej: 400200...")
         
         if search_term:
-            # Buscamos en las columnas mapeadas
             query_search = text("""
                 SELECT id, codigo_catastral, propietario, estado_gestion, area_ha 
                 FROM predios_gestion 
@@ -197,7 +201,8 @@ with tab_predios:
                 LIMIT 10
             """)
             with engine.connect() as conn:
-                results = pd.read_sql(query_search, conn, params={"s": f"%{search_term}%"})
+                # Usamos wildcards para búsqueda parcial
+                results = pd.read_sql(query_search, conn, params={"s": f"%{search_term.strip()}%"})
             
             if not results.empty:
                 opt_p = {f"{r['propietario']} ({r['codigo_catastral']})": r['id'] for _, r in results.iterrows()}
@@ -209,23 +214,37 @@ with tab_predios:
                     
                     with st.form("upd_predio"):
                         c1, c2 = st.columns(2)
+                        st.markdown(f"**Código:** `{curr_p['codigo_catastral']}`")
                         new_st = c1.selectbox("Estado:", ["Identificado", "En Negociación", "Ejecutado / Conservado"], index=0)
+                        
                         if st.form_submit_button("💾 Actualizar Estado"):
                             with engine.connect() as conn:
                                 conn.execute(text("UPDATE predios_gestion SET estado_gestion = :s WHERE id = :i"), {"s": new_st, "i": curr_p['id']})
                                 conn.commit()
-                            st.success("Estado actualizado.")
+                            st.success("✅ Estado actualizado.")
+                            time.sleep(1)
+                            st.rerun()
             else:
-                st.warning("No encontrado. (Si acabas de subir el código, intenta Sincronizar abajo).")
+                st.warning("No encontrado. Verifique la auditoría abajo para ver qué datos hay cargados.")
 
     except Exception as e:
         st.error(f"Error buscador: {e}")
 
     st.divider()
 
-    # B. SINCRONIZADOR (MAPEO CORREGIDO)
-    with st.expander("☁️ Re-Sincronizar desde GitHub (Corrección de Columnas)", expanded=True):
-        st.write("Usa esto para recargar la base de datos con las columnas correctas.")
+    # B. AUDITORÍA DE DATOS (NUEVO)
+    with st.expander("🕵️‍♀️ Auditoría de Datos (Verificación de Carga)", expanded=False):
+        st.write("Muestra las primeras 20 filas reales en la base de datos para verificar que el Código Catastral se cargó correctamente.")
+        try:
+            engine = get_engine()
+            df_audit = pd.read_sql("SELECT id, codigo_catastral, propietario, estado_gestion FROM predios_gestion LIMIT 20", engine)
+            st.dataframe(df_audit)
+        except:
+            st.error("No se pudo cargar la tabla.")
+
+    # C. SINCRONIZADOR
+    with st.expander("☁️ Re-Sincronizar desde GitHub", expanded=True):
+        st.write("Recargar base de datos desde GeoJSON.")
         GITHUB_URL = "https://raw.githubusercontent.com/omejiariv/SIHCLI-POTER-2026/main/data/PrediosEjecutados.geojson"
         
         if st.button("🔄 Sincronizar Ahora", type="primary"):
@@ -241,16 +260,9 @@ with tab_predios:
                         
                         count = 0
                         for idx, row in gdf.iterrows():
-                            # --- MAPEO BASADO EN TU IMAGEN ---
-                            # PK_PREDIOS -> codigo_catastral
-                            # NOMBRE_PRE (o 'NOMBRE_PRE') -> propietario
-                            # AREA_HA -> area_ha
-                            
-                            cod = row.get('PK_PREDIOS') or row.get('pk_predios') or str(idx)
-                            
-                            # Intentamos varios nombres para el propietario/nombre
-                            prop = row.get('NOMBRE_PRE') or row.get('NOMB_PRE') or row.get('NOMBRE_VER') or 'Sin Nombre'
-                            
+                            # Mapeo basado en tu imagen (PK_PREDIOS)
+                            cod = str(row.get('PK_PREDIOS') or row.get('pk_predios') or "")
+                            prop = row.get('NOMBRE_PRE') or row.get('NOMB_PRE') or 'Sin Nombre'
                             area = row.get('AREA_HA') or row.get('Shape_Area') or 0.0
                             geom_wkt = row.geometry.wkt
                             
@@ -258,12 +270,12 @@ with tab_predios:
                                 INSERT INTO predios_gestion (codigo_catastral, propietario, estado_gestion, area_ha, geom)
                                 VALUES (:c, :p, 'Identificado', :a, ST_Multi(ST_GeomFromText(:g, 4326)))
                             """)
-                            conn.execute(sql_ins, {"c": str(cod), "p": prop, "a": float(area), "g": geom_wkt})
+                            conn.execute(sql_ins, {"c": cod, "p": prop, "a": float(area), "g": geom_wkt})
                             count += 1
                         conn.commit()
                         
                     status.update(label="¡Base de datos reparada!", state="complete")
-                    st.success(f"✅ {count} predios cargados con los IDs correctos (PK_PREDIOS).")
+                    st.success(f"✅ {count} predios cargados.")
                     
                 except Exception as e:
                     st.error(f"Error crítico: {e}")
