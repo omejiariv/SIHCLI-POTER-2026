@@ -239,7 +239,7 @@ with tab_indices:
                                         df_idx = df_idx.drop(columns=['id'])
                                     
                                     # 2. Insertar datos (append)
-                                    df_idx.to_sql('indices_climaticos', con=conn, if_exists='append', index=False)
+                                    df_idx.to_sql('indices_climaticos', con=conn, if_exists='replace', index=False)
                                     
                                     st.success(f"✅ ¡Éxito! Se han cargado {len(df_idx)} registros históricos.")
                                     st.balloons()
