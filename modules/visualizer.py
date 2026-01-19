@@ -3364,9 +3364,10 @@ def display_climate_forecast_tab(df_enso, **kwargs):
             df_enso = df_enso.sort_values(Config.DATE_COL)
 
     # ==========================================
-    # CREACIÓN DE PESTAÑAS (Esto faltaba y es CRÍTICO)
+    # CREACIÓN DE PESTAÑAS (Nombres Corregidos)
     # ==========================================
-    tab_hist, tab_iri, tab_multi, tab_prophet = st.tabs([
+    # IMPORTANTE: Usamos tab_iri_plumas y tab_prob_multi para que coincidan con tu código
+    tab_hist, tab_iri_plumas, tab_prob_multi, tab_prophet = st.tabs([
         "📜 Historia Índices (ONI/SOI/IOD)",
         "🌍 Pronóstico Oficial (IRI)",
         "📊 Probabilidad Multimodelo",
