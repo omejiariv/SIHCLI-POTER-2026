@@ -668,64 +668,93 @@ with tab_cuencas:
                 st.error(f"Error procesando Cuencas: {e}")
 
 # ====================================================================
-# TAB 5: GESTIÓN DE MUNICIPIOS (CORREGIDO PARA TU JSON)
+# ====================================================================
+# TAB 5: GESTIÓN DE MUNICIPIOS (VER Y EDITAR)
 # ====================================================================
 with tab_mun:
     st.header("🏛️ Gestión de Municipios")
     
-    sub_edit_m, sub_carga_m = st.tabs(["✏️ Ver Municipios", "📥 Carga GeoJSON"])
+    # Cambiamos el nombre de la pestaña de "Ver" a "Editar"
+    sub_edit_m, sub_carga_m = st.tabs(["✏️ Editar Municipio", "📥 Carga GeoJSON"])
 
-    # --- 1. VER LISTADO ---
+    # ----------------------------------------------------------------
+    # SUB-TAB 1: EDITOR INTERACTIVO
+    # ----------------------------------------------------------------
     with sub_edit_m:
         engine = get_engine()
         if engine:
             try:
                 with engine.connect() as conn:
-                    df_mun = pd.read_sql(text("SELECT * FROM municipios ORDER BY nombre_municipio"), conn)
-                    if not df_mun.empty:
-                        st.dataframe(df_mun, use_container_width=True)
-                        st.info(f"📍 Total Municipios: {len(df_mun)}")
+                    # 1. Buscador
+                    df_lista = pd.read_sql(text("SELECT id_municipio, nombre_municipio FROM municipios ORDER BY nombre_municipio"), conn)
+                    
+                    if not df_lista.empty:
+                        # Crear lista para el buscador: "Medellín (05001)"
+                        df_lista['display'] = df_lista['nombre_municipio'] + " (" + df_lista['id_municipio'].astype(str) + ")"
+                        sel_mun = st.selectbox("🔍 Buscar Municipio para editar:", df_lista['display'].tolist(), index=None, placeholder="Escribe para buscar...")
+                        
+                        # 2. Formulario de Edición
+                        if sel_mun:
+                            # Extraer ID del paréntesis
+                            id_m = sel_mun.split('(')[-1].replace(')', '')
+                            
+                            # Traer datos completos
+                            query = text("SELECT * FROM municipios WHERE id_municipio = :id")
+                            df_full = pd.read_sql(query, conn, params={"id": id_m})
+                            
+                            if not df_full.empty:
+                                data = df_full.iloc[0]
+                                st.divider()
+                                st.subheader(f"Editando: {data['nombre_municipio']}")
+                                
+                                with st.form("form_edit_mun"):
+                                    c1, c2 = st.columns(2)
+                                    with c1:
+                                        new_nom = st.text_input("Nombre Municipio", value=data['nombre_municipio'])
+                                        new_dep = st.text_input("Departamento", value=data['departamento'])
+                                    with c2:
+                                        # Población puede ser 0 al inicio, permitimos editarla
+                                        new_pob = st.number_input("Población Total", value=int(data['poblacion']) if data['poblacion'] else 0)
+                                        st.text_input("Código DANE (No editable)", value=data['id_municipio'], disabled=True)
+                                    
+                                    if st.form_submit_button("💾 Guardar Cambios"):
+                                        update_q = text("""
+                                            UPDATE municipios 
+                                            SET nombre_municipio = :nom, departamento = :dep, poblacion = :pob
+                                            WHERE id_municipio = :id
+                                        """)
+                                        conn.execute(update_q, {"nom": new_nom, "dep": new_dep, "pob": new_pob, "id": id_m})
+                                        conn.commit()
+                                        st.success(f"✅ Municipio {new_nom} actualizado correctamente.")
+                                        time.sleep(1) # Pausa breve para ver el mensaje
+                                        st.rerun() # Recargar para ver cambios
                     else:
-                        st.warning("⚠️ Base de datos vacía.")
+                        st.warning("⚠️ La base de datos está vacía. Ve a la pestaña 'Carga GeoJSON' para subir los datos.")
+                        
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error de conexión: {e}")
 
-    # --- 2. CARGA MASIVA (JSON EXACTO) ---
+    # ----------------------------------------------------------------
+    # SUB-TAB 2: CARGA MASIVA (MANTENEMOS IGUAL)
+    # ----------------------------------------------------------------
     with sub_carga_m:
         st.info("Sube 'MunicipiosAntioquia.geojson'. Se usarán los campos: MPIO_CDPMP (Código) y MPIO_CNMBR (Nombre).")
         
-        up_mun = st.file_uploader("Sube el GeoJSON aquí", type=["geojson", "json"], key="up_mun_json_fix")
+        up_mun = st.file_uploader("Sube el GeoJSON aquí", type=["geojson", "json"], key="up_mun_json_edit")
         
         if up_mun and st.button("🚀 Procesar Municipios"):
             try:
                 data = json.load(up_mun)
                 rows = []
-                
                 with st.spinner("Leyendo estructura DANE/IGAC..."):
                     for feature in data['features']:
                         props = feature.get("properties", {})
-                        
-                        # --- MAPEO EXACTO SEGÚN TU ARCHIVO ---
-                        # Usamos 'MPIO_CDPMP' (Ej: 05893) como ID único
                         cod = str(props.get('MPIO_CDPMP', props.get('MPIO_CCDGO', '00000')))
-                        
-                        # Usamos 'MPIO_CNMBR' (Ej: YONDÓ) como nombre
                         nom = props.get('MPIO_CNMBR', 'Desconocido')
-                        
-                        # Usamos 'DPTO_CNMBR' (Ej: ANTIOQUIA)
                         dep = props.get('DPTO_CNMBR', 'Antioquia')
-
-                        rows.append({
-                            "id_municipio": cod,
-                            "nombre_municipio": nom,
-                            "departamento": dep,
-                            "poblacion": 0
-                        })
+                        rows.append({"id_municipio": cod, "nombre_municipio": nom, "departamento": dep, "poblacion": 0})
                 
-                # Crear DataFrame y quitar duplicados
                 df_upload = pd.DataFrame(rows).drop_duplicates(subset=['id_municipio'])
-                st.write(f"✅ Se encontraron {len(df_upload)} municipios. Ejemplo:", df_upload.head(3))
-                
                 engine = get_engine()
                 with engine.connect() as conn:
                     count = 0
@@ -734,21 +763,15 @@ with tab_mun:
                             INSERT INTO municipios (id_municipio, nombre_municipio, departamento, poblacion)
                             VALUES (:id, :nom, :dep, :pob)
                             ON CONFLICT (id_municipio) DO UPDATE SET
-                            nombre_municipio = EXCLUDED.nombre_municipio,
-                            departamento = EXCLUDED.departamento;
+                            nombre_municipio = EXCLUDED.nombre_municipio;
                         """)
-                        conn.execute(q, {
-                            "id": row['id_municipio'], "nom": row['nombre_municipio'], 
-                            "dep": row['departamento'], "pob": row['poblacion']
-                        })
+                        conn.execute(q, {"id": row['id_municipio'], "nom": row['nombre_municipio'], "dep": row['departamento'], "pob": row['poblacion']})
                         count += 1
                     conn.commit()
-                
-                st.success(f"✅ ¡Misión Cumplida! {count} municipios cargados correctamente.")
+                st.success(f"✅ ¡Base de datos actualizada con {count} municipios!")
                 st.balloons()
-
             except Exception as e:
-                st.error(f"Error procesando el archivo: {e}")
+                st.error(f"Error procesando: {e}")
 
 # ==============================================================================
 # TAB 6: CONSOLA SQL (TU CÓDIGO ORIGINAL CONSERVADO)
