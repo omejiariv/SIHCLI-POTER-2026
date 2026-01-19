@@ -215,19 +215,91 @@ with tab_est:
                     st.warning("⚠️ El ID y el Nombre son obligatorios.")
 
     # ----------------------------------------------------------------
-    # SUB-PESTAÑA 3: CARGA MASIVA (Tu código original mejorado)
+    # SUB-PESTAÑA 3: CARGA DE METADATOS (mapaCVENSO.csv)
     # ----------------------------------------------------------------
     with sub_carga:
-        st.markdown("### 📥 Carga de Archivos Históricos")
-        st.info("Sube el archivo Excel/CSV 'ancho' (con meses en columnas). El sistema lo convertirá y subirá a la base de datos.")
+        st.markdown("### 📥 Carga de Metadatos (Coordenadas y Detalles)")
+        st.info("Sube aquí el archivo **mapaCVENSO.csv**. El sistema actualizará las coordenadas y nombres de las estaciones existentes sin borrar sus lluvias.")
+
+        uploaded_meta = st.file_uploader("Arrastra el archivo mapaCVENSO.csv", type=["csv"], key="meta_upload")
         
-        uploaded_file = st.file_uploader("Arrastra tu archivo CSV aquí (separado por ;)", type=["csv", "xlsx"])
-        
-        if uploaded_file:
-            if st.button("🚀 1. Analizar Archivo"):
-                # ... (Aquí iría la lógica de tu carga masiva de data_processor si la necesitas invocar) ...
-                # Por ahora dejamos el placeholder para no hacer el código infinito
-                st.warning("Funcionalidad de carga masiva pendiente de reconexión con data_processor.")
+        if uploaded_meta:
+            if st.button("🚀 Procesar y Actualizar Metadatos"):
+                engine = get_engine()
+                if engine:
+                    with st.spinner("Leyendo archivo y actualizando base de datos..."):
+                        try:
+                            # 1. Leer CSV (Detectando separador punto y coma ';')
+                            df_meta = pd.read_csv(uploaded_meta, sep=';', encoding='latin-1', engine='python')
+                            
+                            # Limpieza de nombres de columnas (quitar espacios)
+                            df_meta.columns = [c.strip() for c in df_meta.columns]
+                            
+                            # 2. Verificar columnas críticas
+                            cols_necesarias = ['Id_estacio', 'Nom_Est', 'Latitud_geo', 'Longitud_geo', 'alt_est']
+                            if not all(col in df_meta.columns for col in cols_necesarias):
+                                st.error(f"❌ Faltan columnas clave. Se esperan: {cols_necesarias}")
+                                st.write("Columnas encontradas:", df_meta.columns.tolist())
+                            else:
+                                count_updated = 0
+                                count_inserted = 0
+                                
+                                with engine.connect() as conn:
+                                    # 3. Iterar y hacer UPSERT (Insertar o Actualizar)
+                                    # Es más lento que bulk insert, pero seguro para no romper FKs
+                                    for _, row in df_meta.iterrows():
+                                        try:
+                                            # Mapeo de valores (seguro contra NaNs)
+                                            s_id = str(row['Id_estacio']).strip()
+                                            s_nom = str(row['Nom_Est']).strip()
+                                            s_mun = str(row['municipio']).strip() if 'municipio' in df_meta.columns else None
+                                            
+                                            # Convertir coordenadas (reemplazar coma por punto si es necesario)
+                                            def clean_float(val):
+                                                if pd.isna(val): return 0.0
+                                                if isinstance(val, str):
+                                                    val = val.replace(',', '.')
+                                                try:
+                                                    return float(val)
+                                                except:
+                                                    return 0.0
+
+                                            s_lat = clean_float(row['Latitud_geo'])
+                                            s_lon = clean_float(row['Longitud_geo'])
+                                            s_alt = clean_float(row['alt_est'])
+
+                                            # Query UPSERT (PostgreSQL syntax)
+                                            # Intenta insertar, si hay conflicto de ID, actualiza los campos
+                                            upsert_query = text("""
+                                                INSERT INTO estaciones (id_estacion, nom_est, municipio, latitud, longitud, elevacion)
+                                                VALUES (:id, :nom, :mun, :lat, :lon, :elev)
+                                                ON CONFLICT (id_estacion) 
+                                                DO UPDATE SET 
+                                                    nom_est = EXCLUDED.nom_est,
+                                                    municipio = EXCLUDED.municipio,
+                                                    latitud = EXCLUDED.latitud,
+                                                    longitud = EXCLUDED.longitud,
+                                                    elevacion = EXCLUDED.elevacion;
+                                            """)
+                                            
+                                            conn.execute(upsert_query, {
+                                                "id": s_id, "nom": s_nom, "mun": s_mun,
+                                                "lat": s_lat, "lon": s_lon, "elev": s_alt
+                                            })
+                                            
+                                            # Nota: No podemos saber fácilmente si fue insert o update sin lógica compleja,
+                                            # pero asumimos éxito si no falla.
+                                            count_updated += 1
+                                            
+                                        except Exception as row_ex:
+                                            print(f"Error en fila {row['Id_estacio']}: {row_ex}")
+                                    
+                                    conn.commit()
+                                    st.success(f"✅ ¡Proceso finalizado! Se procesaron {count_updated} estaciones.")
+                                    st.balloons()
+                                    
+                        except Exception as e:
+                            st.error(f"Error procesando el archivo: {e}")
 
 
 # --- PESTAÑA 2: GESTIÓN DE ÍNDICES GLOBALES ---
