@@ -425,8 +425,109 @@ def main():
             if pdf:
                 st.download_button("Descargar", pdf, "reporte.pdf", "application/pdf")
 
-    # --- MÓDULO INTEGRADO MEJORADO (Isoyetas HD + RBF) ---
+# --- MÓDULO INTEGRADO MEJORADO (Isoyetas HD + RBF) ---
     elif selected_module == "✨ Mapas Isoyetas HD":
         st.header("🗺️ Mapas de Isoyetas de Alta Definición")
         
+        # VERIFICACIÓN DE INDENTACIÓN AQUÍ
         if gdf_filtered is not None and not gdf_filtered.empty:
+            # Recuperamos los límites de la zona FILTRADA
+            minx, miny, maxx, maxy = gdf_filtered.total_bounds
+            
+            col_iso1, col_iso2 = st.columns([1, 3])
+            
+            with col_iso1:
+                st.subheader("Configuración")
+                # Selector de año invertido (del más reciente al más antiguo)
+                year_iso = st.selectbox("Seleccionar Año:", range(int(year_range[1]), int(year_range[0])-1, -1))
+                
+                st.info(f"📍 Estaciones en zona: {len(gdf_filtered)}")
+                
+                # Control de Suavizado
+                suavidad = st.slider("Nivel de Suavizado (RBF):", 0.0, 2.0, 0.5, help="0 = Datos crudos, 2 = Muy suavizado")
+            
+            with col_iso2:
+                try:
+                    engine = get_engine()
+                    # Obtenemos los IDs de las estaciones FILTRADAS en el sidebar
+                    ids_validos = tuple(gdf_filtered[Config.STATION_NAME_COL].unique())
+                    
+                    # Manejo seguro de tuplas para SQL con 1 solo elemento
+                    if len(ids_validos) == 1:
+                        ids_sql = f"('{ids_validos[0]}')" 
+                    else:
+                        ids_sql = str(ids_validos)
+
+                    # Consulta optimizada que respeta los filtros
+                    q_iso = text(f"""
+                        SELECT e.id_estacion, e.nom_est, ST_X(e.geom::geometry) as lon, ST_Y(e.geom::geometry) as lat,
+                               SUM(p.precipitation) as valor
+                        FROM precipitacion_mensual p
+                        JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+                        WHERE extract(year from p.fecha_mes_año) = :anio
+                        AND e.nom_est IN {ids_sql} 
+                        GROUP BY e.id_estacion, e.nom_est, e.geom
+                    """)
+                    
+                    with engine.connect() as conn:
+                        df_iso = pd.read_sql(q_iso, conn, params={"anio": year_iso})
+                    
+                    # Filtros de limpieza
+                    if ignore_zeros:
+                        df_iso = df_iso[df_iso['valor'] > 0]
+                    if ignore_nulls:
+                        df_iso = df_iso.dropna(subset=['valor'])
+
+                    if len(df_iso) >= 3:
+                        with st.spinner(f"Generando superficie RBF para {len(df_iso)} estaciones..."):
+                            
+                            from scipy.interpolate import Rbf
+                            
+                            grid_res = 200
+                            gx, gy = np.mgrid[minx:maxx:complex(0, grid_res), miny:maxy:complex(0, grid_res)]
+                            
+                            rbf = Rbf(df_iso['lon'], df_iso['lat'], df_iso['valor'], function='thin_plate', smooth=suavidad)
+                            grid_z = rbf(gx, gy)
+                            
+                            fig_m = go.Figure()
+                            
+                            # Isoyetas
+                            fig_m.add_trace(go.Contour(
+                                z=grid_z.T, x=np.linspace(minx, maxx, grid_res), y=np.linspace(miny, maxy, grid_res),
+                                colorscale="YlGnBu", 
+                                colorbar=dict(title="Lluvia (mm)"),
+                                hovertemplate="Lluvia: %{z:.0f} mm<extra></extra>",
+                                contours=dict(coloring='heatmap', showlabels=True, labelfont=dict(size=10, color='white'), start=0),
+                                opacity=0.8, connectgaps=True, line_smoothing=1.3
+                            ))
+                            
+                            # Contexto
+                            add_context_layers_ghost(fig_m, gdf_filtered)
+                            
+                            # Puntos
+                            fig_m.add_trace(go.Scatter(
+                                x=df_iso['lon'], y=df_iso['lat'], mode='markers',
+                                marker=dict(size=6, color='black', line=dict(width=1, color='white')),
+                                text=df_iso['nom_est'] + ': ' + df_iso['valor'].round(0).astype(str) + ' mm',
+                                hoverinfo='text'
+                            ))
+                            
+                            fig_m.update_layout(
+                                title=f"Isoyetas Año {year_iso} (Método RBF)", 
+                                height=700, 
+                                xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False),
+                                margin=dict(l=0,r=0,t=40,b=0), plot_bgcolor='white'
+                            )
+                            st.plotly_chart(fig_m, use_container_width=True)
+                    else:
+                        st.warning("⚠️ Datos insuficientes para interpolar (mínimo 3 estaciones con datos).")
+                except Exception as e:
+                    st.error(f"Error al generar mapa: {e}")
+        else:
+            st.info("👈 Seleccione una cuenca o región en el menú lateral para empezar.")
+
+    # Ajuste CSS
+    st.markdown("""<style>.stTabs [data-baseweb="tab-panel"] { padding-top: 1rem; }</style>""", unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
