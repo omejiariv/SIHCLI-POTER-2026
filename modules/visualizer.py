@@ -3760,75 +3760,104 @@ def display_climate_forecast_tab(df_enso, **kwargs):
             st.error("⚠️ No se encontró el archivo `enso_cpc_prob.json` en `data/iri/`.")
 
     # ==========================================
-    # PESTAÑA 4: PROPHET
+# ==========================================
+    # PESTAÑA 4: PROPHET (GENERADOR AVANZADO)
     # ==========================================
     with tab_gen:
         st.markdown("#### 🤖 Generador Prophet (Proyección Estadística Local)")
-        indices = {}
-        if df_enso is not None:
-            cols_map = {
-                Config.ENSO_ONI_COL: "ONI",
-                Config.SOI_COL: "SOI",
-                Config.IOD_COL: "IOD",
-            }
-            for col, name in cols_map.items():
-                if col in df_enso.columns:
-                    indices[name] = (
-                        df_enso[[Config.DATE_COL, col]]
-                        .rename(columns={Config.DATE_COL: "ds", col: "y"})
-                        .dropna()
-                    )
+        
+        # 1. Selector de Índice (Mapeo Inteligente)
+        # Buscamos la columna real en el dataframe
+        col_oni = next((c for c in df_enso.columns if 'oni' in c.lower() and 'anomalia' in c.lower()), None) or \
+                  next((c for c in df_enso.columns if 'oni' in c.lower()), None)
+        
+        mapa_indices = {
+            "ONI (Oceanic Niño Index)": col_oni,
+            "SOI (Southern Oscillation)": next((c for c in df_enso.columns if 'soi' in c.lower()), None),
+            "IOD (Indian Ocean Dipole)": next((c for c in df_enso.columns if 'iod' in c.lower()), None)
+        }
+        
+        # Filtramos solo los que existen
+        opciones_validas = {k: v for k, v in mapa_indices.items() if v is not None}
+        
+        selected_label = st.selectbox("Índice a proyectar:", list(opciones_validas.keys()))
+        target_col = opciones_validas[selected_label]
+        
+        months_future = st.slider("Meses a futuro:", 1, 60, 24)
 
-        if indices:
-            c_sel, c_hor = st.columns(2)
-            sel_idx = c_sel.selectbox("Índice a proyectar:", list(indices.keys()))
-            hor = c_hor.slider("Meses a futuro:", 6, 60, 24)
+        if st.button("Generar Proyección Prophet"):
+            if target_col and df_enso is not None:
+                with st.spinner(f"Entrenando modelo para {selected_label}..."):
+                    try:
+                        # A. Preparación de Datos (Renombrar a ds, y)
+                        df_prophet = df_enso[[Config.DATE_COL, target_col]].copy()
+                        df_prophet.columns = ['ds', 'y']
+                        
+                        # Limpieza extra para asegurar números
+                        df_prophet['y'] = pd.to_numeric(df_prophet['y'], errors='coerce')
+                        df_prophet = df_prophet.dropna()
 
-            if st.button("Generar Proyección Prophet"):
-                try:
-                    with st.spinner(f"Entrenando modelo para {sel_idx}..."):
-                        m = Prophet()
-                        m.fit(indices[sel_idx])
-                        fut = m.make_future_dataframe(periods=hor, freq="MS")
-                        fc = m.predict(fut)
+                        # B. Entrenamiento (Hyperparámetros ajustados para clima)
+                        # changepoint_prior_scale=0.5 -> Hace el modelo más flexible para capturar picos de El Niño
+                        m = Prophet(daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=True, changepoint_prior_scale=0.5)
+                        m.fit(df_prophet)
 
-                        fig = px.line(
-                            fc,
-                            x="ds",
-                            y="yhat",
-                            title=f"Proyección {sel_idx} (Prophet)",
+                        # C. Predicción
+                        future = m.make_future_dataframe(periods=months_future, freq='MS')
+                        forecast = m.predict(future)
+
+                        # D. Visualización (Plotly Personalizado: Real vs Predicción)
+                        import plotly.graph_objects as go
+                        
+                        fig = go.Figure()
+
+                        # 1. Datos Históricos Reales (Línea Negra/Gris)
+                        fig.add_trace(go.Scatter(
+                            x=df_prophet['ds'], 
+                            y=df_prophet['y'],
+                            mode='lines',
+                            name='Historia Real',
+                            line=dict(color='gray', width=1.5)
+                        ))
+
+                        # 2. Predicción (Línea Azul)
+                        fig.add_trace(go.Scatter(
+                            x=forecast['ds'], 
+                            y=forecast['yhat'],
+                            mode='lines',
+                            name='Proyección',
+                            line=dict(color='#007BFF', width=2)
+                        ))
+
+                        # 3. Intervalo de Confianza (Sombra)
+                        fig.add_trace(go.Scatter(
+                            x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
+                            y=pd.concat([forecast['yhat_upper'], forecast['yhat_lower'][::-1]]),
+                            fill='toself',
+                            fillcolor='rgba(0,123,255,0.2)',
+                            line=dict(color='rgba(255,255,255,0)'),
+                            hoverinfo="skip",
+                            showlegend=False,
+                            name='Incertidumbre'
+                        ))
+
+                        fig.update_layout(
+                            title=f"Proyección {selected_label}",
+                            xaxis_title="Fecha",
+                            yaxis_title="Valor Índice",
+                            hovermode="x unified",
+                            legend=dict(orientation="h", y=1.1)
                         )
-                        fig.add_trace(
-                            go.Scatter(
-                                x=fc["ds"],
-                                y=fc["yhat_upper"],
-                                mode="lines",
-                                line=dict(width=0),
-                                showlegend=False,
-                                hoverinfo="skip",
-                            )
-                        )
-                        fig.add_trace(
-                            go.Scatter(
-                                x=fc["ds"],
-                                y=fc["yhat_lower"],
-                                mode="lines",
-                                line=dict(width=0),
-                                fill="tonexty",
-                                fillcolor="rgba(68, 68, 68, 0.1)",
-                                showlegend=False,
-                                hoverinfo="skip",
-                            )
-                        )
 
-                        st.plotly_chart(
-                            fig, use_container_width=True, key="chart_prophet"
-                        )
-                except Exception as e:
-                    st.error(f"Error en Prophet: {e}")
-        else:
-            st.warning("No hay datos suficientes para generar proyecciones.")
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Explicación
+                        st.info("💡 **Nota:** La línea GRIS muestra los datos reales históricos. La línea AZUL es la tendencia proyectada por el modelo.")
 
+                    except Exception as e:
+                        st.error(f"Error en Prophet: {e}")
+            else:
+                st.error("No se encontró la columna de datos para el índice seleccionado.")
 
 # -----------------------------------------------------------------------------
 
