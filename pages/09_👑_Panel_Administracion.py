@@ -50,12 +50,16 @@ def get_engine():
 st.title("👑 Panel de Administración y Edición de Datos")
 st.markdown("---")
 
-tab_est, tab_predios, tab_cuencas, tab_sql = st.tabs([
-    "📡 Estaciones & Lluvias", 
-    "🏡 Predios (Fincas)", 
+# Definición de Pestañas
+tab_estaciones, tab_indices, tab_predios, tab_cuencas, tab_sql = st.tabs([
+    "🌧️ Estaciones & Lluvias",
+    "📉 Índices Globales", 
+    "🏡 Predios (Fincas)",
     "🌊 Cuencas",
     "🛠️ Consola SQL"
 ])
+
+
 
 # ==============================================================================
 # TAB 1: ESTACIONES (AHORA CON CARGA AUTOMÁTICA CSV)
@@ -196,6 +200,49 @@ with tab_est:
                         
                     except Exception as e:
                         st.error(f"Error subiendo a base de datos: {e}")
+
+# --- PESTAÑA 2: GESTIÓN DE ÍNDICES GLOBALES ---
+with tab_indices:
+    st.header("📉 Gestión de Índices Climáticos (ONI, SOI, IOD)")
+    st.info("Sube aquí el archivo 'Indices_Globales_1970_2024.csv' limpio (con puntos decimales).")
+    
+    uploaded_idx = st.file_uploader("Seleccionar CSV de Índices", type=["csv"], key="idx_uploader")
+    
+    if uploaded_idx:
+        try:
+            # Intentar leer con separador automático (coma o punto y coma)
+            df_idx = pd.read_csv(uploaded_idx, sep=None, engine='python')
+            
+            st.write("Vista Previa de los Datos:", df_idx.head())
+            
+            # Validación básica
+            cols_esperadas = ['anomalia_oni', 'soi', 'iod']
+            if not any(col in df_idx.columns for col in cols_esperadas):
+                st.error(f"❌ El archivo no parece contener índices climáticos. Se esperan columnas como: {cols_esperadas}")
+            else:
+                if st.button("🚀 Cargar a Base de Datos (Sobreescribir)"):
+                    engine = get_engine()
+                    if engine:
+                        with st.spinner("Cargando índices..."):
+                            try:
+                                with engine.connect() as conn:
+                                    # 1. Limpieza de nombres de columnas (todo a minúsculas)
+                                    df_idx.columns = [c.lower().strip() for c in df_idx.columns]
+                                    
+                                    # 2. Eliminar columna 'id' si existe (dejemos que la BD ponga sus propios IDs)
+                                    if 'id' in df_idx.columns:
+                                        df_idx = df_idx.drop(columns=['id'])
+                                    
+                                    # 3. Insertar datos (append porque ya hiciste TRUNCATE antes)
+                                    df_idx.to_sql('indices_climaticos', con=conn, if_exists='append', index=False)
+                                    
+                                    st.success(f"✅ ¡Éxito! Se han cargado {len(df_idx)} registros históricos.")
+                                    st.balloons()
+                            except Exception as e:
+                                st.error(f"Error en la carga: {e}")
+        except Exception as e:
+            st.error(f"Error leyendo el archivo: {e}")
+
 
 # ==============================================================================
 # TAB 2: GESTIÓN DE PREDIOS (TU CÓDIGO ORIGINAL CONSERVADO)
