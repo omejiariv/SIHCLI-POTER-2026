@@ -63,17 +63,19 @@ if not check_password():
 st.title("👑 Panel de Administración y Edición de Datos")
 st.markdown("---")
 
-# Definición de Pestañas
-tab_est, tab_indices, tab_predios, tab_cuencas, tab_sql = st.tabs([
-    "🌧️ Estaciones & Lluvias",
-    "📉 Índices Globales", 
-    "🏡 Predios (Fincas)",
-    "🌊 Cuencas",
-    "🛠️ Consola SQL"
-])
+    # ----------------------------------------------------------------
+    # 2. DEFINICIÓN DE PESTAÑAS (TABS)
+    # ----------------------------------------------------------------
+    # Agregamos 'tab_mun' a la lista de variables y "🏛️ Municipios" a los nombres
+    tab_est, tab_indices, tab_predios, tab_cuencas, tab_mun, tab_sql = st.tabs([
+        "🌧️ Estaciones", 
+        "📉 Índices", 
+        "🏡 Predios", 
+        "🌊 Cuencas", 
+        "🏛️ Municipios",  # <--- ¡ESTA FALTABA!
+        "🛠️ SQL"
+    ])
 
-
-# ==============================================================================
 # ====================================================================
 # TAB 1: GESTIÓN DE ESTACIONES (EDICIÓN + CREACIÓN + CARGA)
 # ====================================================================
@@ -666,87 +668,69 @@ with tab_cuencas:
             except Exception as e:
                 st.error(f"Error procesando Cuencas: {e}")
 
-
 # ====================================================================
-# ====================================================================
-# TAB 5: GESTIÓN DE MUNICIPIOS (DESDE GEOJSON)
+# TAB 5: GESTIÓN DE MUNICIPIOS (CORREGIDO PARA TU JSON)
 # ====================================================================
 with tab_mun:
     st.header("🏛️ Gestión de Municipios")
     
-    # 1. Sub-pestañas
     sub_edit_m, sub_carga_m = st.tabs(["✏️ Ver Municipios", "📥 Carga GeoJSON"])
 
-    # ----------------------------------------------------------------
-    # SUB-TAB 1: LISTADO (Solo lectura por seguridad)
-    # ----------------------------------------------------------------
+    # --- 1. VER LISTADO ---
     with sub_edit_m:
         engine = get_engine()
         if engine:
             try:
                 with engine.connect() as conn:
-                    # Traer municipios ordenados
                     df_mun = pd.read_sql(text("SELECT * FROM municipios ORDER BY nombre_municipio"), conn)
-                    
                     if not df_mun.empty:
                         st.dataframe(df_mun, use_container_width=True)
-                        st.info(f"📍 Total Municipios Registrados: {len(df_mun)}")
+                        st.info(f"📍 Total Municipios: {len(df_mun)}")
                     else:
-                        st.warning("⚠️ No hay municipios cargados aún.")
+                        st.warning("⚠️ Base de datos vacía.")
             except Exception as e:
-                st.error(f"Error conectando: {e}")
+                st.error(f"Error: {e}")
 
-    # ----------------------------------------------------------------
-    # SUB-TAB 2: CARGA MASIVA GEOJSON
-    # ----------------------------------------------------------------
+    # --- 2. CARGA MASIVA (JSON EXACTO) ---
     with sub_carga_m:
-        st.info("Sube el archivo **MunicipiosAntioquia.geojson**. El sistema buscará automáticamente el nombre y código DANE.")
+        st.info("Sube 'MunicipiosAntioquia.geojson'. Se usarán los campos: MPIO_CDPMP (Código) y MPIO_CNMBR (Nombre).")
         
-        up_mun = st.file_uploader("Arrastra 'MunicipiosAntioquia.geojson'", type=["geojson", "json"], key="up_mun_json")
+        up_mun = st.file_uploader("Sube el GeoJSON aquí", type=["geojson", "json"], key="up_mun_json_fix")
         
         if up_mun and st.button("🚀 Procesar Municipios"):
             try:
                 data = json.load(up_mun)
                 rows = []
                 
-                with st.spinner(f"Leyendo {len(data['features'])} territorios..."):
+                with st.spinner("Leyendo estructura DANE/IGAC..."):
                     for feature in data['features']:
                         props = feature.get("properties", {})
                         
-                        # --- MAPEO INTELIGENTE DE CAMPOS ---
-                        # Buscamos nombres comunes en cartografía colombiana
-                        def get_val(keys, default=None):
-                            for k in keys:
-                                # Búsqueda insensible a mayúsculas/minúsculas
-                                found = next((real for real in props.keys() if real.lower() == k.lower()), None)
-                                if found: return props[found]
-                            return default
-
-                        # 1. Nombre Municipio (Ej: MPIO_CNMBR es el estándar del IGAC)
-                        nom = get_val(['MPIO_CNMBR', 'NOMBRE_MPIO', 'NOM_MUNICIPIO', 'MUNICIPIO', 'Nombre'], 'Desconocido')
+                        # --- MAPEO EXACTO SEGÚN TU ARCHIVO ---
+                        # Usamos 'MPIO_CDPMP' (Ej: 05893) como ID único
+                        cod = str(props.get('MPIO_CDPMP', props.get('MPIO_CCDGO', '00000')))
                         
-                        # 2. Código DANE (ID único)
-                        cod = get_val(['MPIO_CCNCT', 'COD_DANE', 'CODIGO', 'ID', 'MPIO_CDPMP'], '00000')
+                        # Usamos 'MPIO_CNMBR' (Ej: YONDÓ) como nombre
+                        nom = props.get('MPIO_CNMBR', 'Desconocido')
                         
-                        # 3. Departamento
-                        dep = get_val(['DPTO_CNMBR', 'DEPARTAMENTO', 'NOM_DEPTO'], 'Antioquia')
+                        # Usamos 'DPTO_CNMBR' (Ej: ANTIOQUIA)
+                        dep = props.get('DPTO_CNMBR', 'Antioquia')
 
                         rows.append({
-                            "id_municipio": str(cod),
+                            "id_municipio": cod,
                             "nombre_municipio": nom,
                             "departamento": dep,
-                            "poblacion": 0 # Placeholder
+                            "poblacion": 0
                         })
                 
-                # Crear DataFrame
+                # Crear DataFrame y quitar duplicados
                 df_upload = pd.DataFrame(rows).drop_duplicates(subset=['id_municipio'])
-                st.write(f"✅ Detectados {len(df_upload)} municipios. Ejemplo:", df_upload.head(3))
+                st.write(f"✅ Se encontraron {len(df_upload)} municipios. Ejemplo:", df_upload.head(3))
                 
                 engine = get_engine()
                 with engine.connect() as conn:
                     count = 0
                     for _, row in df_upload.iterrows():
-                        # Upsert para guardar o actualizar
                         q = text("""
                             INSERT INTO municipios (id_municipio, nombre_municipio, departamento, poblacion)
                             VALUES (:id, :nom, :dep, :pob)
@@ -761,11 +745,11 @@ with tab_mun:
                         count += 1
                     conn.commit()
                 
-                st.success(f"✅ ¡Éxito! Se cargaron {count} municipios a la base de datos.")
+                st.success(f"✅ ¡Misión Cumplida! {count} municipios cargados correctamente.")
                 st.balloons()
 
             except Exception as e:
-                st.error(f"Error procesando Municipios: {e}")
+                st.error(f"Error procesando el archivo: {e}")
 
 # ==============================================================================
 # TAB 6: CONSOLA SQL (TU CÓDIGO ORIGINAL CONSERVADO)
