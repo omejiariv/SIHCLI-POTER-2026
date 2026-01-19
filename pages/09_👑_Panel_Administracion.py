@@ -59,10 +59,6 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- 2. CONEXIÓN ---
-def get_engine():
-    return create_engine(st.secrets["DATABASE_URL"])
-
 # --- 3. INTERFAZ PRINCIPAL ---
 st.title("👑 Panel de Administración y Edición de Datos")
 st.markdown("---")
@@ -75,7 +71,6 @@ tab_est, tab_indices, tab_predios, tab_cuencas, tab_sql = st.tabs([
     "🌊 Cuencas",
     "🛠️ Consola SQL"
 ])
-
 
 
 # ==============================================================================
