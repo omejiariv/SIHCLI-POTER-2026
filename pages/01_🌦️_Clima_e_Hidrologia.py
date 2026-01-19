@@ -41,32 +41,73 @@ except Exception as e:
     st.error(f"Error crítico importando módulos: {e}")
     st.stop()
 
-# --- FUNCIONES DE CARGA HÍBRIDA (SQL + PANDAS) ---
-@st.cache_data(show_spinner="Conectando con Supabase...", ttl=600)
+# --- FUNCIÓN DE CARGA HÍBRIDA MEJORADA (DB + ARCHIVOS) ---
+@st.cache_data(show_spinner="Sincronizando con Base de Datos...", ttl=60)
 def load_data_from_db():
     """
-    Función orquestadora que carga datos frescos desde la BD.
-    ESTRATEGIA NUEVA: Usa columnas 'año' y 'mes' para crear fechas perfectas.
+    Carga híbrida inteligente:
+    1. Geometrías complejas (Municipios/Cuencas) -> Desde Archivos locales (load_spatial_data) para mantener polígonos.
+    2. Puntos dinámicos (Estaciones/Predios) -> Desde BASE DE DATOS (PostgreSQL) para tener coordenadas corregidas.
+    3. Series de Tiempo (Lluvias/ENSO) -> Desde BASE DE DATOS.
     """
     engine = get_engine()
     if not engine:
         return None, None, None, None, None, None
 
-    # 1. Cargar Geometrías y Metadatos
-    gdf_stations, gdf_municipios, gdf_subcuencas, gdf_predios = load_spatial_data()
-    
+    # 1. CARGA BASE DESDE ARCHIVOS (Para obtener Polígonos de Municipios y Cuencas)
+    #    Usamos load_spatial_data como base, pero luego sobrescribiremos Estaciones y Predios.
+    try:
+        # gdf_stations_file y gdf_predios_file se ignorarán en favor de la DB
+        _, gdf_municipios, gdf_subcuencas, _ = load_spatial_data()
+    except Exception as e:
+        st.warning(f"⚠️ Advertencia: No se pudieron cargar mapas base (Municipios/Cuencas). {e}")
+        gdf_municipios, gdf_subcuencas = None, None
+
     df_long = pd.DataFrame()
     df_enso = pd.DataFrame()
+    gdf_stations_db = None
+    gdf_predios_db = None
 
     try:
         with engine.connect() as conn:
             # ---------------------------------------------------------
-            # 2. Cargar Lluvias
+            # A. CARGAR ESTACIONES DESDE DB (La versión corregida)
+            # ---------------------------------------------------------
+            q_est = text("SELECT * FROM estaciones WHERE latitud != 0")
+            df_est = pd.read_sql(q_est, conn)
+            
+            if not df_est.empty:
+                # Convertir a GeoDataFrame usando Lat/Lon de la DB
+                gdf_stations_db = gpd.GeoDataFrame(
+                    df_est, 
+                    geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud),
+                    crs="EPSG:4326"
+                )
+                # Renombrar columna para que coincida con el resto del código (si es necesario)
+                # Tu código espera 'nom_est' (que ya viene de la DB)
+            
+            # ---------------------------------------------------------
+            # B. CARGAR PREDIOS DESDE DB
+            # ---------------------------------------------------------
+            try:
+                q_pre = text("SELECT * FROM predios WHERE latitud != 0")
+                df_pre = pd.read_sql(q_pre, conn)
+                if not df_pre.empty:
+                    gdf_predios_db = gpd.GeoDataFrame(
+                        df_pre,
+                        geometry=gpd.points_from_xy(df_pre.longitud, df_pre.latitud),
+                        crs="EPSG:4326"
+                    )
+            except Exception:
+                pass # Si falla predios, no es crítico
+
+            # ---------------------------------------------------------
+            # C. CARGAR LLUVIAS (Igual que antes)
             # ---------------------------------------------------------
             query_rain = text("""
                 SELECT 
                     p.id_estacion_fk as id_estacion,
-                    e.nom_est as station_name,
+                    e.nom_est as station_name, 
                     p.fecha_mes_año as date,
                     p.precipitation as precipitation
                 FROM precipitacion_mensual p
@@ -74,10 +115,10 @@ def load_data_from_db():
             """)
             df_long = pd.read_sql(query_rain, conn)
             
-            # Estandarización Lluvias
+            # Estandarización
             df_long = df_long.rename(columns={
                 "station_name": Config.STATION_NAME_COL,
-                "date": Config.DATE_COL,
+                "date": Config.DATE_COL, 
                 "precipitation": Config.PRECIPITATION_COL
             })
             df_long[Config.DATE_COL] = pd.to_datetime(df_long[Config.DATE_COL], errors='coerce')
@@ -85,52 +126,31 @@ def load_data_from_db():
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
             # ---------------------------------------------------------
-            # 3. Cargar ENSO (Índices Climáticos) - ESTRATEGIA MATEMÁTICA
+            # D. CARGAR ENSO (Igual que antes)
             # ---------------------------------------------------------
-            try:
-                query_enso = text("SELECT * FROM indices_climaticos")
-                df_enso = pd.read_sql(query_enso, conn)
-                
-                # Normalización de columnas (todo a minúsculas)
-                df_enso.columns = [c.lower() for c in df_enso.columns]
-                
-                # ESTRATEGIA A: ¿Existen columnas 'año' y 'mes'? (Lo más seguro)
-                if 'año' in df_enso.columns and 'mes' in df_enso.columns:
-                    # Construimos la fecha combinando columnas numéricas
-                    df_enso[Config.DATE_COL] = pd.to_datetime(
-                        df_enso['año'].astype(str) + '-' + 
-                        df_enso['mes'].astype(str) + '-01'
-                    )
-                
-                # ESTRATEGIA B: Si no hay columnas numéricas, intentamos parsear texto (Plan B)
-                else:
-                    col_fecha = next((c for c in df_enso.columns if 'fecha' in c), None)
-                    if col_fecha:
-                         # Intento básico con parser robusto importado
-                         from modules.data_processor import parse_spanish_date_robust
-                         df_enso[Config.DATE_COL] = df_enso[col_fecha].apply(parse_spanish_date_robust)
-
-                # Limpieza Final (Crucial para Prophet)
-                df_enso = df_enso.dropna(subset=[Config.DATE_COL])
-                df_enso = df_enso.sort_values(Config.DATE_COL)
-                
-                # Renombrar ONI para que coincida con Config
-                if 'anomalia_oni' in df_enso.columns:
-                    df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
-                
-                # DEBUG: Si después de todo esto está vacío, imprime error en consola
-                if df_enso.empty:
-                    print("⚠️ ALERTA: df_enso quedó vacío después de procesar fechas.")
-                    print("Columnas detectadas:", df_enso.columns)
+            query_enso = text("SELECT * FROM indices_climaticos")
+            df_enso = pd.read_sql(query_enso, conn)
+            df_enso.columns = [c.lower() for c in df_enso.columns]
             
-            except Exception as ex:
-                st.warning(f"Alerta cargando ENSO: {ex}")
+            # Lógica de fechas ENSO
+            if 'año' in df_enso.columns and 'mes' in df_enso.columns:
+                 df_enso[Config.DATE_COL] = pd.to_datetime(
+                     df_enso['año'].astype(str) + '-' + df_enso['mes'].astype(str) + '-01'
+                 )
+            
+            # Limpieza ENSO
+            df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
+            if 'anomalia_oni' in df_enso.columns:
+                df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
 
     except Exception as e:
         st.error(f"Error crítico conectando a BD: {e}")
         return None, None, None, None, None, None
 
-    return gdf_stations, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios
+    # RETORNO FINAL:
+    # Devolvemos las estaciones y predios DE LA DB (gdf_stations_db), 
+    # pero mantenemos municipios y cuencas DE ARCHIVO (gdf_municipios).
+    return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
 
 
 # --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
