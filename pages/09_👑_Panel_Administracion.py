@@ -3,15 +3,29 @@
 
 import streamlit as st
 import pandas as pd
-import json  # Para leer archivos GeoJSON/JSON
-import io    # Para manejo de buffers de archivos
-import time  # Para pausas o efectos visuales
-from sqlalchemy import text  # Para escribir consultas SQL
-from modules.database import get_engine  # Tu conexión centralizada a la BD
+import json
+import io
+import time
+import sys
+import os
+from sqlalchemy import text
 
+# --- TRUCO DE RUTAS (PATH) ---
+# Esto ayuda a Python a encontrar la carpeta 'modules' estando dentro de 'pages'
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
 
-# --- 1. CONFIGURACIÓN Y SEGURIDAD (MEJORADA) ---
-st.set_page_config(page_title="Admin Panel", page_icon="👑", layout="wide")
+# --- IMPORTACIÓN DEL MOTOR DE BASE DE DATOS (CORREGIDO) ---
+# Tu archivo se llama 'db_manager.py', no 'database.py'
+try:
+    from modules.db_manager import get_engine
+except ImportError:
+    # Intento alternativo por si la ruta relativa falla
+    from db_manager import get_engine
+
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Panel de Administración", page_icon="👑", layout="wide")
 
 def check_password():
     """Valida usuario/contraseña contra secrets.toml"""
