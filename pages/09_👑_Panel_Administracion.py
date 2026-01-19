@@ -210,13 +210,21 @@ with tab_indices:
     
     if uploaded_idx:
         try:
-            # Intentar leer con separador automático (coma o punto y coma)
-            df_idx = pd.read_csv(uploaded_idx, sep=None, engine='python')
+            # INTENTO 1: Leer como UTF-8 (Estándar web)
+            try:
+                df_idx = pd.read_csv(uploaded_idx, sep=None, engine='python', encoding='utf-8')
+            except UnicodeDecodeError:
+                # INTENTO 2: Si falla por la 'ñ', leer como Latin-1 (Estándar Excel)
+                uploaded_idx.seek(0) # Rebobinar el archivo al principio
+                df_idx = pd.read_csv(uploaded_idx, sep=None, engine='python', encoding='latin-1')
             
             st.write("Vista Previa de los Datos:", df_idx.head())
             
-            # Validación básica
+            # Validación básica (convertimos nombres de columnas a minúsculas para comparar)
+            df_idx.columns = [c.lower().strip() for c in df_idx.columns]
             cols_esperadas = ['anomalia_oni', 'soi', 'iod']
+            
+            # Verificamos si al menos una de las columnas clave existe
             if not any(col in df_idx.columns for col in cols_esperadas):
                 st.error(f"❌ El archivo no parece contener índices climáticos. Se esperan columnas como: {cols_esperadas}")
             else:
@@ -226,14 +234,11 @@ with tab_indices:
                         with st.spinner("Cargando índices..."):
                             try:
                                 with engine.connect() as conn:
-                                    # 1. Limpieza de nombres de columnas (todo a minúsculas)
-                                    df_idx.columns = [c.lower().strip() for c in df_idx.columns]
-                                    
-                                    # 2. Eliminar columna 'id' si existe (dejemos que la BD ponga sus propios IDs)
+                                    # 1. Eliminar columna 'id' si existe (dejemos que la BD ponga sus propios IDs)
                                     if 'id' in df_idx.columns:
                                         df_idx = df_idx.drop(columns=['id'])
                                     
-                                    # 3. Insertar datos (append porque ya hiciste TRUNCATE antes)
+                                    # 2. Insertar datos (append)
                                     df_idx.to_sql('indices_climaticos', con=conn, if_exists='append', index=False)
                                     
                                     st.success(f"✅ ¡Éxito! Se han cargado {len(df_idx)} registros históricos.")
@@ -242,7 +247,6 @@ with tab_indices:
                                 st.error(f"Error en la carga: {e}")
         except Exception as e:
             st.error(f"Error leyendo el archivo: {e}")
-
 
 # ==============================================================================
 # TAB 2: GESTIÓN DE PREDIOS (TU CÓDIGO ORIGINAL CONSERVADO)
