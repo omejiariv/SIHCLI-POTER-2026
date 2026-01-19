@@ -46,7 +46,7 @@ except Exception as e:
 def load_data_from_db():
     """
     Función orquestadora que carga datos frescos desde la BD.
-    Incluye un PARSER MANUAL para fechas formato 'ene-70'.
+    ESTRATEGIA NUEVA: Usa columnas 'año' y 'mes' para crear fechas perfectas.
     """
     engine = get_engine()
     if not engine:
@@ -85,56 +85,43 @@ def load_data_from_db():
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
             # ---------------------------------------------------------
-            # 3. Cargar ENSO (Índices Climáticos) con PARSER MANUAL
+            # 3. Cargar ENSO (Índices Climáticos) - ESTRATEGIA MATEMÁTICA
             # ---------------------------------------------------------
             try:
                 query_enso = text("SELECT * FROM indices_climaticos")
                 df_enso = pd.read_sql(query_enso, conn)
                 
-                # Normalización de columnas
+                # Normalización de columnas (todo a minúsculas)
                 df_enso.columns = [c.lower() for c in df_enso.columns]
                 
-                col_fecha = next((c for c in df_enso.columns if 'fecha' in c), None)
+                # ESTRATEGIA A: ¿Existen columnas 'año' y 'mes'? (Lo más seguro)
+                if 'año' in df_enso.columns and 'mes' in df_enso.columns:
+                    # Construimos la fecha combinando columnas numéricas
+                    df_enso[Config.DATE_COL] = pd.to_datetime(
+                        df_enso['año'].astype(str) + '-' + 
+                        df_enso['mes'].astype(str) + '-01'
+                    )
                 
-                if col_fecha:
-                    # --- LÓGICA MANUAL PARA 'ene-70' ---
-                    # Mapa de meses español a número
-                    meses_map = {
-                        'ene': '01', 'feb': '02', 'mar': '03', 'abr': '04', 'may': '05', 'jun': '06',
-                        'jul': '07', 'ago': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dic': '12'
-                    }
+                # ESTRATEGIA B: Si no hay columnas numéricas, intentamos parsear texto (Plan B)
+                else:
+                    col_fecha = next((c for c in df_enso.columns if 'fecha' in c), None)
+                    if col_fecha:
+                         # Intento básico con parser robusto importado
+                         from modules.data_processor import parse_spanish_date_robust
+                         df_enso[Config.DATE_COL] = df_enso[col_fecha].apply(parse_spanish_date_robust)
 
-                    def parsear_ene_70(valor):
-                        if not isinstance(valor, str): return pd.NaT
-                        try:
-                            # Esperamos formato 'ene-70'
-                            partes = valor.split('-') 
-                            if len(partes) == 2:
-                                mes_txt = partes[0].lower().strip()
-                                anio_txt = partes[1].strip()
-                                
-                                # Convertir mes
-                                mes_num = meses_map.get(mes_txt, '01')
-                                
-                                # Convertir año (si es 70 -> 1970, si es 20 -> 2020)
-                                anio_int = int(anio_txt)
-                                anio_full = 1900 + anio_int if anio_int >= 50 else 2000 + anio_int
-                                
-                                return pd.to_datetime(f"{anio_full}-{mes_num}-01")
-                            return pd.NaT
-                        except:
-                            return pd.NaT
-
-                    # Aplicar la conversión manual
-                    df_enso[Config.DATE_COL] = df_enso[col_fecha].apply(parsear_ene_70)
-                    
-                    # Limpieza final
-                    df_enso = df_enso.dropna(subset=[Config.DATE_COL])
-                    df_enso = df_enso.sort_values(Config.DATE_COL)
+                # Limpieza Final (Crucial para Prophet)
+                df_enso = df_enso.dropna(subset=[Config.DATE_COL])
+                df_enso = df_enso.sort_values(Config.DATE_COL)
                 
                 # Renombrar ONI para que coincida con Config
                 if 'anomalia_oni' in df_enso.columns:
                     df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
+                
+                # DEBUG: Si después de todo esto está vacío, imprime error en consola
+                if df_enso.empty:
+                    print("⚠️ ALERTA: df_enso quedó vacío después de procesar fechas.")
+                    print("Columnas detectadas:", df_enso.columns)
             
             except Exception as ex:
                 st.warning(f"Alerta cargando ENSO: {ex}")
