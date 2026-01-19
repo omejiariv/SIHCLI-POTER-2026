@@ -525,14 +525,17 @@ with tab_predios:
 
 
 # ====================================================================
-# TAB 4: GESTIÓN DE CUENCAS
+# TAB 4: GESTIÓN DE CUENCAS (COMPLETO Y CORREGIDO)
 # ====================================================================
 with tab_cuencas:
-    st.header("🌊 Gestión de Cuencas Hidrográficas")
+    st.header("🌊 Gestión de Cuencas (Desde GeoJSON)")
     
-    sub_edit_c, sub_crear_c = st.tabs(["✏️ Editar Cuenca", "➕ Registrar Cuenca"])
+    # 1. DEFINICIÓN DE SUB-PESTAÑAS (¡Esto es lo que faltaba!)
+    sub_edit_c, sub_crear_c, sub_carga_c = st.tabs(["✏️ Editar Cuenca", "➕ Registrar Cuenca", "📥 Carga GeoJSON"])
 
-    # --- 1. EDITAR CUENCA ---
+    # ----------------------------------------------------------------
+    # SUB-TAB 1: EDITAR CUENCA
+    # ----------------------------------------------------------------
     with sub_edit_c:
         engine = get_engine()
         if engine:
@@ -569,10 +572,12 @@ with tab_cuencas:
             except Exception as e:
                 st.error(f"Error: {e}")
 
-    # --- 2. CREAR CUENCA ---
+    # ----------------------------------------------------------------
+    # SUB-TAB 2: CREAR CUENCA
+    # ----------------------------------------------------------------
     with sub_crear_c:
         with st.form("form_new_cuenca"):
-            id_new = st.text_input("ID Cuenca (Ej: RIO-NEGRO)")
+            id_new = st.text_input("ID Cuenca (Ej: 2701-02)")
             nom_new = st.text_input("Nombre Cuenca")
             area_new = st.number_input("Área (km2)")
             
@@ -588,7 +593,9 @@ with tab_cuencas:
                         except Exception as e:
                             st.error(f"Error: {e}")
 
-    # --- 3. CARGA MASIVA GEOJSON (CUENCAS) ---
+    # ----------------------------------------------------------------
+    # SUB-TAB 3: CARGA MASIVA GEOJSON (CUENCAS)
+    # ----------------------------------------------------------------
     with sub_carga_c:
         st.info("Sube el archivo **SubcuencasAinfluencia.geojson**. Se usarán los campos: COD, SUBC_LBL, Shape_Area, SZH.")
         
@@ -599,7 +606,7 @@ with tab_cuencas:
                 data = json.load(up_cuenca)
                 rows = []
                 
-                with st.spinner("Procesando geometrías de cuencas..."):
+                with st.spinner(f"Procesando {len(data['features'])} cuencas..."):
                     for feature in data['features']:
                         props = feature.get("properties", {})
                         
@@ -646,7 +653,6 @@ with tab_cuencas:
                 
             except Exception as e:
                 st.error(f"Error procesando Cuencas: {e}")
-
 
 # ==============================================================================
 # TAB 4: CONSOLA SQL (TU CÓDIGO ORIGINAL CONSERVADO)
