@@ -694,33 +694,37 @@ def create_enso_chart(enso_data):
 # -----------------------------------------------------------------------------
 
 
-def parse_spanish_date(x):
-    if isinstance(x, str):
-        x = x.lower().strip()
-        trans = {
-            "ene": "Jan",
-            "feb": "Feb",
-            "mar": "Mar",
-            "abr": "Apr",
-            "may": "May",
-            "jun": "Jun",
-            "jul": "Jul",
-            "ago": "Aug",
-            "sep": "Sep",
-            "oct": "Oct",
-            "nov": "Nov",
-            "dic": "Dec",
-        }
-        for es, en in trans.items():
-            if es in x:
-                x = x.replace(es, en)
-                break
+def parse_spanish_date_visualizer(x):
+    """
+    Función de rescate para fechas en español dentro del visualizador.
+    Convierte 'ene-70', 'feb-90' a datetime real.
+    """
+    if pd.isna(x) or str(x).strip() == "": return pd.NaT
+    if isinstance(x, pd.Timestamp): return x
+    
+    x_str = str(x).lower().strip()
+    
+    # Mapa de traducción
+    trans = {
+        "ene": "Jan", "feb": "Feb", "mar": "Mar", "abr": "Apr",
+        "may": "May", "jun": "Jun", "jul": "Jul", "ago": "Aug",
+        "sep": "Sep", "oct": "Oct", "nov": "Nov", "dic": "Dec"
+    }
+    
+    for es, en in trans.items():
+        if es in x_str:
+            x_str = x_str.replace(es, en)
+            break
+            
+    try:
+        # Intento 1: Formato corto 'Jan-70'
+        return pd.to_datetime(x_str, format="%b-%y")
+    except:
         try:
-            return pd.to_datetime(x, format="%b-%y")
+            # Intento 2: Estándar
+            return pd.to_datetime(x_str)
         except:
-            return pd.to_datetime(x, errors="coerce")
-    return pd.to_datetime(x, errors="coerce")
-
+            return pd.NaT
 
 # 2. FUNCIONES PRINCIPALES DE VISUALIZACIÓN
 # -----------------------------------------------------------------------------
@@ -3340,21 +3344,25 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
 # -----------------------------------------------------------------------------
-def display_climate_forecast_tab(**kwargs):
-    st.subheader("🔮 Pronóstico Climático & Fenómenos Globales")
+def display_climate_forecast_tab(df_enso, **kwargs):
+    st.title("🔮 Pronóstico Climático & Fenómenos Globales")
+    
+    # --- ARREGLO DE FECHAS ENSO ---
+    if df_enso is not None and not df_enso.empty:
+        # Aseguramos que trabajamos con una copia para no dañar el original
+        df_enso = df_enso.copy()
+        
+        # 1. Detectar columna de fecha
+        col_fecha_enso = next((c for c in df_enso.columns if 'fecha' in c.lower()), None)
+        
+        if col_fecha_enso:
+            # 2. Aplicar traducción robusta
+            df_enso[Config.DATE_COL] = df_enso[col_fecha_enso].apply(parse_spanish_date_visualizer)
+            
+            # 3. Eliminar fechas inválidas
+            df_enso = df_enso.dropna(subset=[Config.DATE_COL])
+            df_enso = df_enso.sort_values(Config.DATE_COL)
 
-    # Recuperamos los datos históricos pasados desde app.py
-    df_enso = kwargs.get("df_enso")
-
-    # Definimos las 4 pestañas solicitadas
-    tab_hist, tab_iri_plumas, tab_iri_probs, tab_gen = st.tabs(
-        [
-            "📜 Historia Índices (ONI/SOI/IOD)",
-            "🌎 Pronóstico Oficial (IRI)",
-            "📊 Probabilidad Multimodelo",
-            "⚙️ Generador Prophet",
-        ]
-    )
 
     # ==========================================
     # CARGA DE DATOS IRI (Comunes para tabs 2 y 3)
@@ -3878,17 +3886,26 @@ def display_trends_and_forecast_tab(**kwargs):
             if c in [Config.ENSO_ONI_COL, Config.SOI_COL, Config.IOD_COL]
         ]
         avail_regs = potential_regs
-        if avail_regs:
-            temp_enso = df_enso.copy()
-            if temp_enso[Config.DATE_COL].dtype == "object":
-                temp_enso[Config.DATE_COL] = pd.to_datetime(temp_enso[Config.DATE_COL])
-            regressors_df = (
-                temp_enso.set_index(Config.DATE_COL)[avail_regs]
-                .resample("MS")
-                .mean()
-                .interpolate(method="time")
-            )
+    
+    if avail_regs:
+        temp_enso = df_enso.copy()
+        
+        # --- ARREGLO DE FECHAS CRÍTICO ---
+        # Si la fecha viene como texto (ej: 'ene-70'), la traducimos antes de convertir
+        if temp_enso[Config.DATE_COL].dtype == 'object':
+             temp_enso[Config.DATE_COL] = temp_enso[Config.DATE_COL].apply(parse_spanish_date_visualizer)
+        
+        # Convertir a datetime final (ahora sí funcionará porque ya está en inglés o formato correcto)
+        temp_enso[Config.DATE_COL] = pd.to_datetime(temp_enso[Config.DATE_COL], errors='coerce')
+        temp_enso = temp_enso.dropna(subset=[Config.DATE_COL])
+        # ---------------------------------
 
+        regressors_df = (
+            temp_enso.set_index(Config.DATE_COL)[avail_regs]
+            .resample("MS")
+            .mean()
+            .interpolate()
+        )
     # 2. PESTAÑAS (Mapa de Riesgo MOVIDO a Clima Futuro)
     tabs = st.tabs(
         [
