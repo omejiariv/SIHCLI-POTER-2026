@@ -351,7 +351,92 @@ with tab_indices:
 
 
 # ====================================================================
-# --- 3. CARGA MASIVA GEOJSON (PREDIOS) ---
+# ====================================================================
+# TAB 3: GESTIÓN DE PREDIOS (COMPLETO Y CORREGIDO)
+# ====================================================================
+with tab_predios:
+    st.header("🏡 Gestión de Predios (Desde GeoJSON)")
+    
+    # 1. DEFINICIÓN DE SUB-PESTAÑAS (¡Esto es lo que faltaba o estaba mal ubicado!)
+    sub_edit_p, sub_crear_p, sub_carga_p = st.tabs(["✏️ Editar Predio", "➕ Crear Predio", "📥 Carga GeoJSON"])
+
+    # ----------------------------------------------------------------
+    # SUB-TAB 1: EDITAR PREDIO
+    # ----------------------------------------------------------------
+    with sub_edit_p:
+        engine = get_engine()
+        if engine:
+            try:
+                with engine.connect() as conn:
+                    # Buscador ligero
+                    df_lista = pd.read_sql(text("SELECT id_predio, nombre_predio FROM predios ORDER BY nombre_predio"), conn)
+                    if not df_lista.empty:
+                        df_lista['display'] = df_lista['nombre_predio'] + " (" + df_lista['id_predio'].astype(str) + ")"
+                        sel_predio = st.selectbox("🔍 Buscar Predio:", df_lista['display'].tolist(), index=None, placeholder="Escribe el nombre de la finca...")
+                        
+                        if sel_predio:
+                            id_p = sel_predio.split('(')[-1].replace(')', '')
+                            df_full = pd.read_sql(text("SELECT * FROM predios WHERE id_predio = :id"), conn, params={"id": id_p})
+                            
+                            if not df_full.empty:
+                                data = df_full.iloc[0]
+                                st.divider()
+                                with st.form("form_edit_predio"):
+                                    c1, c2 = st.columns(2)
+                                    with c1:
+                                        n_nom = st.text_input("Nombre Predio", value=data['nombre_predio'])
+                                        n_prop = st.text_input("Propietario", value=data['propietario'] if data['propietario'] else "")
+                                        n_ver = st.text_input("Vereda", value=data['vereda'] if data['vereda'] else "")
+                                    with c2:
+                                        n_mun = st.text_input("Municipio", value=data['municipio'] if data['municipio'] else "")
+                                        n_area = st.number_input("Área (Hectáreas)", value=float(data['area_ha']) if data['area_ha'] else 0.0)
+                                        st.text_input("ID (No editable)", value=data['id_predio'], disabled=True)
+                                    
+                                    if st.form_submit_button("💾 Actualizar Predio"):
+                                        conn.execute(text("""
+                                            UPDATE predios SET nombre_predio=:n, propietario=:p, vereda=:v, 
+                                            municipio=:m, area_ha=:a WHERE id_predio=:id
+                                        """), {"n": n_nom, "p": n_prop, "v": n_ver, "m": n_mun, "a": n_area, "id": id_p})
+                                        conn.commit()
+                                        st.success("✅ Predio actualizado.")
+                                        st.rerun()
+                    else:
+                        st.info("No hay predios registrados aún.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    # ----------------------------------------------------------------
+    # SUB-TAB 2: CREAR PREDIO
+    # ----------------------------------------------------------------
+    with sub_crear_p:
+        with st.form("form_create_predio"):
+            c1, c2 = st.columns(2)
+            with c1:
+                new_id = st.text_input("ID Predio (Único)", placeholder="Ej: PRE-001")
+                new_nom = st.text_input("Nombre Finca")
+                new_prop = st.text_input("Nombre Propietario")
+            with c2:
+                new_mun = st.text_input("Municipio")
+                new_ver = st.text_input("Vereda")
+                new_area = st.number_input("Área (ha)", min_value=0.0)
+            
+            if st.form_submit_button("🚀 Registrar Predio"):
+                if new_id and new_nom:
+                    engine = get_engine()
+                    with engine.connect() as conn:
+                        try:
+                            conn.execute(text("""
+                                INSERT INTO predios (id_predio, nombre_predio, propietario, municipio, vereda, area_ha)
+                                VALUES (:id, :nom, :prop, :mun, :ver, :area)
+                            """), {"id": new_id, "nom": new_nom, "prop": new_prop, "mun": new_mun, "ver": new_ver, "area": new_area})
+                            conn.commit()
+                            st.success("Predio creado exitosamente.")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+    # ----------------------------------------------------------------
+    # SUB-TAB 3: CARGA MASIVA GEOJSON (PREDIOS)
+    # ----------------------------------------------------------------
     with sub_carga_p:
         st.info("Sube el archivo **PrediosEjecutados.geojson**. Se usarán los campos: PK_PREDIOS, NOMBRE_PRE, NOMB_MPIO, AREA_HA.")
         
@@ -375,13 +460,11 @@ with tab_indices:
                                 lat, lon = 0.0, 0.0
                                 try:
                                     if geom:
-                                        # Si es punto
                                         if geom.get('type') == 'Point':
                                             lon, lat = geom['coordinates']
-                                        # Si es polígono, sacamos promedio de coordenadas (centroide aproximado)
                                         elif geom.get('type') in ['Polygon', 'MultiPolygon']:
                                             coords_raw = geom['coordinates']
-                                            # Aplanar lista de coordenadas recursivamente para sacar promedio
+                                            # Función auxiliar para aplanar coordenadas
                                             def flatten_coords(c):
                                                 if len(c) > 0 and isinstance(c[0], (float, int)): return [c]
                                                 out = []
@@ -399,7 +482,7 @@ with tab_indices:
                                 rows.append({
                                     "id_predio": str(props.get('PK_PREDIOS', 'SIN_ID')),
                                     "nombre_predio": props.get('NOMBRE_PRE', 'Sin Nombre'),
-                                    "propietario": props.get('PROPIETARIO', 'Desconocido'), # No venía en el JSON, placeholder
+                                    "propietario": props.get('PROPIETARIO', 'Desconocido'),
                                     "municipio": props.get('NOMB_MPIO', ''),
                                     "vereda": props.get('NOMBRE_VER', ''),
                                     "area_ha": float(props.get('AREA_HA', 0.0)),
@@ -409,13 +492,12 @@ with tab_indices:
 
                         # 2. Subir a Base de Datos
                         df_upload = pd.DataFrame(rows).drop_duplicates(subset=['id_predio'])
-                        st.write(f"✅ Se detectaron {len(df_upload)} predios únicos. Ejemplo:", df_upload.head(3))
+                        st.write(f"✅ Se detectaron {len(df_upload)} predios únicos.", df_upload.head(3))
                         
                         engine = get_engine()
                         with engine.connect() as conn:
                             count = 0
                             for _, row in df_upload.iterrows():
-                                # Upsert Query
                                 upsert_q = text("""
                                     INSERT INTO predios (id_predio, nombre_predio, propietario, municipio, vereda, area_ha, latitud, longitud)
                                     VALUES (:id, :nom, :prop, :mun, :ver, :area, :lat, :lon)
@@ -443,7 +525,70 @@ with tab_indices:
 
 
 # ====================================================================
-# --- 3. CARGA MASIVA GEOJSON (CUENCAS) ---
+# TAB 4: GESTIÓN DE CUENCAS
+# ====================================================================
+with tab_cuencas:
+    st.header("🌊 Gestión de Cuencas Hidrográficas")
+    
+    sub_edit_c, sub_crear_c = st.tabs(["✏️ Editar Cuenca", "➕ Registrar Cuenca"])
+
+    # --- 1. EDITAR CUENCA ---
+    with sub_edit_c:
+        engine = get_engine()
+        if engine:
+            try:
+                with engine.connect() as conn:
+                    df_lista = pd.read_sql(text("SELECT id_cuenca, nombre_cuenca FROM cuencas ORDER BY nombre_cuenca"), conn)
+                    if not df_lista.empty:
+                        df_lista['display'] = df_lista['nombre_cuenca']
+                        sel_cuenca = st.selectbox("🔍 Buscar Cuenca:", df_lista['display'].tolist(), index=None)
+                        
+                        if sel_cuenca:
+                            # Obtener ID basado en nombre (simple)
+                            id_c = df_lista[df_lista['display'] == sel_cuenca]['id_cuenca'].values[0]
+                            data = pd.read_sql(text("SELECT * FROM cuencas WHERE id_cuenca = :id"), conn, params={"id": id_c}).iloc[0]
+                            
+                            st.divider()
+                            with st.form("form_edit_cuenca"):
+                                c1, c2 = st.columns(2)
+                                with c1:
+                                    n_nom = st.text_input("Nombre Cuenca", value=data['nombre_cuenca'])
+                                    n_rio = st.text_input("Río Principal", value=data['rio_principal'] if data['rio_principal'] else "")
+                                with c2:
+                                    n_area = st.number_input("Área (km2)", value=float(data['area_km2']) if data['area_km2'] else 0.0)
+                                    n_mun = st.text_area("Municipios de Influencia", value=data['municipios_influencia'] if data['municipios_influencia'] else "")
+                                
+                                if st.form_submit_button("💾 Guardar Cambios"):
+                                    conn.execute(text("""
+                                        UPDATE cuencas SET nombre_cuenca=:n, rio_principal=:r, area_km2=:a, municipios_influencia=:m
+                                        WHERE id_cuenca=:id
+                                    """), {"n": n_nom, "r": n_rio, "a": n_area, "m": n_mun, "id": id_c})
+                                    conn.commit()
+                                    st.success("✅ Cuenca actualizada.")
+                                    st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    # --- 2. CREAR CUENCA ---
+    with sub_crear_c:
+        with st.form("form_new_cuenca"):
+            id_new = st.text_input("ID Cuenca (Ej: RIO-NEGRO)")
+            nom_new = st.text_input("Nombre Cuenca")
+            area_new = st.number_input("Área (km2)")
+            
+            if st.form_submit_button("🚀 Crear Cuenca"):
+                if id_new and nom_new:
+                    engine = get_engine()
+                    with engine.connect() as conn:
+                        try:
+                            conn.execute(text("INSERT INTO cuencas (id_cuenca, nombre_cuenca, area_km2) VALUES (:id, :n, :a)"),
+                                         {"id": id_new, "n": nom_new, "a": area_new})
+                            conn.commit()
+                            st.success("Cuenca registrada.")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+    # --- 3. CARGA MASIVA GEOJSON (CUENCAS) ---
     with sub_carga_c:
         st.info("Sube el archivo **SubcuencasAinfluencia.geojson**. Se usarán los campos: COD, SUBC_LBL, Shape_Area, SZH.")
         
