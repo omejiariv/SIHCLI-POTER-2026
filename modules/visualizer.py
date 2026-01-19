@@ -3360,18 +3360,21 @@ def display_climate_forecast_tab(df_enso, **kwargs):
             df_enso = df_enso.dropna(subset=[Config.DATE_COL])
             df_enso = df_enso.sort_values(Config.DATE_COL)
 
-        # B. ARREGLO DE NÚMEROS (¡NUEVO Y CRÍTICO!) 🔢
-        # Buscamos columnas que parezcan índices climáticos
-        cols_indices = [c for c in df_enso.columns if c in ['oni', 'anomalia_oni', 'soi', 'iod', 'mei']]
+        # B. ARREGLO DE NÚMEROS (Versión Definitiva) 🔢
+        # Convertimos todo a minúsculas para comparar
+        cols_indices = [c for c in df_enso.columns if c.lower() in ['oni', 'anomalia_oni', 'soi', 'iod', 'mei']]
         
         for col in cols_indices:
-            # 1. Convertir a string
-            # 2. Reemplazar coma por punto (0,5 -> 0.5)
-            # 3. Forzar conversión a número
-            df_enso[col] = pd.to_numeric(
-                df_enso[col].astype(str).str.replace(',', '.'), 
-                errors='coerce'
-            )
+            # Forzamos conversión: Texto -> Reemplazar Coma -> Número
+            # Si ya es número, el .astype(str) lo protege temporalmente para el replace
+            try:
+                df_enso[col] = pd.to_numeric(
+                    df_enso[col].astype(str).str.replace(',', '.', regex=False), 
+                    errors='coerce'
+                )
+            except Exception as e:
+                print(f"Error convirtiendo columna {col}: {e}")
+
 
     # ==========================================
     # CREACIÓN DE PESTAÑAS
