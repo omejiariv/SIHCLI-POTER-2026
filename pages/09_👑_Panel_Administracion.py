@@ -1,11 +1,14 @@
 # pages/09_👑_Panel_Administracion.py
 
+
 import streamlit as st
 import pandas as pd
-import geopandas as gpd
-from sqlalchemy import create_engine, text
-import time
-from modules import admin_utils  # <--- IMPORTAMOS TU NUEVO MOTOR
+import json  # Para leer archivos GeoJSON/JSON
+import io    # Para manejo de buffers de archivos
+import time  # Para pausas o efectos visuales
+from sqlalchemy import text  # Para escribir consultas SQL
+from modules.database import get_engine  # Tu conexión centralizada a la BD
+
 
 # --- 1. CONFIGURACIÓN Y SEGURIDAD (MEJORADA) ---
 st.set_page_config(page_title="Admin Panel", page_icon="👑", layout="wide")
