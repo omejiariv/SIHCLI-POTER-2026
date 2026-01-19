@@ -666,8 +666,108 @@ with tab_cuencas:
             except Exception as e:
                 st.error(f"Error procesando Cuencas: {e}")
 
+
+# ====================================================================
+# TAB 5: GESTIÓN DE MUNICIPIOS (DESDE GEOJSON)
+# ====================================================================
+with tab_mun:
+    st.header("🏛️ Gestión de Municipios")
+    
+    # 1. Sub-pestañas
+    sub_edit_m, sub_carga_m = st.tabs(["✏️ Editar/Ver Municipios", "📥 Carga GeoJSON"])
+
+    # ----------------------------------------------------------------
+    # SUB-TAB 1: LISTADO Y EDICIÓN
+    # ----------------------------------------------------------------
+    with sub_edit_m:
+        engine = get_engine()
+        if engine:
+            try:
+                with engine.connect() as conn:
+                    # Traer municipios ordenados
+                    df_mun = pd.read_sql(text("SELECT * FROM municipios ORDER BY nombre_municipio"), conn)
+                    
+                    if not df_mun.empty:
+                        st.dataframe(df_mun, use_container_width=True)
+                        st.info(f"📍 Total Municipios Registrados: {len(df_mun)}")
+                    else:
+                        st.warning("⚠️ No hay municipios cargados aún.")
+            except Exception as e:
+                st.error(f"Error conectando: {e}")
+
+    # ----------------------------------------------------------------
+    # SUB-TAB 2: CARGA MASIVA GEOJSON
+    # ----------------------------------------------------------------
+    with sub_carga_m:
+        st.info("Sube el archivo **MunicipiosAntioquia.geojson**. Se buscarán campos comunes como: MPIO_CNMBR, NOMBRE_MPIO, CODIGO, etc.")
+        
+        up_mun = st.file_uploader("Arrastra 'MunicipiosAntioquia.geojson'", type=["geojson", "json"], key="up_mun_json")
+        
+        if up_mun and st.button("🚀 Procesar Municipios"):
+            try:
+                data = json.load(up_mun)
+                rows = []
+                
+                with st.spinner("Leyendo límites municipales..."):
+                    for feature in data['features']:
+                        props = feature.get("properties", {})
+                        
+                        # --- MAPEO INTELIGENTE DE CAMPOS ---
+                        # Buscamos nombres comunes en shapefiles de Colombia (DANE/IGAC)
+                        def get_val(keys, default=None):
+                            for k in keys:
+                                found = next((real for real in props.keys() if real.lower() == k.lower()), None)
+                                if found: return props[found]
+                            return default
+
+                        # 1. Nombre Municipio
+                        nom = get_val(['MPIO_CNMBR', 'NOMBRE_MPIO', 'NOM_MUNICIPIO', 'MUNICIPIO', 'Nombre'], 'Desconocido')
+                        
+                        # 2. Código DANE (ID)
+                        cod = get_val(['MPIO_CCNCT', 'COD_DANE', 'CODIGO', 'ID', 'MPIO_CDPMP'], '00000')
+                        
+                        # 3. Departamento (Si existe)
+                        dep = get_val(['DPTO_CNMBR', 'DEPARTAMENTO', 'NOM_DEPTO'], 'Antioquia')
+
+                        rows.append({
+                            "id_municipio": str(cod),
+                            "nombre_municipio": nom,
+                            "departamento": dep,
+                            "poblacion": 0 # Dato placeholder, no suele venir en el mapa
+                        })
+                
+                # Crear DF y eliminar duplicados
+                df_upload = pd.DataFrame(rows).drop_duplicates(subset=['id_municipio'])
+                st.write(f"✅ Detectados {len(df_upload)} municipios. Ejemplo:", df_upload.head(3))
+                
+                engine = get_engine()
+                with engine.connect() as conn:
+                    count = 0
+                    for _, row in df_upload.iterrows():
+                        # Usamos UPSERT simple
+                        q = text("""
+                            INSERT INTO municipios (id_municipio, nombre_municipio, departamento, poblacion)
+                            VALUES (:id, :nom, :dep, :pob)
+                            ON CONFLICT (id_municipio) DO UPDATE SET
+                            nombre_municipio = EXCLUDED.nombre_municipio,
+                            departamento = EXCLUDED.departamento;
+                        """)
+                        conn.execute(q, {
+                            "id": row['id_municipio'], "nom": row['nombre_municipio'], 
+                            "dep": row['departamento'], "pob": row['poblacion']
+                        })
+                        count += 1
+                    conn.commit()
+                
+                st.success(f"✅ ¡Éxito! Base de datos actualizada con {count} municipios.")
+                st.balloons()
+
+            except Exception as e:
+                st.error(f"Error procesando Municipios: {e}")
+
+
 # ==============================================================================
-# TAB 4: CONSOLA SQL (TU CÓDIGO ORIGINAL CONSERVADO)
+# TAB 6: CONSOLA SQL (TU CÓDIGO ORIGINAL CONSERVADO)
 # ==============================================================================
 with tab_sql:
     st.warning("⚠️ Consola SQL - Uso Avanzado")
