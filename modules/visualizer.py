@@ -3343,37 +3343,47 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
-# -----------------------------------------------------------------------------
+# modules/visualizer.py
+
 def display_climate_forecast_tab(df_enso, **kwargs):
     st.title("🔮 Pronóstico Climático & Fenómenos Globales")
     
-    # --- ARREGLO DE FECHAS ENSO ---
+    # --- 1. LIMPIEZA DE DATOS (FECHAS Y NÚMEROS) ---
     if df_enso is not None and not df_enso.empty:
-        # Aseguramos que trabajamos con una copia para no dañar el original
+        # Copia de seguridad
         df_enso = df_enso.copy()
         
-        # 1. Detectar columna de fecha
+        # A. ARREGLO DE FECHAS (Ya lo teníamos)
         col_fecha_enso = next((c for c in df_enso.columns if 'fecha' in c.lower()), None)
-        
         if col_fecha_enso:
-            # 2. Aplicar traducción robusta
             df_enso[Config.DATE_COL] = df_enso[col_fecha_enso].apply(parse_spanish_date_visualizer)
-            
-            # 3. Eliminar fechas inválidas
             df_enso = df_enso.dropna(subset=[Config.DATE_COL])
             df_enso = df_enso.sort_values(Config.DATE_COL)
+
+        # B. ARREGLO DE NÚMEROS (¡NUEVO Y CRÍTICO!) 🔢
+        # Buscamos columnas que parezcan índices climáticos
+        cols_indices = [c for c in df_enso.columns if c in ['oni', 'anomalia_oni', 'soi', 'iod', 'mei']]
+        
+        for col in cols_indices:
+            # 1. Convertir a string
+            # 2. Reemplazar coma por punto (0,5 -> 0.5)
+            # 3. Forzar conversión a número
+            df_enso[col] = pd.to_numeric(
+                df_enso[col].astype(str).str.replace(',', '.'), 
+                errors='coerce'
+            )
 
     # ==========================================
     # CREACIÓN DE PESTAÑAS
     # ==========================================
-    # Cambio: 'tab_prophet' ahora es 'tab_gen'
     tab_hist, tab_iri_plumas, tab_iri_probs, tab_gen = st.tabs([
         "📜 Historia Índices (ONI/SOI/IOD)",
         "🌍 Pronóstico Oficial (IRI)",
         "📊 Probabilidad Multimodelo",
         "⚙️ Generador Prophet"
     ])
-
+    
+    # ... (El código sigue igual hacia abajo con la carga del IRI) ...
     # ==========================================
     # CARGA DE DATOS IRI (Comunes para tabs 2 y 3)
     # ==========================================
