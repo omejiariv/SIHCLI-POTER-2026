@@ -76,7 +76,7 @@ with tab_est:
     ])
 
     # ----------------------------------------------------------------
-    # SUB-PESTAÑA 1: EDITAR ESTACIÓN
+    # SUB-PESTAÑA 1: EDITAR ESTACIÓN (CORREGIDO)
     # ----------------------------------------------------------------
     with sub_editar:
         st.info("Busca una estación para corregir sus coordenadas, nombre o metadatos.")
@@ -105,27 +105,52 @@ with tab_est:
                         query_full = text("SELECT * FROM estaciones WHERE id_estacion = :id")
                         df_full = pd.read_sql(query_full, conn, params={"id": id_sel})
                         
+                        # --- CORRECCIÓN CLAVE: NORMALIZAR COLUMNAS ---
+                        # Convertimos todo a minúsculas para evitar error por 'Latitud' vs 'latitud'
+                        df_full.columns = [c.lower() for c in df_full.columns]
+                        
                         if not df_full.empty:
                             est_data = df_full.iloc[0]
                             
                             st.divider()
-                            st.markdown(f"### 📝 Editando: **{est_data['nom_est']}**")
+                            st.markdown(f"### 📝 Editando: **{est_data.get('nom_est', 'Sin Nombre')}**")
                             
                             # Formulario de Edición
                             with st.form("form_editar_estacion"):
                                 col1, col2 = st.columns(2)
                                 with col1:
-                                    new_nom = st.text_input("Nombre Estación", value=est_data['nom_est'])
-                                    new_cat = st.selectbox("Categoría", ["Pluviométrica", "Limnimétrica", "Climática", "Otras"], index=0) # Puedes ajustar las opciones
-                                    new_tec = st.selectbox("Tecnología", ["Convencional", "Automática", "Radar"], index=0)
-                                    new_mun = st.text_input("Municipio", value=est_data['municipio'] if est_data['municipio'] else "")
+                                    # Usamos .get() para mayor seguridad si falta algún campo
+                                    new_nom = st.text_input("Nombre Estación", value=est_data.get('nom_est', ''))
+                                    
+                                    # Selectboxes con validación de valor actual
+                                    cat_actual = est_data.get('categoria', 'Pluviométrica')
+                                    opciones_cat = ["Pluviométrica", "Limnimétrica", "Climática", "Otras"]
+                                    index_cat = opciones_cat.index(cat_actual) if cat_actual in opciones_cat else 0
+                                    new_cat = st.selectbox("Categoría", opciones_cat, index=index_cat)
+                                    
+                                    tec_actual = est_data.get('tecnologia', 'Convencional')
+                                    opciones_tec = ["Convencional", "Automática", "Radar"]
+                                    index_tec = opciones_tec.index(tec_actual) if tec_actual in opciones_tec else 0
+                                    new_tec = st.selectbox("Tecnología", opciones_tec, index=index_tec)
+                                    
+                                    new_mun = st.text_input("Municipio", value=est_data.get('municipio', '') or "")
                                 
                                 with col2:
-                                    new_lat = st.number_input("Latitud (Decimal)", value=float(est_data['latitud']) if est_data['latitud'] else 0.0, format="%.5f")
-                                    new_lon = st.number_input("Longitud (Decimal)", value=float(est_data['longitud']) if est_data['longitud'] else 0.0, format="%.5f")
-                                    new_elev = st.number_input("Elevación (msnm)", value=float(est_data['elevacion']) if est_data['elevacion'] else 0.0)
-                                    new_cod = st.text_input("Código (ID)", value=est_data['id_estacion'], disabled=True, help="El ID no se puede cambiar.")
+                                    # Conversión segura a float (maneja None/Null de base de datos)
+                                    def safe_float(val):
+                                        try:
+                                            return float(val) if val is not None else 0.0
+                                        except:
+                                            return 0.0
 
+                                    new_lat = st.number_input("Latitud (Decimal)", value=safe_float(est_data.get('latitud')), format="%.5f")
+                                    new_lon = st.number_input("Longitud (Decimal)", value=safe_float(est_data.get('longitud')), format="%.5f")
+                                    new_elev = st.number_input("Elevación (msnm)", value=safe_float(est_data.get('elevacion')))
+                                    
+                                    # El ID lo mostramos pero bloqueado
+                                    new_cod = st.text_input("Código (ID)", value=est_data.get('id_estacion', ''), disabled=True, help="El ID no se puede cambiar.")
+
+                                # El botón está DENTRO del form (Indentación correcta)
                                 submitted = st.form_submit_button("💾 Guardar Cambios")
                                 
                                 if submitted:
@@ -144,7 +169,7 @@ with tab_est:
                                         })
                                         conn.commit()
                                         st.success(f"✅ Estación '{new_nom}' actualizada correctamente.")
-                                        st.rerun() # Recargar para ver cambios
+                                        st.rerun() 
                                     except Exception as e:
                                         st.error(f"Error al actualizar: {e}")
             except Exception as e:
