@@ -51,7 +51,7 @@ st.title("👑 Panel de Administración y Edición de Datos")
 st.markdown("---")
 
 # Definición de Pestañas
-tab_estaciones, tab_indices, tab_predios, tab_cuencas, tab_sql = st.tabs([
+tab_est, tab_indices, tab_predios, tab_cuencas, tab_sql = st.tabs([
     "🌧️ Estaciones & Lluvias",
     "📉 Índices Globales", 
     "🏡 Predios (Fincas)",
