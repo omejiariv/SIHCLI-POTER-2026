@@ -668,16 +668,17 @@ with tab_cuencas:
 
 
 # ====================================================================
+# ====================================================================
 # TAB 5: GESTIÓN DE MUNICIPIOS (DESDE GEOJSON)
 # ====================================================================
 with tab_mun:
     st.header("🏛️ Gestión de Municipios")
     
     # 1. Sub-pestañas
-    sub_edit_m, sub_carga_m = st.tabs(["✏️ Editar/Ver Municipios", "📥 Carga GeoJSON"])
+    sub_edit_m, sub_carga_m = st.tabs(["✏️ Ver Municipios", "📥 Carga GeoJSON"])
 
     # ----------------------------------------------------------------
-    # SUB-TAB 1: LISTADO Y EDICIÓN
+    # SUB-TAB 1: LISTADO (Solo lectura por seguridad)
     # ----------------------------------------------------------------
     with sub_edit_m:
         engine = get_engine()
@@ -699,7 +700,7 @@ with tab_mun:
     # SUB-TAB 2: CARGA MASIVA GEOJSON
     # ----------------------------------------------------------------
     with sub_carga_m:
-        st.info("Sube el archivo **MunicipiosAntioquia.geojson**. Se buscarán campos comunes como: MPIO_CNMBR, NOMBRE_MPIO, CODIGO, etc.")
+        st.info("Sube el archivo **MunicipiosAntioquia.geojson**. El sistema buscará automáticamente el nombre y código DANE.")
         
         up_mun = st.file_uploader("Arrastra 'MunicipiosAntioquia.geojson'", type=["geojson", "json"], key="up_mun_json")
         
@@ -708,35 +709,36 @@ with tab_mun:
                 data = json.load(up_mun)
                 rows = []
                 
-                with st.spinner("Leyendo límites municipales..."):
+                with st.spinner(f"Leyendo {len(data['features'])} territorios..."):
                     for feature in data['features']:
                         props = feature.get("properties", {})
                         
                         # --- MAPEO INTELIGENTE DE CAMPOS ---
-                        # Buscamos nombres comunes en shapefiles de Colombia (DANE/IGAC)
+                        # Buscamos nombres comunes en cartografía colombiana
                         def get_val(keys, default=None):
                             for k in keys:
+                                # Búsqueda insensible a mayúsculas/minúsculas
                                 found = next((real for real in props.keys() if real.lower() == k.lower()), None)
                                 if found: return props[found]
                             return default
 
-                        # 1. Nombre Municipio
+                        # 1. Nombre Municipio (Ej: MPIO_CNMBR es el estándar del IGAC)
                         nom = get_val(['MPIO_CNMBR', 'NOMBRE_MPIO', 'NOM_MUNICIPIO', 'MUNICIPIO', 'Nombre'], 'Desconocido')
                         
-                        # 2. Código DANE (ID)
+                        # 2. Código DANE (ID único)
                         cod = get_val(['MPIO_CCNCT', 'COD_DANE', 'CODIGO', 'ID', 'MPIO_CDPMP'], '00000')
                         
-                        # 3. Departamento (Si existe)
+                        # 3. Departamento
                         dep = get_val(['DPTO_CNMBR', 'DEPARTAMENTO', 'NOM_DEPTO'], 'Antioquia')
 
                         rows.append({
                             "id_municipio": str(cod),
                             "nombre_municipio": nom,
                             "departamento": dep,
-                            "poblacion": 0 # Dato placeholder, no suele venir en el mapa
+                            "poblacion": 0 # Placeholder
                         })
                 
-                # Crear DF y eliminar duplicados
+                # Crear DataFrame
                 df_upload = pd.DataFrame(rows).drop_duplicates(subset=['id_municipio'])
                 st.write(f"✅ Detectados {len(df_upload)} municipios. Ejemplo:", df_upload.head(3))
                 
@@ -744,7 +746,7 @@ with tab_mun:
                 with engine.connect() as conn:
                     count = 0
                     for _, row in df_upload.iterrows():
-                        # Usamos UPSERT simple
+                        # Upsert para guardar o actualizar
                         q = text("""
                             INSERT INTO municipios (id_municipio, nombre_municipio, departamento, poblacion)
                             VALUES (:id, :nom, :dep, :pob)
@@ -759,12 +761,11 @@ with tab_mun:
                         count += 1
                     conn.commit()
                 
-                st.success(f"✅ ¡Éxito! Base de datos actualizada con {count} municipios.")
+                st.success(f"✅ ¡Éxito! Se cargaron {count} municipios a la base de datos.")
                 st.balloons()
 
             except Exception as e:
                 st.error(f"Error procesando Municipios: {e}")
-
 
 # ==============================================================================
 # TAB 6: CONSOLA SQL (TU CÓDIGO ORIGINAL CONSERVADO)
