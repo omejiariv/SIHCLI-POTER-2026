@@ -3343,11 +3343,16 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
-# modules/visualizer.py
 
 def display_climate_forecast_tab(df_enso, **kwargs):
+    # --- AGREGAR ESTAS IMPORTACIONES AL INICIO DE LA FUNCIÓN ---
+    import plotly.graph_objects as go  # <--- ESTA ES LA QUE FALTA
+    from prophet import Prophet
+    import pandas as pd
+    import streamlit as st
+
     st.title("🔮 Pronóstico Climático & Fenómenos Globales")
-    
+  
     # --- 1. LIMPIEZA DE DATOS (FECHAS Y NÚMEROS) ---
     if df_enso is not None and not df_enso.empty:
         # Copia de seguridad
