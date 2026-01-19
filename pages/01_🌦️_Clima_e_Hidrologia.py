@@ -1,11 +1,11 @@
-# app.py
+# pages/01_☁️_Clima_e_Hidrologia.py
 
 import warnings
 import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 import geopandas as gpd
 from scipy.interpolate import griddata
 import os
@@ -17,20 +17,16 @@ warnings.filterwarnings("ignore")
 # --- 2. IMPORTACIONES ---
 try:
     from modules.config import Config
-    from modules.data_processor import complete_series, load_and_process_all_data
+    # NOTA: Cambiamos 'load_and_process_all_data' por 'load_spatial_data'
+    from modules.data_processor import complete_series, load_spatial_data
     from modules.reporter import generate_pdf_report
+    from modules.db_manager import get_engine # Importamos el motor de base de datos
     
     # Importamos función de tendencias
     try:
         from modules.analysis import calculate_trends_mann_kendall
     except ImportError:
         calculate_trends_mann_kendall = None
-
-    try:
-        import modules.db_manager as db_manager
-        DB_AVAILABLE = True
-    except ImportError:
-        DB_AVAILABLE = False
 
     from modules.visualizer import (
         display_advanced_maps_tab, display_anomalies_tab, display_climate_forecast_tab,
@@ -43,6 +39,73 @@ try:
 except Exception as e:
     st.error(f"Error crítico importando módulos: {e}")
     st.stop()
+
+# --- FUNCIONES DE CARGA HÍBRIDA (SQL + PANDAS) ---
+@st.cache_data(show_spinner="Conectando con Supabase...", ttl=600)
+def load_data_from_db():
+    """
+    Función orquestadora que reemplaza a la antigua carga de CSV.
+    Trae los datos frescos desde la Base de Datos.
+    """
+    engine = get_engine()
+    if not engine:
+        return None, None, None, None, None, None
+
+    # 1. Cargar Geometrías y Metadatos (Usando la función optimizada de data_processor)
+    gdf_stations, gdf_municipios, gdf_subcuencas, gdf_predios = load_spatial_data()
+    
+    df_long = pd.DataFrame()
+    df_enso = pd.DataFrame()
+
+    try:
+        with engine.connect() as conn:
+            # 2. Cargar Lluvias (JOIN para traer nombres de estaciones)
+            # Traemos todo el histórico porque el Dashboard Global necesita filtrar por año/mes en RAM
+            # Para 300k registros, esto sigue siendo rápido en SQL (aprox 1-2 segs)
+            query_rain = text("""
+                SELECT 
+                    p.id_estacion_fk as id_estacion,
+                    e.nom_est as station_name,
+                    p.fecha_mes_año as date,
+                    p.precipitation as precipitation
+                FROM precipitacion_mensual p
+                JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+            """)
+            df_long = pd.read_sql(query_rain, conn)
+            
+            # Estandarizar nombres de columnas a lo que espera Config
+            df_long = df_long.rename(columns={
+                "station_name": Config.STATION_NAME_COL,
+                "date": Config.DATE_COL,
+                "precipitation": Config.PRECIPITATION_COL
+            })
+            
+            # Asegurar tipos
+            df_long[Config.DATE_COL] = pd.to_datetime(df_long[Config.DATE_COL])
+            df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
+            df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
+
+            # 3. Cargar ENSO
+            try:
+                query_enso = text("SELECT * FROM indices_climaticos")
+                df_enso = pd.read_sql(query_enso, conn)
+                # Normalización básica de columnas
+                df_enso.columns = [c.lower() for c in df_enso.columns]
+                col_fecha = next((c for c in df_enso.columns if 'fecha' in c), None)
+                if col_fecha:
+                    df_enso[Config.DATE_COL] = pd.to_datetime(df_enso[col_fecha])
+                
+                # Renombrar ONI si es necesario
+                if 'anomalia_oni' in df_enso.columns:
+                    df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
+            except Exception as ex:
+                print(f"Alerta ENSO: {ex}") # No detenemos la app por esto
+
+    except Exception as e:
+        st.error(f"Error trayendo datos de lluvia: {e}")
+        return None, None, None, None, None, None
+
+    return gdf_stations, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios
 
 # --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
 def get_name_from_row_v2(row, type_layer):
@@ -59,54 +122,31 @@ def get_name_from_row_v2(row, type_layer):
 def add_context_layers_ghost(fig, gdf_zona):
     """Añade capas de contexto con estilo 'Fantasma' (Sutil y Punteado)."""
     try:
-        roi = gdf_zona.buffer(0.05)
+        if gdf_zona is None or gdf_zona.empty: return
+        
+        # Buffer simple para asegurar contexto alrededor
+        roi = gdf_zona.total_bounds
+        # Cargar archivos locales si existen para contexto visual rápido
         path_muni = os.path.join("data", "MunicipiosAntioquia.geojson") 
-        path_cuenca = os.path.join("data", "SubcuencasAinfluencia.geojson")
         
         if os.path.exists(path_muni):
             gdf_m = gpd.read_file(path_muni).to_crs("EPSG:4326")
-            gdf_c = gpd.clip(gdf_m, roi)
-            gdf_c.columns = gdf_c.columns.str.lower()
+            # Clip visual rápido
+            gdf_c = gdf_m.cx[roi[0]:roi[2], roi[1]:roi[3]]
+            
             for _, r in gdf_c.iterrows():
                 name = get_name_from_row_v2(r, 'muni')
                 geom = r.geometry
-                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
-                for p in polys:
-                    x, y = p.exterior.xy
-                    fig.add_trace(go.Scatter(
-                        x=list(x), y=list(y), mode='lines', 
-                        line=dict(width=0.7, color='rgba(100, 100, 100, 0.3)', dash='dot'), 
-                        hoverinfo='text', text=f"Mpio: {name}", showlegend=False
-                    ))
-        
-        if os.path.exists(path_cuenca):
-            gdf_cu = gpd.read_file(path_cuenca).to_crs("EPSG:4326")
-            gdf_c = gpd.clip(gdf_cu, roi)
-            gdf_c.columns = gdf_c.columns.str.lower()
-            for _, r in gdf_c.iterrows():
-                name = get_name_from_row_v2(r, 'cuenca')
-                geom = r.geometry
-                polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
-                for p in polys:
-                    x, y = p.exterior.xy
-                    fig.add_trace(go.Scatter(
-                        x=list(x), y=list(y), mode='lines', 
-                        line=dict(width=0.7, color='rgba(50, 100, 200, 0.3)', dash='dash'), 
-                        hoverinfo='text', text=f"Cuenca: {name}", showlegend=False
-                    ))
+                if geom:
+                    polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
+                    for p in polys:
+                        x, y = p.exterior.xy
+                        fig.add_trace(go.Scatter(
+                            x=list(x), y=list(y), mode='lines', 
+                            line=dict(width=0.7, color='rgba(100, 100, 100, 0.3)', dash='dot'), 
+                            hoverinfo='text', text=f"Mpio: {name}", showlegend=False
+                        ))
     except Exception as e: print(f"Error capas fantasma: {e}")
-
-def interpolacion_suave(points, values, grid_x, grid_y):
-    """Interpolación Cúbica para contornos suaves (HD)."""
-    try:
-        grid_z = griddata(points, values, (grid_x, grid_y), method='cubic')
-        mask = np.isnan(grid_z)
-        if np.any(mask): # Rellenar huecos con nearest
-            grid_n = griddata(points, values, (grid_x, grid_y), method='nearest')
-            grid_z[mask] = grid_n[mask]
-        return grid_z
-    except:
-        return griddata(points, values, (grid_x, grid_y), method='linear')
 
 # --- FUNCIÓN AUXILIAR PARA DETECTAR COLUMNAS ---
 def get_fuzzy_col(df, keywords):
@@ -120,31 +160,24 @@ def get_fuzzy_col(df, keywords):
 
 def main():
     # --- A. INICIALIZACIÓN ---
-    if DB_AVAILABLE:
-        try:
-            db_manager.init_db()
-        except:
-            pass
-
+    # Ya no necesitamos init_db() aquí cada vez, se maneja en admin
     for k in ["lz_raster_result", "lz_profile", "lz_names", "lz_colors"]:
         if k not in st.session_state:
             st.session_state[k] = None
 
-    # --- B. CARGA DE DATOS ---
+    # --- B. CARGA DE DATOS (AHORA VIA SQL) ---
     data_loaded = False
-    with st.spinner("Cargando datos..."):
-        try:
-            (
-                gdf_stations, gdf_municipios, df_long,
-                df_enso, gdf_subcuencas, gdf_predios,
-            ) = load_and_process_all_data()
-            data_loaded = True
-        except Exception as e:
-            st.error(f"Error cargando datos: {e}")
-            st.stop()
+    
+    # Usamos la nueva función load_data_from_db
+    (
+        gdf_stations, gdf_municipios, df_long,
+        df_enso, gdf_subcuencas, gdf_predios,
+    ) = load_data_from_db()
 
-    if not data_loaded or gdf_stations is None or df_long is None:
-        st.error("No se pudieron cargar los datos.")
+    if gdf_stations is not None and not gdf_stations.empty:
+        data_loaded = True
+    else:
+        st.error("No se pudieron cargar los datos de la Base de Datos. Revisa la conexión.")
         st.stop()
 
     # --- C. BARRA LATERAL (FILTROS Y NAVEGACIÓN) ---
@@ -224,15 +257,22 @@ def main():
             stations_avail = gdf_stations.loc[mask_geo, Config.STATION_NAME_COL].unique()
             st.caption(f"Disponibles: {len(stations_avail)}")
 
-            if st.checkbox("✅ Seleccionar Todas", value=True):
+            # Optimización: Si son muchas, no seleccionar todas por defecto para no saturar gráficos
+            default_sel = stations_avail if len(stations_avail) < 10 else []
+            
+            if st.checkbox("✅ Seleccionar Todas (Visibles)", value=(len(stations_avail) < 10)):
                 stations_for_analysis = st.multiselect("Estaciones:", options=stations_avail, default=stations_avail)
             else:
-                stations_for_analysis = st.multiselect("Estaciones:", options=stations_avail, default=[])
+                stations_for_analysis = st.multiselect("Estaciones:", options=stations_avail, default=default_sel)
 
         # --- 4. TIEMPO Y LIMPIEZA ---
         with st.expander("⏳ Tiempo y Limpieza", expanded=False):
-            min_year = int(df_long[Config.YEAR_COL].min())
-            max_year = int(df_long[Config.YEAR_COL].max())
+            if not df_long.empty:
+                min_year = int(df_long[Config.YEAR_COL].min())
+                max_year = int(df_long[Config.YEAR_COL].max())
+            else:
+                min_year, max_year = 1980, 2024
+            
             year_range = st.slider("📅 Años:", min_year, max_year, (min_year, max_year))
 
             col_opts1, col_opts2 = st.columns(2)
@@ -251,6 +291,8 @@ def main():
                 st.rerun()
 
     # --- D. PROCESAMIENTO DE DATOS (FILTRADO) ---
+    # Filtrado en memoria (Pandas) usando el DataFrame cargado
+    # En el futuro, esto se podrá mover a SQL para ser aún más rápido
     mask_base = (
         (df_long[Config.YEAR_COL] >= year_range[0])
         & (df_long[Config.YEAR_COL] <= year_range[1])
@@ -324,7 +366,7 @@ def main():
     except Exception:
         pass
 
-    # 2. Enrutador de Módulos (Corregido y Compatible)
+    # 2. Enrutador de Módulos
     if selected_module == "🏠 Inicio":
         display_welcome_tab()
         
@@ -383,124 +425,8 @@ def main():
             if pdf:
                 st.download_button("Descargar", pdf, "reporte.pdf", "application/pdf")
 
-    # --- NUEVO MÓDULO INTEGRADO MEJORADO (Isoyetas HD + RBF) ---
+    # --- MÓDULO INTEGRADO MEJORADO (Isoyetas HD + RBF) ---
     elif selected_module == "✨ Mapas Isoyetas HD":
         st.header("🗺️ Mapas de Isoyetas de Alta Definición")
         
-        # 1. Conexión con Filtros del Sidebar
-        # Usamos 'gdf_filtered' que YA viene filtrado por Región/Municipio/Altitud desde el inicio de app.py
         if gdf_filtered is not None and not gdf_filtered.empty:
-            
-            # Recuperamos los límites de la zona FILTRADA
-            minx, miny, maxx, maxy = gdf_filtered.total_bounds
-            
-            # Inicializamos motor local
-            engine = create_engine(st.secrets["DATABASE_URL"])
-            
-            col_iso1, col_iso2 = st.columns([1, 3])
-            
-            with col_iso1:
-                st.subheader("Configuración")
-                # Usamos el rango de años global del sidebar para dar contexto, o permitimos selección libre
-                year_iso = st.selectbox("Seleccionar Año:", range(int(year_range[1]), int(year_range[0])-1, -1))
-                
-                st.info(f"📍 Estaciones en zona: {len(gdf_filtered)}")
-                
-                # Control de Suavizado (Nuevo)
-                suavidad = st.slider("Nivel de Suavizado (RBF):", 0.0, 2.0, 0.5, help="0 = Datos crudos, 2 = Muy suavizado")
-            
-            with col_iso2:
-                try:
-                    # Obtenemos los IDs de las estaciones FILTRADAS en el sidebar
-                    ids_validos = tuple(gdf_filtered[Config.STATION_NAME_COL].unique())
-                    
-                    # Evitamos error SQL si hay una sola estación
-                    if len(ids_validos) == 1:
-                        ids_sql = f"('{ids_validos[0]}')" 
-                    else:
-                        ids_sql = str(ids_validos)
-
-                    # Consulta optimizada que respeta los filtros
-                    q_iso = text(f"""
-                        SELECT e.id_estacion, e.nom_est, ST_X(e.geom::geometry) as lon, ST_Y(e.geom::geometry) as lat,
-                               SUM(p.precipitation) as valor
-                        FROM precipitacion_mensual p
-                        JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-                        WHERE extract(year from p.fecha_mes_año) = :anio
-                        AND e.nom_est IN {ids_sql} 
-                        GROUP BY e.id_estacion, e.nom_est, e.geom
-                    """)
-                    
-                    df_iso = pd.read_sql(q_iso, engine, params={"anio": year_iso})
-                    
-                    # Aplicar filtros de limpieza de datos (Ceros/Nulos)
-                    if ignore_zeros:
-                        df_iso = df_iso[df_iso['valor'] > 0]
-                    if ignore_nulls:
-                        df_iso = df_iso.dropna(subset=['valor'])
-
-                    if len(df_iso) >= 3:
-                        with st.spinner(f"Generando superficie RBF para {len(df_iso)} estaciones..."):
-                            
-                            # --- MAGIA MATEMÁTICA: RBF (Radial Basis Function) ---
-                            from scipy.interpolate import Rbf
-                            
-                            # 1. Crear malla de alta resolución
-                            grid_res = 200 # 200x200 pixeles
-                            gx, gy = np.mgrid[minx:maxx:complex(0, grid_res), miny:maxy:complex(0, grid_res)]
-                            
-                            # 2. Interpolación RBF (Thin Plate Spline es ideal para topografía/lluvia)
-                            # El parámetro 'smooth' ayuda a evitar el efecto "ojo de buey"
-                            rbf = Rbf(df_iso['lon'], df_iso['lat'], df_iso['valor'], function='thin_plate', smooth=suavidad)
-                            grid_z = rbf(gx, gy)
-                            
-                            # 3. Visualización
-                            fig_m = go.Figure()
-                            
-                            # Isoyetas Suaves
-                            fig_m.add_trace(go.Contour(
-                                z=grid_z.T, x=np.linspace(minx, maxx, grid_res), y=np.linspace(miny, maxy, grid_res),
-                                colorscale="YlGnBu", 
-                                colorbar=dict(title="Lluvia (mm)"),
-                                hovertemplate="Lluvia: %{z:.0f} mm<extra></extra>",
-                                contours=dict(
-                                    coloring='heatmap', 
-                                    showlabels=True, 
-                                    labelfont=dict(size=10, color='white'),
-                                    start=0, # Forzar inicio en 0
-                                ),
-                                opacity=0.8, 
-                                connectgaps=True, 
-                                line_smoothing=1.3 # Suavizado visual final de Plotly
-                            ))
-                            
-                            # Contexto Fantasma
-                            add_context_layers_ghost(fig_m, gdf_filtered) # Pasamos el gdf filtrado para zoom correcto
-                            
-                            # Puntos Estaciones
-                            fig_m.add_trace(go.Scatter(
-                                x=df_iso['lon'], y=df_iso['lat'], mode='markers',
-                                marker=dict(size=6, color='black', line=dict(width=1, color='white')),
-                                text=df_iso['nom_est'] + ': ' + df_iso['valor'].round(0).astype(str) + ' mm',
-                                hoverinfo='text'
-                            ))
-                            
-                            fig_m.update_layout(
-                                title=f"Isoyetas Año {year_iso} (Método RBF)", 
-                                height=700, 
-                                xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False),
-                                margin=dict(l=0,r=0,t=40,b=0), plot_bgcolor='white'
-                            )
-                            st.plotly_chart(fig_m, use_container_width=True)
-                    else:
-                        st.warning("⚠️ Datos insuficientes. Intente seleccionar más estaciones o cambiar el año.")
-                except Exception as e:
-                    st.error(f"Error al generar mapa: {e}")
-        else:
-            st.info("👈 Seleccione una cuenca o región en el menú lateral para empezar.")
-
-    # Ajuste CSS para Tabs internas
-    st.markdown("""<style>.stTabs [data-baseweb="tab-panel"] { padding-top: 1rem; }</style>""", unsafe_allow_html=True)
-
-if __name__ == "__main__":
-    main()

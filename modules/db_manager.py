@@ -1,4 +1,4 @@
-# Archivo: modules/db_manager.py
+# modules/db_manager.py
 
 import json
 
