@@ -18,7 +18,8 @@ warnings.filterwarnings("ignore")
 try:
     from modules.config import Config
     # NOTA: Cambiamos 'load_and_process_all_data' por 'load_spatial_data'
-    from modules.data_processor import complete_series, load_spatial_data
+
+    from modules.data_processor import complete_series, load_spatial_data, parse_spanish_date_robust
     from modules.reporter import generate_pdf_report
     from modules.db_manager import get_engine # Importamos el motor de base de datos
     
@@ -51,7 +52,7 @@ def load_data_from_db():
     if not engine:
         return None, None, None, None, None, None
 
-    # 1. Cargar Geometrías y Metadatos (Usando la función optimizada de data_processor)
+    # 1. Cargar Geometrías y Metadatos
     gdf_stations, gdf_municipios, gdf_subcuencas, gdf_predios = load_spatial_data()
     
     df_long = pd.DataFrame()
@@ -59,9 +60,9 @@ def load_data_from_db():
 
     try:
         with engine.connect() as conn:
+            # ---------------------------------------------------------
             # 2. Cargar Lluvias (JOIN para traer nombres de estaciones)
-            # Traemos todo el histórico porque el Dashboard Global necesita filtrar por año/mes en RAM
-            # Para 300k registros, esto sigue siendo rápido en SQL (aprox 1-2 segs)
+            # ---------------------------------------------------------
             query_rain = text("""
                 SELECT 
                     p.id_estacion_fk as id_estacion,
@@ -80,32 +81,46 @@ def load_data_from_db():
                 "precipitation": Config.PRECIPITATION_COL
             })
             
-            # Asegurar tipos
-            df_long[Config.DATE_COL] = pd.to_datetime(df_long[Config.DATE_COL])
+            # Asegurar tipos (Las lluvias suelen tener formato fecha estándar ISO)
+            df_long[Config.DATE_COL] = pd.to_datetime(df_long[Config.DATE_COL], errors='coerce')
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
-            # 3. Cargar ENSO
+            # ---------------------------------------------------------
+            # 3. Cargar ENSO (Índices Climáticos)
+            # ---------------------------------------------------------
             try:
                 query_enso = text("SELECT * FROM indices_climaticos")
                 df_enso = pd.read_sql(query_enso, conn)
-                # Normalización básica de columnas
+                
+                # Normalización básica de columnas (minúsculas)
                 df_enso.columns = [c.lower() for c in df_enso.columns]
+                
+                # --- CORRECCIÓN CRÍTICA: USAR PARSER EN ESPAÑOL ---
                 col_fecha = next((c for c in df_enso.columns if 'fecha' in c), None)
                 if col_fecha:
-                    df_enso[Config.DATE_COL] = pd.to_datetime(df_enso[col_fecha])
+                    # Usamos la función robusta que entiende 'ene-70'
+                    df_enso[Config.DATE_COL] = df_enso[col_fecha].apply(parse_spanish_date_robust)
+                    
+                    # Eliminamos solo las que realmente fallaron (NaT)
+                    df_enso = df_enso.dropna(subset=[Config.DATE_COL])
+                    df_enso = df_enso.sort_values(Config.DATE_COL)
                 
-                # Renombrar ONI si es necesario
+                # Renombrar ONI si es necesario para que coincida con Config
                 if 'anomalia_oni' in df_enso.columns:
                     df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
+            
             except Exception as ex:
-                print(f"Alerta ENSO: {ex}") # No detenemos la app por esto
+                st.warning(f"Alerta cargando ENSO: {ex}") 
+                # No detenemos la app, pero avisamos para que el resto funcione
 
     except Exception as e:
-        st.error(f"Error trayendo datos de lluvia: {e}")
+        st.error(f"Error crítico conectando a BD: {e}")
         return None, None, None, None, None, None
 
+    # RETORNO FINAL EXITOSO
     return gdf_stations, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios
+
 
 # --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
 def get_name_from_row_v2(row, type_layer):
