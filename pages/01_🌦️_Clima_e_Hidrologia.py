@@ -71,21 +71,29 @@ def load_data_from_db():
     try:
         with engine.connect() as conn:
             # ---------------------------------------------------------
-            # A. CARGAR ESTACIONES DESDE DB (La versión corregida)
+            # A. CARGAR ESTACIONES DESDE DB (CORREGIDO)
             # ---------------------------------------------------------
             q_est = text("SELECT * FROM estaciones WHERE latitud != 0")
             df_est = pd.read_sql(q_est, conn)
             
             if not df_est.empty:
-                # Convertir a GeoDataFrame usando Lat/Lon de la DB
+                # Convertir a GeoDataFrame
                 gdf_stations_db = gpd.GeoDataFrame(
                     df_est, 
                     geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud),
                     crs="EPSG:4326"
                 )
-                # Renombrar columna para que coincida con el resto del código (si es necesario)
-                # Tu código espera 'nom_est' (que ya viene de la DB)
-            
+                
+                # 🆕 TRUCO DE COMPATIBILIDAD:
+                # Creamos copias de las columnas con nombres en inglés
+                # para que 'visualizer.py' no falle.
+                gdf_stations_db['latitude'] = gdf_stations_db['latitud']
+                gdf_stations_db['longitude'] = gdf_stations_db['longitud']
+                
+                # Asegurar que los números sean flotantes (a veces llegan como texto)
+                gdf_stations_db['latitude'] = pd.to_numeric(gdf_stations_db['latitude'], errors='coerce')
+                gdf_stations_db['longitude'] = pd.to_numeric(gdf_stations_db['longitude'], errors='coerce')
+
             # ---------------------------------------------------------
             # B. CARGAR PREDIOS DESDE DB
             # ---------------------------------------------------------
