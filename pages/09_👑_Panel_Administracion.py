@@ -63,18 +63,17 @@ if not check_password():
 st.title("👑 Panel de Administración y Edición de Datos")
 st.markdown("---")
 
-    # ----------------------------------------------------------------
-    # 2. DEFINICIÓN DE PESTAÑAS (TABS)
-    # ----------------------------------------------------------------
-    # Agregamos 'tab_mun' a la lista de variables y "🏛️ Municipios" a los nombres
-    tab_est, tab_indices, tab_predios, tab_cuencas, tab_mun, tab_sql = st.tabs([
-        "🌧️ Estaciones", 
-        "📉 Índices", 
-        "🏡 Predios", 
-        "🌊 Cuencas", 
-        "🏛️ Municipios",  # <--- ¡ESTA FALTABA!
-        "🛠️ SQL"
-    ])
+# ----------------------------------------------------------------
+# --- DEFINICIÓN DE PESTAÑAS (CORREGIDO Y ALINEADO) ---
+# Aquí es donde estaba el error de indentación. Ahora está pegado a la izquierda.
+tab_est, tab_indices, tab_predios, tab_cuencas, tab_mun, tab_sql = st.tabs([
+    "🌧️ Estaciones", 
+    "📉 Índices", 
+    "🏡 Predios", 
+    "🌊 Cuencas", 
+    "🏛️ Municipios", 
+    "🛠️ SQL"
+])
 
 # ====================================================================
 # TAB 1: GESTIÓN DE ESTACIONES (EDICIÓN + CREACIÓN + CARGA)
