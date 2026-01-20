@@ -42,7 +42,7 @@ with st.expander("📘 Metodología: Modelo Turc y Proyecciones", expanded=False
     Balance hídrico mediante método de Turc (1954) corregido por infiltración ($K_i$).
     """)
 
-# --- FUNCIONES GIS ---
+# --- FUNCIONES GIS BÁSICAS ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
     filepath = os.path.join(os.path.dirname(__file__), '..', 'data', filename)
@@ -68,56 +68,22 @@ def add_context_layers_cartesian(fig, gdf_zona):
                     fig.add_trace(go.Scatter(x=list(x), y=list(y), mode='lines', line=dict(width=0.7, color='grey', dash='dot'), showlegend=False, hoverinfo='skip'))
     except Exception: pass
 
-# --- NUEVA FUNCIÓN INTELIGENTE DE CORRECCIÓN DE COORDENADAS ---
-def corregir_proyeccion(gdf):
-    """
-    Detecta si las coordenadas están en metros (Magna) y las pasa a GPS (Lat/Lon).
-    Forzamos EPSG:3116 (Colombia Bogotá) que es el estándar común en Antioquia.
-    """
-    try:
-        # Verificar un punto de muestra
-        sample_x = gdf.geometry.iloc[0].centroid.x
-        
-        # Si X es muy grande (ej: 800,000), son metros. Si es pequeño (ej: -75), son grados.
-        if abs(sample_x) > 180:
-            # st.toast(f"📍 Detectadas coordenadas planas (X={sample_x:.0f}). Convirtiendo...", icon="🌍")
-            
-            # Si no tiene CRS definido, asumimos el de Colombia (3116)
-            if not gdf.crs:
-                gdf.set_crs("EPSG:3116", inplace=True) # Asumimos Magna-Bogotá
-            
-            # Convertir a Mundial (WGS84)
-            gdf = gdf.to_crs("EPSG:4326")
-            
-        return gdf
-    except Exception as e:
-        st.error(f"Error reproyectando mapa: {e}")
-        return gdf
-
-# --- FUNCIONES DE CARGA (Con Corrección Activada) ---
+# --- NUEVA LÓGICA DE PROYECCIÓN (SELECTOR MANUAL) ---
 def get_shapefile_path(filename):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_dir, '..', 'data', 'shapefiles', filename)
 
-@st.cache_data(show_spinner="Cargando Hidrogeología...")
-def cargar_capa_hidrogeologica():
-    ruta_shp = get_shapefile_path('Zonas_PotHidrogeologico.shp')
-    if not os.path.exists(ruta_shp): return None
+@st.cache_data(show_spinner="Cargando Capas...")
+def cargar_capa_base(nombre_archivo):
+    ruta = get_shapefile_path(nombre_archivo)
+    if not os.path.exists(ruta): return None, None
     try:
-        gdf = gpd.read_file(ruta_shp)
-        gdf = corregir_proyeccion(gdf) # <--- CORRECCIÓN AQUÍ
-        return gdf
-    except Exception: return None
-
-@st.cache_data(show_spinner="Cargando Bocatomas...")
-def cargar_bocatomas():
-    ruta_shp = get_shapefile_path('Bocatomas_Ant.shp')
-    if not os.path.exists(ruta_shp): return None
-    try:
-        gdf = gpd.read_file(ruta_shp)
-        gdf = corregir_proyeccion(gdf) # <--- CORRECCIÓN AQUÍ
-        return gdf
-    except Exception: return None
+        gdf = gpd.read_file(ruta)
+        # Devolvemos el GDF crudo y un mensaje de diagnóstico
+        msg = f"Cargado: {len(gdf)} registros. CRS detectado: {gdf.crs}"
+        return gdf, msg
+    except Exception as e:
+        return None, str(e)
 
 # --- FUNCIONES MATEMÁTICAS (TURC & PROPHET) ---
 def interpolacion_segura_suave(points, values, grid_x, grid_y):
@@ -210,22 +176,19 @@ if gdf_zona is not None and not gdf_zona.empty:
         df_est = pd.read_sql(q_est, engine, params={"minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy})
         
         if not df_est.empty:
-            estaciones_disponibles = df_est['nom_est'].unique()
-            sel_local = st.multiselect("📍 Filtrar Estaciones:", estaciones_disponibles, default=estaciones_disponibles)
+            sel_local = st.multiselect("📍 Filtrar Estaciones:", df_est['nom_est'].unique(), default=df_est['nom_est'].unique())
             df_est_filtered = df_est[df_est['nom_est'].isin(sel_local)]
             
             if not df_est_filtered.empty:
+                # Cargar Datos SQL
                 ids_v = df_est_filtered['id_estacion'].unique()
                 ids_s = ",".join([f"'{str(x)}'" for x in ids_v])
-                
-                # Cargar Datos
                 q_avg = text(f"SELECT id_estacion_fk as id_estacion, AVG(precipitation)*12 as p_anual FROM precipitacion_mensual WHERE id_estacion_fk IN ({ids_s}) GROUP BY 1")
                 df_avg = pd.read_sql(q_avg, engine)
-                
                 q_serie = text(f"SELECT fecha_mes_año as fecha, AVG(precipitation) as p_mensual FROM precipitacion_mensual WHERE id_estacion_fk IN ({ids_s}) GROUP BY 1 ORDER BY 1")
                 df_serie = pd.read_sql(q_serie, engine)
                 
-                # Cálculos
+                # Unificar
                 df_est_filtered['id_estacion'] = df_est_filtered['id_estacion'].astype(str)
                 df_avg['id_estacion'] = df_avg['id_estacion'].astype(str)
                 df_work = pd.merge(df_est_filtered, df_avg, on='id_estacion', how='inner')
@@ -246,7 +209,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 
                 with tab1:
                     if not df_serie.empty and PROPHET_AVAILABLE:
-                        with st.spinner("Proyectando escenarios..."):
+                        with st.spinner("Proyectando..."):
                             df_fc = run_prophet_forecast_hybrid(df_serie, horizonte_meses, altitud_ref, ki_ponderado, ruido)
                             if not df_fc.empty:
                                 fig = go.Figure()
@@ -269,19 +232,56 @@ if gdf_zona is not None and not gdf_zona.empty:
                         add_context_layers_cartesian(fig_m, gdf_zona)
                         fig_m.update_layout(height=600, margin=dict(l=0,r=0,t=0,b=0), xaxis_visible=False, yaxis_visible=False)
                         st.plotly_chart(fig_m, use_container_width=True)
-                    else: st.warning("Se requieren al menos 3 estaciones para interpolar.")
+                    else: st.warning("Se requieren al menos 3 estaciones.")
                 
-                # --- PESTAÑA 3: MAPAS DE SHAPEFILES ---
+                # --- PESTAÑA 3: MAPAS DE SHAPEFILES (CON SELECTOR DE PROYECCIÓN) ---
                 with tab3:
                     st.markdown("### 🗺️ Mapa Integrado de Aguas Subterráneas")
-                    st.caption("Visualización de capas locales.")
                     
-                    # 1. Carga Inteligente
-                    gdf_zonas = cargar_capa_hidrogeologica()
-                    gdf_bocas = cargar_bocatomas()
+                    # 1. SELECTOR DE AYUDA GIS
+                    with st.expander("🛠️ Corrector de Coordenadas (Usar si el mapa sale vacío)", expanded=True):
+                        st.caption("Si ves la tabla pero no el mapa, cambia esta opción hasta que aparezca.")
+                        epsg_manual = st.selectbox(
+                            "Seleccionar Sistema de Origen:",
+                            options=["Detectar Automático", "EPSG:9377 (Origen Nacional - Nuevo)", "EPSG:3116 (Magna Bogotá - Clásico Antioquia)", "EPSG:3115 (Magna Oeste)"],
+                            index=0
+                        )
+                    
+                    # 2. Carga Cruda
+                    gdf_zonas_raw, msg_zonas = cargar_capa_base('Zonas_PotHidrogeologico.shp')
+                    gdf_bocas_raw, msg_bocas = cargar_capa_base('Bocatomas_Ant.shp')
+                    
+                    # 3. Función de reproyección manual basada en el selector
+                    def aplicar_reproyeccion(gdf_in, opcion):
+                        if gdf_in is None: return None
+                        gdf = gdf_in.copy()
+                        
+                        try:
+                            # Opción A: Automático (confiar en .prj o guess)
+                            if opcion == "Detectar Automático":
+                                if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
+                                    return gdf.to_crs("EPSG:4326")
+                                # Si no tiene CRS y coordenadas son grandes, adivinar Magna Bogotá
+                                if not gdf.crs and abs(gdf.geometry.iloc[0].centroid.x) > 180:
+                                    gdf.set_crs("EPSG:3116", inplace=True)
+                                    return gdf.to_crs("EPSG:4326")
+                                return gdf
+                            
+                            # Opción B: Manual
+                            codigo = opcion.split(" ")[0] # Extraer "EPSG:XXXX"
+                            # Forzar el CRS de origen y transformar
+                            gdf.set_crs(codigo, inplace=True, allow_override=True)
+                            return gdf.to_crs("EPSG:4326")
+                        except Exception as e:
+                            st.error(f"Error reproyectando: {e}")
+                            return None
+
+                    # 4. Aplicar corrección
+                    gdf_zonas = aplicar_reproyeccion(gdf_zonas_raw, epsg_manual)
+                    gdf_bocas = aplicar_reproyeccion(gdf_bocas_raw, epsg_manual)
                     
                     if gdf_zonas is not None:
-                        # Calcular centro para el mapa
+                        # Centrar mapa
                         c_lat = gdf_zonas.geometry.centroid.y.mean()
                         c_lon = gdf_zonas.geometry.centroid.x.mean()
                         
@@ -289,8 +289,6 @@ if gdf_zona is not None and not gdf_zona.empty:
                         
                         # CAPA A: ZONAS
                         fg_zonas = folium.FeatureGroup(name="🟫 Zonas Hidrogeológicas")
-                        
-                        # Detectar campo para tooltip
                         cols = gdf_zonas.columns
                         tip_field = next((c for c in ['Nombre', 'NOMBRE', 'ZONA', 'Zona'] if c in cols), cols[0])
                         
@@ -304,36 +302,36 @@ if gdf_zona is not None and not gdf_zona.empty:
                         # CAPA B: BOCATOMAS
                         if gdf_bocas is not None:
                             fg_bocas = folium.FeatureGroup(name="🚰 Bocatomas")
-                            
-                            # Detectar campo para tooltip
                             b_cols = gdf_bocas.columns
-                            b_tip = next((c for c in ['Nombre', 'NOMBRE', 'BOCATOMA', 'ID', 'MUNICIPIO'] if c in b_cols), b_cols[0])
+                            b_tip = next((c for c in ['Nombre', 'NOMBRE', 'BOCATOMA', 'ID'] if c in b_cols), b_cols[0])
                             
                             for _, row in gdf_bocas.iterrows():
                                 if row.geometry.geom_type == 'Point':
                                     folium.CircleMarker(
                                         location=[row.geometry.y, row.geometry.x],
-                                        radius=5,
-                                        color='red',
-                                        fill=True,
-                                        fill_color='darkred',
-                                        fill_opacity=0.8,
+                                        radius=5, color='red', fill=True, fill_color='darkred',
                                         tooltip=f"{row[b_tip]}"
                                     ).add_to(fg_bocas)
                             fg_bocas.add_to(m)
                         
                         folium.LayerControl().add_to(m)
+                        
+                        # TRUCO FINAL: Auto-ajustar zoom
+                        sw = gdf_zonas.bounds[['miny', 'minx']].min().values.tolist()
+                        ne = gdf_zonas.bounds[['maxy', 'maxx']].max().values.tolist()
+                        m.fit_bounds([sw, ne]) 
+                        
                         st_folium(m, width="100%", height=600)
                         
-                        # Tablas de Datos
-                        with st.expander("Ver Tablas de Atributos"):
+                        # Tablas
+                        with st.expander("Ver Datos Tabulares"):
                             tb1, tb2 = st.tabs(["Zonas", "Bocatomas"])
-                            with tb1: st.dataframe(gdf_zonas.drop(columns='geometry').head(100))
+                            with tb1: st.dataframe(gdf_zonas.drop(columns='geometry').head(50))
                             with tb2: 
-                                if gdf_bocas is not None: 
-                                    st.dataframe(gdf_bocas.drop(columns='geometry').head(100))
+                                if gdf_bocas is not None: st.dataframe(gdf_bocas.drop(columns='geometry').head(50))
                     else:
-                        st.error("⚠️ No se pudo cargar la capa base de Zonas. Verifica que los archivos .shp, .shx y .dbf estén en la carpeta data/shapefiles.")
+                        st.error("No se pudo cargar el mapa. Intenta cambiar el selector de coordenadas.")
+                        st.code(msg_zonas) # Mostrar error técnico si falla
                 
                 with tab4:
                     st.dataframe(df_res_avg)
