@@ -108,14 +108,13 @@ def interpolacion_segura_suave(points, values, grid_x, grid_y):
     except: return griddata(points, values, (grid_x, grid_y), method='linear')
 
 # ==============================================================================
-# 2. CARGA GIS DIAGNÓSTICA (CON CONTADORES)
+# 2. CARGA GIS INTELIGENTE (MODO DEPURACIÓN ACTIVADO)
 # ==============================================================================
 
-@st.cache_data(ttl=60, show_spinner="Consultando base de datos espacial...")
-def cargar_capas_gis_inteligente(minx, miny, maxx, maxy):
+@st.cache_data(ttl=60, show_spinner="Consultando BD espacial...")
+def cargar_capas_gis_inteligente(minx, miny, maxx, maxy, debug_mode=False):
     """
-    Carga capas filtradas por bounding box.
-    Retorna un diccionario con los GeoDataFrames y un diccionario de conteos.
+    debug_mode=True: Ignora el filtro espacial y carga los primeros 500 registros.
     """
     engine = get_engine()
     layers = {"suelos": None, "hidro": None, "bocatomas": None}
@@ -123,19 +122,26 @@ def cargar_capas_gis_inteligente(minx, miny, maxx, maxy):
     
     if not engine: return layers, counts
     
-    # Ajustamos tolerancia de simplificación (menos agresiva para que no desaparezcan cosas)
-    tolerancia = 0.0001 
+    # Tolerancia simplificación (0.001 ~100m)
+    tol = 0.001 
     
     try:
         with engine.connect() as conn:
+            
+            # --- CONSTRUCCIÓN DE LA CONSULTA ---
+            # Si Debug Mode está ON, NO usamos WHERE ST_Intersects
+            spatial_filter = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326))"
+            if debug_mode:
+                spatial_filter = "" # Sin filtro, trae todo
+                st.toast("🔧 Modo Diagnóstico: Cargando datos sin filtro espacial.", icon="⚠️")
+
             # 1. SUELOS
             try:
-                # Usamos ST_Envelope para filtrar
                 q_suelos = text(f"""
-                    SELECT "UCS", "PAISAJE", "CLIMA", "LITOLOGÍA", ST_AsGeoJSON(ST_Simplify(geom, {tolerancia})) as geometry 
+                    SELECT "UCS", "PAISAJE", "CLIMA", "LITOLOGÍA", ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as geometry 
                     FROM suelos
-                    WHERE ST_Intersects(geom, ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326))
-                    LIMIT 2000
+                    {spatial_filter}
+                    LIMIT 500
                 """)
                 df_s = pd.read_sql(q_suelos, conn)
                 if not df_s.empty:
@@ -147,10 +153,10 @@ def cargar_capas_gis_inteligente(minx, miny, maxx, maxy):
             # 2. HIDROGEOLOGÍA
             try:
                 q_hidro = text(f"""
-                    SELECT nombre_zona, potencial, unidad_geo, ST_AsGeoJSON(ST_Simplify(geom, {tolerancia})) as geometry 
+                    SELECT nombre_zona, potencial, unidad_geo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as geometry 
                     FROM zonas_hidrogeologicas
-                    WHERE ST_Intersects(geom, ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326))
-                    LIMIT 2000
+                    {spatial_filter}
+                    LIMIT 500
                 """)
                 df_h = pd.read_sql(q_hidro, conn)
                 if not df_h.empty:
@@ -161,11 +167,12 @@ def cargar_capas_gis_inteligente(minx, miny, maxx, maxy):
 
             # 3. BOCATOMAS
             try:
-                # Traer todo (*) para asegurar que venga el nombre
+                # Traer todo (*) para asegurar nombres
                 q_boca = text(f"""
                     SELECT *, ST_AsGeoJSON(geom) as geometry 
                     FROM bocatomas
-                    WHERE ST_Intersects(geom, ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326))
+                    {spatial_filter}
+                    LIMIT 500
                 """)
                 df_b = pd.read_sql(q_boca, conn)
                 if not df_b.empty:
@@ -178,7 +185,7 @@ def cargar_capas_gis_inteligente(minx, miny, maxx, maxy):
     return layers, counts
 
 # ==============================================================================
-# 3. INTERFAZ Y SIDEBAR
+# 3. INTERFAZ
 # ==============================================================================
 
 ids_dummy, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
@@ -186,14 +193,21 @@ ids_dummy, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_e
 st.sidebar.divider()
 st.sidebar.header("🌱 Suelo & Infiltración")
 
+# --- DEBUG TOGGLE ---
+st.sidebar.markdown("---")
+debug_active = st.sidebar.checkbox("🔧 Modo Diagnóstico (Forzar carga)", value=False, help="Activa esto si el mapa sale vacío. Ignora el filtro de zona.")
+if debug_active:
+    st.sidebar.warning("El Modo Diagnóstico puede ser lento. Úsalo solo para verificar datos.")
+st.sidebar.markdown("---")
+
 col_s1, col_s2 = st.sidebar.columns(2)
 pct_bosque = col_s1.number_input("% Bosque", 0, 100, 60)
 pct_cultivo = col_s2.number_input("% Agrícola", 0, 100, 30)
 pct_urbano = max(0, 100 - (pct_bosque + pct_cultivo))
-st.sidebar.caption(f"Urbano: {pct_urbano}%")
+st.sidebar.metric("% Urbano", f"{pct_urbano}%")
 
 ki_ponderado = ((pct_bosque * 0.50) + (pct_cultivo * 0.30) + (pct_urbano * 0.10)) / 100.0
-st.sidebar.metric("Coef. Ki", f"{ki_ponderado:.2f}")
+st.sidebar.metric("Coef. Infiltración ($K_i$)", f"{ki_ponderado:.2f}")
 
 st.sidebar.divider()
 st.sidebar.header("⚙️ Pronóstico")
@@ -273,15 +287,15 @@ if gdf_zona is not None and not gdf_zona.empty:
                     st.markdown("### Visor de Recursos Hídricos")
                     
                     # 1. Cargar Capas + Diagnóstico
-                    capas, counts = cargar_capas_gis_inteligente(minx, miny, maxx, maxy)
+                    capas, counts = cargar_capas_gis_inteligente(minx, miny, maxx, maxy, debug_mode=debug_active)
                     
-                    # Panel de Diagnóstico (Visible para el usuario)
-                    with st.expander("🔍 Diagnóstico de Capas (Clic para ver detalles)", expanded=False):
+                    with st.expander("🔍 Diagnóstico de Capas (Clic para ver)", expanded=True):
                         c_info1, c_info2, c_info3 = st.columns(3)
                         c_info1.metric("Polígonos Suelo", counts["suelos"])
                         c_info2.metric("Zonas Hidro", counts["hidro"])
                         c_info3.metric("Bocatomas", counts["bocatomas"])
-                        if counts["suelos"] == 0: st.warning("No se encontraron suelos en esta zona. Intente ampliar el área.")
+                        if counts["suelos"] == 0 and not debug_active:
+                            st.warning("⚠️ 0 Registros encontrados. Intenta activar el 'Modo Diagnóstico' en el menú lateral.")
 
                     gdf_suelos = capas["suelos"]
                     gdf_hidro = capas["hidro"]
@@ -289,31 +303,30 @@ if gdf_zona is not None and not gdf_zona.empty:
                     
                     c_lat = df_est_filtered['lat'].mean()
                     c_lon = df_est_filtered['lon'].mean()
-                    m = folium.Map(location=[c_lat, c_lon], zoom_start=11, tiles="CartoDB positron")
+                    # Si estamos en modo debug, alejamos el zoom para ver dónde cayeron los datos
+                    zoom_ini = 8 if debug_active else 11
+                    m = folium.Map(location=[c_lat, c_lon], zoom_start=zoom_ini, tiles="CartoDB positron")
                     
-                    # DEFINIR ESCALA DE COLOR GLOBAL (Para sincronizar Leyenda y Mapa)
-                    # Azul Claro -> Azul Oscuro
+                    # ESCALA DE COLOR RECARGA
                     recarga_min = df_res_avg['recarga_mm'].min()
                     recarga_max = df_res_avg['recarga_mm'].max()
-                    # Evitar error si min == max
                     if recarga_max == recarga_min: recarga_max += 1 
                     
                     cmap = LinearColormap(
                         colors=['#ffffcc', '#a1dab4', '#41b6c4', '#225ea8'], 
-                        vmin=recarga_min, vmax=recarga_max, 
-                        caption="Recarga Potencial (mm/año)"
+                        vmin=recarga_min, vmax=recarga_max, caption="Recarga (mm/año)"
                     )
-                    m.add_child(cmap) # Agrega la leyenda al mapa
+                    m.add_child(cmap)
 
-                    # A. CAPA SUELOS (Fondo)
+                    # A. CAPA SUELOS
                     if gdf_suelos is not None:
                         def style_suelos(feature):
                             p = str(feature['properties'].get('PAISAJE', '')).lower()
-                            color = '#f7fcb9' # Default claro
+                            color = '#f7fcb9'
                             if 'montaña' in p: color = '#d95f0e'
                             elif 'valle' in p: color = '#fff7bc'
                             elif 'lomerío' in p: color = '#addd8e'
-                            return {'fillColor': color, 'color': 'gray', 'weight': 0.5, 'fillOpacity': 0.3}
+                            return {'fillColor': color, 'color': 'gray', 'weight': 0.5, 'fillOpacity': 0.4}
                         
                         fg_suelos = folium.FeatureGroup(name="🌱 Suelos (Paisaje)")
                         folium.GeoJson(
@@ -332,24 +345,20 @@ if gdf_zona is not None and not gdf_zona.empty:
                         ).add_to(fg_hidro)
                         fg_hidro.add_to(m)
 
-                    # C. CAPA RECARGA (Raster + Puntos Sincronizados)
+                    # C. RECARGA
                     if len(df_res_avg) >= 3:
-                        fg_recarga = folium.FeatureGroup(name="🌧️ Recarga (Interpolada)", show=True)
-                        
-                        # 1. Raster (Imagen de fondo)
+                        fg_recarga = folium.FeatureGroup(name="🌧️ Recarga", show=True)
                         try:
                             gx, gy = np.mgrid[minx:maxx:200j, miny:maxy:200j]
                             grid = interpolacion_segura_suave(df_res_avg[['lon','lat']].values, df_res_avg['recarga_mm'].values, gx, gy)
                             folium.raster_layers.ImageOverlay(
                                 image=grid.T, bounds=[[miny, minx], [maxy, maxx]], opacity=0.6,
-                                colormap=lambda x: cmap(x) # Usamos la MISMA escala de color
+                                colormap=lambda x: cmap(x)
                             ).add_to(fg_recarga)
                         except: pass
 
-                        # 2. Puntos (Coloreados con la MISMA escala)
                         for _, row in df_res_avg.iterrows():
                             val = row['recarga_mm']
-                            # Convertir valor a Hex Color usando la escala
                             hex_color = cmap(val)
                             folium.CircleMarker(
                                 [row['lat'], row['lon']], radius=6, color='black', weight=1, 
@@ -362,7 +371,6 @@ if gdf_zona is not None and not gdf_zona.empty:
                     if gdf_bocas is not None:
                         fg_boca = folium.FeatureGroup(name="🚰 Bocatomas", show=True)
                         cols_b = {c.upper(): c for c in gdf_bocas.columns}
-                        # Busca columna NOMBRE o BOCATOMA
                         col_n = cols_b.get('NOMBRE', cols_b.get('BOCATOMA', list(cols_b.values())[0]))
                         
                         for _, row in gdf_bocas.iterrows():
