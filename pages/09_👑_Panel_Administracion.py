@@ -66,12 +66,15 @@ st.markdown("---")
 # ----------------------------------------------------------------
 # --- DEFINICIÓN DE PESTAÑAS (CORREGIDO Y ALINEADO) ---
 # Aquí es donde estaba el error de indentación. Ahora está pegado a la izquierda.
-tab_est, tab_indices, tab_predios, tab_cuencas, tab_mun, tab_sql = st.tabs([
-    "🌧️ Estaciones", 
-    "📉 Índices", 
-    "🏡 Predios", 
-    "🌊 Cuencas", 
-    "🏛️ Municipios", 
+
+tab_est, tab_indices, tab_predios, tab_cuencas, tab_mun, tab_hidro, tab_suelos, tab_sql = st.tabs([
+    "🌧️ Estaciones",
+    "📉 Índices",
+    "🏡 Predios",
+    "🌊 Cuencas",
+    "🏛️ Municipios",
+    "💧 Hidrogeología",
+    "🌱 Suelos",
     "🛠️ SQL"
 ])
 
@@ -668,7 +671,6 @@ with tab_cuencas:
                 st.error(f"Error procesando Cuencas: {e}")
 
 # ====================================================================
-# ====================================================================
 # TAB 5: GESTIÓN DE MUNICIPIOS (VER Y EDITAR)
 # ====================================================================
 with tab_mun:
@@ -772,6 +774,107 @@ with tab_mun:
                 st.balloons()
             except Exception as e:
                 st.error(f"Error procesando: {e}")
+
+# ====================================================================
+# TAB 6: GESTIÓN HIDROGEOLOGÍA
+# ====================================================================
+with tab_hidro:
+    st.header("💧 Gestión de Zonas Hidrogeológicas")
+    st.info("Sube tu archivo 'Zonas_PotHidrogeologico.geojson'.")
+    
+    up_hidro = st.file_uploader("Cargar GeoJSON Hidrogeología", type=["geojson", "json"], key="up_hidro")
+    if up_hidro and st.button("🚀 Cargar Zonas a BD"):
+        try:
+            data = json.load(up_hidro)
+            engine = get_engine()
+            
+            # Limpiar tabla anterior (opcional, para evitar duplicados masivos)
+            with engine.connect() as conn:
+                conn.execute(text("TRUNCATE TABLE zonas_hidrogeologicas RESTART IDENTITY;"))
+                conn.commit()
+
+            rows = []
+            with st.spinner("Procesando geometrías..."):
+                for feature in data['features']:
+                    props = feature.get("properties", {})
+                    geom = json.dumps(feature.get("geometry"))
+                    
+                    # Búsqueda flexible de columnas
+                    nom = props.get('Nombre', props.get('NOMBRE', 'Sin Nombre'))
+                    pot = props.get('Potencial_', props.get('POTENCIAL', 'Desconocido'))
+                    uni = props.get('Unidad_Geo', props.get('UNIDAD', 'Desconocido'))
+
+                    rows.append({
+                        "nombre_zona": nom, "potencial": pot, 
+                        "unidad_geo": uni, "geom": geom
+                    })
+            
+            # Insertar masivo
+            df_new = pd.DataFrame(rows)
+            # Usamos GeoPandas para facilitar la escritura PostGIS si es posible, 
+            # pero aquí haremos INSERT directo con SQL para máxima compatibilidad
+            with engine.connect() as conn:
+                for _, row in df_new.iterrows():
+                    q = text("""
+                        INSERT INTO zonas_hidrogeologicas (nombre_zona, potencial, unidad_geo, geom)
+                        VALUES (:n, :p, :u, ST_SetSRID(ST_GeomFromGeoJSON(:g), 4326))
+                    """)
+                    conn.execute(q, {"n": row['nombre_zona'], "p": row['potencial'], "u": row['unidad_geo'], "g": row['geom']})
+                conn.commit()
+            
+            st.success(f"✅ ¡Éxito! {len(df_new)} zonas hidrogeológicas cargadas.")
+            st.balloons()
+            
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+# ====================================================================
+# TAB 7: GESTIÓN SUELOS
+# ====================================================================
+with tab_suelos:
+    st.header("🌱 Gestión de Suelos (Antioquia)")
+    st.info("Sube tu archivo 'Suelos_Antioquia.geojson'.")
+    
+    up_suelo = st.file_uploader("Cargar GeoJSON Suelos", type=["geojson", "json"], key="up_suelo")
+    if up_suelo and st.button("🚀 Cargar Suelos a BD"):
+        try:
+            data = json.load(up_suelo)
+            engine = get_engine()
+            
+            with engine.connect() as conn:
+                conn.execute(text("TRUNCATE TABLE suelos RESTART IDENTITY;"))
+                conn.commit()
+
+            rows = []
+            with st.spinner("Procesando suelos..."):
+                for feature in data['features']:
+                    props = feature.get("properties", {})
+                    geom = json.dumps(feature.get("geometry"))
+                    
+                    # Adaptar a tus columnas reales del GeoJSON
+                    uni = props.get('Simbolo', props.get('Unidad', 'Sin Dato'))
+                    tex = props.get('Textura', props.get('TEXTURA', 'Sin Dato'))
+                    grup = props.get('Grupo', props.get('GRUPO', 'Sin Dato'))
+
+                    rows.append({
+                        "unidad": uni, "textura": tex, "grupo": grup, "geom": geom
+                    })
+            
+            df_new = pd.DataFrame(rows)
+            with engine.connect() as conn:
+                for _, row in df_new.iterrows():
+                    q = text("""
+                        INSERT INTO suelos (unidad_suelo, textura, grupo_hidro, geom)
+                        VALUES (:u, :t, :gh, ST_SetSRID(ST_GeomFromGeoJSON(:g), 4326))
+                    """)
+                    conn.execute(q, {"u": row['unidad'], "t": row['textura'], "gh": row['grupo'], "g": row['geom']})
+                conn.commit()
+            
+            st.success(f"✅ ¡Éxito! {len(df_new)} unidades de suelo cargadas.")
+            st.balloons()
+
+        except Exception as e:
+            st.error(f"Error: {e}")
 
 # ==============================================================================
 # TAB 6: CONSOLA SQL (TU CÓDIGO ORIGINAL CONSERVADO)
