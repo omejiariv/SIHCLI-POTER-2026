@@ -9,8 +9,6 @@ import geopandas as gpd
 from scipy.interpolate import griddata
 import sys
 import os
-
-# --- MAPAS ---
 import folium
 from streamlit_folium import st_folium
 
@@ -33,16 +31,7 @@ except ImportError:
 
 st.title("💧 Aguas Subterráneas y Recarga")
 
-# --- 1. DOCUMENTACIÓN ---
-with st.expander("📘 Metodología: Modelo Turc y Proyecciones", expanded=False):
-    st.markdown("""
-    ### 1. Marco Conceptual
-    Estimación de Recarga Potencial y visualización de hidrogeología regional.
-    ### 2. Metodología
-    Balance hídrico mediante método de Turc (1954) corregido por infiltración ($K_i$).
-    """)
-
-# --- FUNCIONES GIS BÁSICAS ---
+# --- FUNCIONES GIS AUXILIARES ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
     filepath = os.path.join(os.path.dirname(__file__), '..', 'data', filename)
@@ -68,7 +57,7 @@ def add_context_layers_cartesian(fig, gdf_zona):
                     fig.add_trace(go.Scatter(x=list(x), y=list(y), mode='lines', line=dict(width=0.7, color='grey', dash='dot'), showlegend=False, hoverinfo='skip'))
     except Exception: pass
 
-# --- NUEVA LÓGICA DE PROYECCIÓN (SELECTOR MANUAL) ---
+# --- CARGA DE CAPAS CON CORRECTOR ---
 def get_shapefile_path(filename):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_dir, '..', 'data', 'shapefiles', filename)
@@ -79,13 +68,45 @@ def cargar_capa_base(nombre_archivo):
     if not os.path.exists(ruta): return None, None
     try:
         gdf = gpd.read_file(ruta)
-        # Devolvemos el GDF crudo y un mensaje de diagnóstico
         msg = f"Cargado: {len(gdf)} registros. CRS detectado: {gdf.crs}"
         return gdf, msg
     except Exception as e:
         return None, str(e)
 
-# --- FUNCIONES MATEMÁTICAS (TURC & PROPHET) ---
+# --- UTILS PARA BUSCAR COLUMNAS (Manejo de acentos y mayúsculas) ---
+def buscar_columna(df, keywords):
+    """Busca una columna que coincida con alguna de las keywords (case insensitive)."""
+    cols_lower = {c.lower(): c for c in df.columns}
+    for k in keywords:
+        if k.lower() in cols_lower:
+            return cols_lower[k.lower()]
+    return None
+
+def generar_popup_html(row, campos_deseados):
+    """Genera una tabla HTML bonita para el popup."""
+    html = """
+    <style>
+        table {width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 11px;}
+        td, th {border: 1px solid #ddd; padding: 4px;}
+        tr:nth-child(even){background-color: #f2f2f2;}
+        th {padding-top: 6px; padding-bottom: 6px; text-align: left; background-color: #2b8cbe; color: white;}
+    </style>
+    <table>
+        <tr><th>Atributo</th><th>Valor</th></tr>
+    """
+    
+    for label, posibles_nombres in campos_deseados.items():
+        col_real = buscar_columna(pd.DataFrame([row]), posibles_nombres)
+        valor = row[col_real] if col_real else "N/A"
+        # Limpieza de valores nulos o feos
+        if pd.isna(valor) or str(valor).strip() == "": valor = "-"
+        
+        html += f"<tr><td><b>{label}</b></td><td>{valor}</td></tr>"
+    
+    html += "</table>"
+    return html
+
+# --- LÓGICA TURC & PROPHET ---
 def interpolacion_segura_suave(points, values, grid_x, grid_y):
     try:
         grid_z = griddata(points, values, (grid_x, grid_y), method='cubic')
@@ -204,9 +225,10 @@ if gdf_zona is not None and not gdf_zona.empty:
                 
                 st.divider()
                 
-                # --- PESTAÑAS (TABS) ---
+                # --- PESTAÑAS ---
                 tab1, tab2, tab3, tab4 = st.tabs(["📈 Análisis Temporal", "🗺️ Mapa Recarga (Turc)", "💧 Hidrogeología & Bocatomas", "💾 Datos"])
                 
+                # TAB 1: GRÁFICAS (ETR RECUPERADA)
                 with tab1:
                     if not df_serie.empty and PROPHET_AVAILABLE:
                         with st.spinner("Proyectando..."):
@@ -215,13 +237,31 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 fig = go.Figure()
                                 h = df_fc[df_fc['tipo']=='Histórico']
                                 p = df_fc[df_fc['tipo']=='Proyección']
-                                fig.add_trace(go.Bar(x=h['ds'], y=h['p_rate'], name='Lluvia', marker_color='lightblue'))
-                                fig.add_trace(go.Scatter(x=h['ds'], y=h['recarga_est'], name='Recarga Hist', line=dict(color='blue'), fill='tozeroy'))
-                                fig.add_trace(go.Scatter(x=p['ds'], y=p['recarga_est'], name='Recarga Futura', line=dict(color='dodgerblue', dash='dash')))
-                                fig.update_layout(height=450, title="Evolución de Recarga", hovermode="x unified")
+                                
+                                # 1. Lluvia (Barras Fondo)
+                                fig.add_trace(go.Bar(x=h['ds'], y=h['p_rate'], name='Lluvia', marker_color='lightblue', opacity=0.6))
+                                
+                                # 2. ETR (Línea Naranja - IMPORTANTE)
+                                fig.add_trace(go.Scatter(x=df_fc['ds'], y=df_fc['etr_est'], name='ETR (Evapotranspiración)', 
+                                                         line=dict(color='darkorange', width=2, dash='dot')))
+                                
+                                # 3. Recarga Histórica (Relleno Azul)
+                                fig.add_trace(go.Scatter(x=h['ds'], y=h['recarga_est'], name='Recarga Histórica', 
+                                                         line=dict(color='blue'), fill='tozeroy'))
+                                
+                                # 4. Recarga Futura (Línea Punteada)
+                                fig.add_trace(go.Scatter(x=p['ds'], y=p['recarga_est'], name='Recarga Futura', 
+                                                         line=dict(color='dodgerblue', dash='dash')))
+                                
+                                # 5. Rango Incertidumbre
+                                fig.add_trace(go.Scatter(x=p['ds'], y=p['recarga_low'], line=dict(width=0), showlegend=False))
+                                fig.add_trace(go.Scatter(x=p['ds'], y=p['recarga_high'], line=dict(width=0), fill='tonexty', fillcolor='rgba(0,0,255,0.1)', name='Incertidumbre'))
+                                
+                                fig.update_layout(height=450, title="Dinámica: Lluvia vs ETR vs Recarga", hovermode="x unified")
                                 st.plotly_chart(fig, use_container_width=True)
                     else: st.warning("Datos insuficientes para proyección.")
                 
+                # TAB 2: MAPA TURC (Sin cambios)
                 with tab2:
                     if len(df_res_avg) >= 3:
                         gx, gy = np.mgrid[minx:maxx:200j, miny:maxy:200j]
@@ -234,104 +274,108 @@ if gdf_zona is not None and not gdf_zona.empty:
                         st.plotly_chart(fig_m, use_container_width=True)
                     else: st.warning("Se requieren al menos 3 estaciones.")
                 
-                # --- PESTAÑA 3: MAPAS DE SHAPEFILES (CON SELECTOR DE PROYECCIÓN) ---
+                # TAB 3: MAPAS GIS (POPUPS + HOVER)
                 with tab3:
                     st.markdown("### 🗺️ Mapa Integrado de Aguas Subterráneas")
                     
-                    # 1. SELECTOR DE AYUDA GIS
-                    with st.expander("🛠️ Corrector de Coordenadas (Usar si el mapa sale vacío)", expanded=True):
-                        st.caption("Si ves la tabla pero no el mapa, cambia esta opción hasta que aparezca.")
+                    with st.expander("🛠️ Corrector de Coordenadas", expanded=True):
+                        st.caption("Si ves la tabla pero no el mapa, cambia esta opción.")
                         epsg_manual = st.selectbox(
                             "Seleccionar Sistema de Origen:",
-                            options=["Detectar Automático", "EPSG:9377 (Origen Nacional - Nuevo)", "EPSG:3116 (Magna Bogotá - Clásico Antioquia)", "EPSG:3115 (Magna Oeste)"],
+                            options=["Detectar Automático", "EPSG:9377 (Origen Nacional)", "EPSG:3116 (Magna Bogotá)", "EPSG:3115 (Magna Oeste)"],
                             index=0
                         )
                     
-                    # 2. Carga Cruda
                     gdf_zonas_raw, msg_zonas = cargar_capa_base('Zonas_PotHidrogeologico.shp')
                     gdf_bocas_raw, msg_bocas = cargar_capa_base('Bocatomas_Ant.shp')
                     
-                    # 3. Función de reproyección manual basada en el selector
+                    # Reproyección manual
                     def aplicar_reproyeccion(gdf_in, opcion):
                         if gdf_in is None: return None
                         gdf = gdf_in.copy()
-                        
                         try:
-                            # Opción A: Automático (confiar en .prj o guess)
                             if opcion == "Detectar Automático":
-                                if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
-                                    return gdf.to_crs("EPSG:4326")
-                                # Si no tiene CRS y coordenadas son grandes, adivinar Magna Bogotá
+                                if gdf.crs and gdf.crs.to_string() != "EPSG:4326": return gdf.to_crs("EPSG:4326")
                                 if not gdf.crs and abs(gdf.geometry.iloc[0].centroid.x) > 180:
                                     gdf.set_crs("EPSG:3116", inplace=True)
                                     return gdf.to_crs("EPSG:4326")
                                 return gdf
-                            
-                            # Opción B: Manual
-                            codigo = opcion.split(" ")[0] # Extraer "EPSG:XXXX"
-                            # Forzar el CRS de origen y transformar
+                            codigo = opcion.split(" ")[0]
                             gdf.set_crs(codigo, inplace=True, allow_override=True)
                             return gdf.to_crs("EPSG:4326")
-                        except Exception as e:
-                            st.error(f"Error reproyectando: {e}")
-                            return None
+                        except: return None
 
-                    # 4. Aplicar corrección
                     gdf_zonas = aplicar_reproyeccion(gdf_zonas_raw, epsg_manual)
                     gdf_bocas = aplicar_reproyeccion(gdf_bocas_raw, epsg_manual)
                     
                     if gdf_zonas is not None:
-                        # Centrar mapa
                         c_lat = gdf_zonas.geometry.centroid.y.mean()
                         c_lon = gdf_zonas.geometry.centroid.x.mean()
-                        
                         m = folium.Map(location=[c_lat, c_lon], zoom_start=9, tiles="CartoDB positron")
                         
-                        # CAPA A: ZONAS
+                        # --- CAPA A: ZONAS (HOVER PERSONALIZADO) ---
                         fg_zonas = folium.FeatureGroup(name="🟫 Zonas Hidrogeológicas")
-                        cols = gdf_zonas.columns
-                        tip_field = next((c for c in ['Nombre', 'NOMBRE', 'ZONA', 'Zona'] if c in cols), cols[0])
+                        
+                        # Buscamos columnas reales
+                        col_pot = buscar_columna(gdf_zonas, ['Potencial_', 'POTENCIAL', 'Potencial']) or 'Desconocido'
+                        col_uni = buscar_columna(gdf_zonas, ['Unidad_Geo', 'UNIDAD_GEO', 'Unidad']) or 'Desconocido'
+                        col_sig = buscar_columna(gdf_zonas, ['SIGLA', 'Sigla']) or 'Desconocido'
+                        
+                        # Creamos tooltip solo si encontramos al menos una columna
+                        fields_tip = [c for c in [col_pot, col_uni, col_sig] if c != 'Desconocido']
+                        aliases_tip = [f"{c}:" for c in fields_tip]
                         
                         folium.GeoJson(
                             gdf_zonas,
                             style_function=lambda x: {'fillColor': '#2b8cbe', 'color': 'black', 'weight': 0.5, 'fillOpacity': 0.4},
-                            tooltip=folium.GeoJsonTooltip(fields=[tip_field])
+                            tooltip=folium.GeoJsonTooltip(fields=fields_tip, aliases=aliases_tip) if fields_tip else None
                         ).add_to(fg_zonas)
                         fg_zonas.add_to(m)
                         
-                        # CAPA B: BOCATOMAS
+                        # --- CAPA B: BOCATOMAS (POPUP COMPLETO) ---
                         if gdf_bocas is not None:
                             fg_bocas = folium.FeatureGroup(name="🚰 Bocatomas")
-                            b_cols = gdf_bocas.columns
-                            b_tip = next((c for c in ['Nombre', 'NOMBRE', 'BOCATOMA', 'ID'] if c in b_cols), b_cols[0])
                             
+                            # Diccionario de campos pedidos -> nombres posibles en SHP
+                            campos_map = {
+                                'Municipio': ['Municipio', 'MUNICIPIO', 'MPIO_CNMBR'],
+                                'Acuífero': ['Nombre_Acu', 'NOMBRE_ACU'],
+                                'Tipo': ['Tipo', 'TIPO'],
+                                'Veredas': ['Veredas', 'VEREDAS'],
+                                'Fuente Aba': ['Fuente_Aba', 'FUENTE_ABA'],
+                                'Fuente Sub': ['Fuente_Sub', 'FUENTE_SUB'],
+                                'Pozos': ['Pozos', 'POZOS'],
+                                'Fuente Sup': ['Fuente_Sup', 'FUENTE_SUP'],
+                                'Prot. Amb': ['Prot_Amb', 'PROT_AMB'],
+                                'Prot. Conta': ['Prot_Conta', 'PROT_CONTA'],
+                                'Entidad': ['Entidad_Ad', 'ENTIDAD_AD'],
+                                'Tipo Entidad': ['Tipo_Ent', 'TIPO_ENT'],
+                                'Suscriptor': ['Suscriptor', 'SUSCRIPTOR'],
+                                'Año Const': ['Año_Const', 'AÃ±o_Const', 'ANO_CONST'],
+                                'Vida Útil': ['Vida_Útil', 'Vida_Util', 'VIDA_UTIL'],
+                                'Tipo Capt': ['Tipo_Capt', 'TIPO_CAPT'],
+                                'Forma Capt': ['Forma_Capt', 'FORMA_CAPT']
+                            }
+
                             for _, row in gdf_bocas.iterrows():
                                 if row.geometry.geom_type == 'Point':
+                                    # Generar HTML
+                                    html = generar_popup_html(row, campos_map)
+                                    iframe = folium.IFrame(html, width=320, height=300)
+                                    popup = folium.Popup(iframe, max_width=320)
+                                    
                                     folium.CircleMarker(
                                         location=[row.geometry.y, row.geometry.x],
-                                        radius=5, color='red', fill=True, fill_color='darkred',
-                                        tooltip=f"{row[b_tip]}"
+                                        radius=5, color='red', fill=True, fill_color='darkred', fill_opacity=0.8,
+                                        popup=popup, # <--- AQUI ESTA EL POPUP
+                                        tooltip="Clic para info"
                                     ).add_to(fg_bocas)
                             fg_bocas.add_to(m)
                         
                         folium.LayerControl().add_to(m)
-                        
-                        # TRUCO FINAL: Auto-ajustar zoom
-                        sw = gdf_zonas.bounds[['miny', 'minx']].min().values.tolist()
-                        ne = gdf_zonas.bounds[['maxy', 'maxx']].max().values.tolist()
-                        m.fit_bounds([sw, ne]) 
-                        
                         st_folium(m, width="100%", height=600)
-                        
-                        # Tablas
-                        with st.expander("Ver Datos Tabulares"):
-                            tb1, tb2 = st.tabs(["Zonas", "Bocatomas"])
-                            with tb1: st.dataframe(gdf_zonas.drop(columns='geometry').head(50))
-                            with tb2: 
-                                if gdf_bocas is not None: st.dataframe(gdf_bocas.drop(columns='geometry').head(50))
                     else:
-                        st.error("No se pudo cargar el mapa. Intenta cambiar el selector de coordenadas.")
-                        st.code(msg_zonas) # Mostrar error técnico si falla
+                        st.error("No se pudo cargar mapa. Intenta cambiar el selector de coordenadas.")
                 
                 with tab4:
                     st.dataframe(df_res_avg)
