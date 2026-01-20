@@ -1,3 +1,5 @@
+# pages/02_💧_Aguas_Subterraneas.py
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -7,6 +9,10 @@ import geopandas as gpd
 from scipy.interpolate import griddata
 import sys
 import os
+
+# --- NUEVOS IMPORTS PARA MAPAS DE CAPAS (SHAPEFILES) ---
+import folium
+from streamlit_folium import st_folium
 
 # --- PROPHET (Opcional) ---
 try:
@@ -25,38 +31,18 @@ except ImportError:
     st.error("Error al importar módulos base.")
     st.stop()
 
-st.title("💧 Estimación de Recarga (Modelo Turc + Escenarios)")
+st.title("💧 Aguas Subterráneas y Recarga")
 
 # --- 1. DOCUMENTACIÓN ---
 with st.expander("📘 Metodología: Modelo Turc y Proyecciones", expanded=False):
     st.markdown("""
     ### 1. Marco Conceptual
-    La recarga de aguas subterráneas es la fracción de la precipitación que se infiltra en el suelo y alcanza el nivel freático, renovando los acuíferos. Este módulo estima la **Recarga      Potencial** mediante un balance hídrico climático corregido por la capacidad de infiltración del terreno.
-
+    La recarga de aguas subterráneas es la fracción de la precipitación que se infiltra en el suelo y alcanza el nivel freático.
     ### 2. Metodología: Método de Turc (1954)
-    Se utiliza el modelo empírico de Turc para estimar la Evapotranspiración Real (ETR) a partir de la precipitación y la temperatura media.
-
-    #### Ecuaciones:
-    1.  **Temperatura Estimada ($T$):** Se calcula mediante el gradiente altitudinal.
-        $$ T = 30 - (0.0065 \times Altitud) $$
-    2.  **Capacidad Evaporativa del Aire ($L_t$):**
-        $$ L(t) = 300 + 25T + 0.05T^3 $$
-    3.  **Evapotranspiración Real ($ETR$):**
-        $$ ETR = \\frac{P}{\\sqrt{0.9 + (\\frac{P}{L(t)})^2}} $$
-    4.  **Excedente Hídrico ($Exc$):**
-        $$ Exc = P - ETR $$
-    5.  **Recarga Potencial ($R$):** Se aplica un Coeficiente de Infiltración ($K_i$) dependiente del uso del suelo.
-        $$ R = Exc \times K_i $$
-
-    ### 3. Proyecciones
-    Se utiliza el algoritmo **Facebook Prophet** (o un modelo estadístico simplificado si no está disponible) para proyectar la serie temporal de precipitación. Luego, se recalcula el balance de Turc para cada mes futuro, permitiendo visualizar escenarios de estrés hídrico.
-    
-    ### 4. Fuentes
-    * **Clima:** Series históricas mensuales IDEAM/EPM (Tabla `precipitacion_mensual`).
-    * **Cartografía:** Capas oficiales de la Gobernación de Antioquia.
+    Se utiliza el modelo empírico de Turc para estimar la Evapotranspiración Real (ETR).
     """)
 
-# --- FUNCIONES GIS MEJORADAS ---
+# --- FUNCIONES GIS EXISTENTES ---
 @st.cache_data(ttl=3600)
 def load_geojson_cached(filename):
     filepath = os.path.join(os.path.dirname(__file__), '..', 'data', filename)
@@ -120,27 +106,38 @@ def add_context_layers_cartesian(fig, gdf_zona):
     except Exception as e:
         print(f"Error cargando capas contexto: {e}")
 
-def interpolacion_segura_suave(points, values, grid_x, grid_y):
-    """
-    Interpolación Cubic para suavizado real.
-    Si falla (por pocos puntos), cae a Linear.
-    """
+# --- NUEVA FUNCIÓN: CARGAR SHAPEFILE ZONAS ---
+@st.cache_data(show_spinner="Cargando Zonas Hidrogeológicas...")
+def cargar_capa_hidrogeologica():
+    # Ruta dinámica a data/shapefiles/
+    base_dir = os.path.dirname(__file__)
+    ruta_shp = os.path.abspath(os.path.join(base_dir, '..', 'data', 'shapefiles', 'Zonas_PotHidrogeologico.shp'))
+    
+    if not os.path.exists(ruta_shp):
+        return None
+
     try:
-        # 1. Cubic (Curvas suaves)
+        gdf = gpd.read_file(ruta_shp)
+        # Reproyección obligatoria para mapas web
+        if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
+            gdf = gdf.to_crs("EPSG:4326")
+        return gdf
+    except Exception as e:
+        print(f"Error SHP: {e}")
+        return None
+
+# --- FUNCIONES MATEMÁTICAS EXISTENTES ---
+def interpolacion_segura_suave(points, values, grid_x, grid_y):
+    try:
         grid_z = griddata(points, values, (grid_x, grid_y), method='cubic')
-        
-        # 2. Rellenar bordes (NaNs) con Nearest para evitar huecos feos
         mask = np.isnan(grid_z)
         if np.any(mask):
             grid_nearest = griddata(points, values, (grid_x, grid_y), method='nearest')
             grid_z[mask] = grid_nearest[mask]
         return grid_z
-        
     except Exception:
-        # Fallback a Linear si cubic falla
         return griddata(points, values, (grid_x, grid_y), method='linear')
 
-# --- CÁLCULOS TURC ---
 def calculate_turc_row(p_anual, altitud, ki):
     temp = 30 - (0.0065 * altitud)
     l_t = 300 + 25*temp + 0.05*(temp**3)
@@ -165,47 +162,33 @@ def calculate_turc_advanced(df, ki):
     df['recarga_mm'] = df['excedente_mm'] * ki
     return df
 
-# --- FORECASTING ---
 def run_prophet_forecast_hybrid(df_hist, months_ahead, altitud_ref, ki, ruido_factor):
     if not PROPHET_AVAILABLE: return pd.DataFrame()
-
     df_prophet = df_hist.rename(columns={'fecha': 'ds', 'p_mensual': 'y'})
     last_date_real = df_prophet['ds'].max()
-    
     m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True)
     m.fit(df_prophet)
-    
     target_date = pd.Timestamp.today() + pd.DateOffset(months=months_ahead)
     months_gap = (target_date.year - last_date_real.year) * 12 + (target_date.month - last_date_real.month)
     if months_gap < 1: months_gap = 12
-    
     future = m.make_future_dataframe(periods=months_gap, freq='M')
     forecast = m.predict(future)
-    
     df_merged = pd.merge(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], df_prophet[['ds', 'y']], on='ds', how='left')
-    
     df_merged['p_final'] = df_merged['y'].combine_first(df_merged['yhat'])
     df_merged['p_lower'] = df_merged['y'].combine_first(df_merged['yhat_lower'] * (1 - 0.1*ruido_factor))
     df_merged['p_upper'] = df_merged['y'].combine_first(df_merged['yhat_upper'] * (1 + 0.1*ruido_factor))
-    
     df_merged['p_rate'] = df_merged['p_final'].clip(lower=0) * 12
     df_merged['p_rate_low'] = df_merged['p_lower'].clip(lower=0) * 12
     df_merged['p_rate_high'] = df_merged['p_upper'].clip(lower=0) * 12
-    
     def calc_vec(p): return calculate_turc_row(p, altitud_ref, ki)
-    
     central = df_merged['p_rate'].apply(calc_vec)
     df_merged['etr_est'] = [x[0] for x in central]
     df_merged['recarga_est'] = [x[1] for x in central]
-    
     low = df_merged['p_rate_low'].apply(calc_vec)
     df_merged['recarga_low'] = [x[1] for x in low]
-    
     high = df_merged['p_rate_high'].apply(calc_vec)
     df_merged['recarga_high'] = [x[1] for x in high]
-    
     df_merged['tipo'] = np.where(df_merged['ds'] <= last_date_real, 'Histórico', 'Proyección')
-    
     return df_merged
 
 # --- INTERFAZ ---
@@ -226,7 +209,7 @@ st.sidebar.header("⚙️ Configuración Pronóstico")
 horizonte_meses = st.sidebar.slider("Meses Futuros:", 12, 60, 24)
 ruido = st.sidebar.slider("Incertidumbre Climática:", 0.0, 2.0, 0.5)
 
-# --- MOTOR ---
+# --- MOTOR PRINCIPAL ---
 if gdf_zona is not None and not gdf_zona.empty:
     engine = create_engine(st.secrets["DATABASE_URL"])
     minx, miny, maxx, maxy = gdf_zona.total_bounds
@@ -279,7 +262,13 @@ if gdf_zona is not None and not gdf_zona.empty:
                 
                 st.divider()
                 
-                tab_evol, tab_mapa, tab_data = st.tabs(["📈 Evolución & Pronóstico", "🗺️ Mapa de Recarga", "💾 Descargas"])
+                # --- PESTAÑAS (Aquí integramos la nueva) ---
+                tab_evol, tab_mapa, tab_zonas, tab_data = st.tabs([
+                    "📈 Evolución & Pronóstico", 
+                    "🗺️ Mapa de Recarga", 
+                    "💧 Zonas Hidrogeológicas", 
+                    "💾 Descargas"
+                ])
                 
                 with tab_evol:
                     if not df_serie.empty and PROPHET_AVAILABLE:
@@ -311,37 +300,27 @@ if gdf_zona is not None and not gdf_zona.empty:
                 with tab_mapa:
                     if len(df_res_avg) >= 3:
                         with st.spinner("Generando superficie suavizada (Cubic)..."):
-                            # Grid 200x200 para mayor resolución
                             gx, gy = np.mgrid[minx:maxx:200j, miny:maxy:200j]
-                            
                             grid_R = interpolacion_segura_suave(
                                 df_res_avg[['lon', 'lat']].values, 
                                 df_res_avg['recarga_mm'].values, gx, gy
                             )
                             
                             fig_m = go.Figure()
-                            
-                            # 1. Superficie Smooth
                             fig_m.add_trace(go.Contour(
                                 z=grid_R.T, x=np.linspace(minx, maxx, 200), y=np.linspace(miny, maxy, 200),
                                 colorscale="Blues", colorbar=dict(title="Recarga (mm/año)"), 
-                                hovertemplate="Recarga: %{z:.0f} mm<extra></extra>", # HOVER
+                                hovertemplate="Recarga: %{z:.0f} mm<extra></extra>",
                                 contours=dict(coloring='heatmap', showlabels=False),
-                                opacity=0.7, connectgaps=True, line_smoothing=1.3 # SMOOTH
+                                opacity=0.7, connectgaps=True, line_smoothing=1.3
                             ))
-                            
-                            # 2. Contexto (Fantasma)
                             add_context_layers_cartesian(fig_m, gdf_zona)
-                            
-                            # 3. Estaciones
                             fig_m.add_trace(go.Scatter(
                                 x=df_res_avg['lon'], y=df_res_avg['lat'],
                                 mode='markers', marker=dict(size=8, color='black', line=dict(width=1, color='white')),
                                 text=df_res_avg['nom_est'] + '<br>Recarga: ' + df_res_avg['recarga_mm'].round(0).astype(str),
                                 hoverinfo='text', name='Estaciones'
                             ))
-                            
-                            # 4. Límite Zona
                             for _, row in gdf_zona.iterrows():
                                 geom = row.geometry
                                 polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
@@ -352,14 +331,52 @@ if gdf_zona is not None and not gdf_zona.empty:
                             fig_m.update_layout(
                                 title=f"Mapa de Recarga: {nombre_seleccion}",
                                 height=650, margin=dict(l=0,r=0,t=40,b=0),
-                                xaxis=dict(visible=False, scaleanchor="y"), 
-                                yaxis=dict(visible=False),
-                                plot_bgcolor='white',
-                                # LEYENDA ABAJO IZQUIERDA
-                                legend=dict(x=0, y=0, bgcolor='rgba(255,255,255,0.7)')
+                                xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False),
+                                plot_bgcolor='white', legend=dict(x=0, y=0, bgcolor='rgba(255,255,255,0.7)')
                             )
                             st.plotly_chart(fig_m, use_container_width=True, key="mapa_final")
                     else: st.warning("Se necesitan al menos 3 estaciones.")
+
+                # --- NUEVA PESTAÑA INTEGRADA ---
+                with tab_zonas:
+                    st.markdown("### 🗺️ Zonas de Potencial Hidrogeológico")
+                    st.caption("Visualización basada en shapefile local.")
+                    
+                    gdf_pot = cargar_capa_hidrogeologica()
+                    
+                    if gdf_pot is not None:
+                        # Calcular centro
+                        centro_lat = gdf_pot.geometry.centroid.y.mean()
+                        centro_lon = gdf_pot.geometry.centroid.x.mean()
+                        
+                        m = folium.Map(location=[centro_lat, centro_lon], zoom_start=9, tiles="CartoDB positron")
+                        
+                        def estilo_zona(feature):
+                            return {
+                                'fillColor': '#2b8cbe', 'color': 'black',
+                                'weight': 1, 'fillOpacity': 0.5
+                            }
+                        
+                        # Detectar campos para tooltip de forma segura
+                        cols_dispo = gdf_pot.columns.tolist()
+                        # Intentar buscar columnas típicas o usar las primeras 3
+                        fields_tip = [c for c in ['Nombre', 'NOMBRE', 'ZONA', 'Zona', 'AREA', 'Area'] if c in cols_dispo]
+                        if not fields_tip: fields_tip = cols_dispo[:3]
+                        
+                        folium.GeoJson(
+                            gdf_pot,
+                            name="Potencial Hidrogeológico",
+                            style_function=estilo_zona,
+                            tooltip=folium.GeoJsonTooltip(fields=fields_tip)
+                        ).add_to(m)
+                        
+                        folium.LayerControl().add_to(m)
+                        st_folium(m, width="100%", height=600)
+                        
+                        with st.expander("Ver Datos de Atributos"):
+                            st.dataframe(gdf_pot.drop(columns='geometry'))
+                    else:
+                        st.warning("⚠️ No se encontró el archivo 'Zonas_PotHidrogeologico.shp' en la carpeta data/shapefiles/.")
 
                 with tab_data:
                     c_d1, c_d2 = st.columns(2)
