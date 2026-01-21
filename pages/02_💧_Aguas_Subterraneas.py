@@ -39,21 +39,18 @@ except ImportError:
 st.title("💧 Aguas Subterráneas: Recarga y Zonificación")
 
 # ==============================================================================
-# 1. LÓGICA MATEMÁTICA (TURC & PROPHET)
+# 1. LÓGICA MATEMÁTICA
 # ==============================================================================
 
 def calculate_turc_advanced(df, ki):
     df = df.copy()
     df['alt_est'] = pd.to_numeric(df['alt_est'], errors='coerce').fillna(0)
     df['p_anual'] = pd.to_numeric(df['p_anual'], errors='coerce').fillna(0)
-    
     df['temp_est'] = 30 - (0.0065 * df['alt_est'])
     t = df['temp_est']
     l_t = 300 + 25*t + 0.05*(t**3)
-    
     with np.errstate(divide='ignore', invalid='ignore'):
         df['etr_mm'] = df['p_anual'] / np.sqrt(0.9 + (df['p_anual'] / l_t)**2)
-    
     df['excedente_mm'] = (df['p_anual'] - df['etr_mm']).clip(lower=0)
     df['recarga_mm'] = df['excedente_mm'] * ki
     return df
@@ -70,30 +67,24 @@ def run_prophet_forecast_hybrid(df_hist, months_ahead, altitud_ref, ki, ruido_fa
     if not PROPHET_AVAILABLE: return pd.DataFrame()
     df_prophet = df_hist.rename(columns={'fecha': 'ds', 'p_mensual': 'y'})
     last_date_real = df_prophet['ds'].max()
-    
     m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True).fit(df_prophet)
     future = m.make_future_dataframe(periods=months_ahead, freq='ME') 
     forecast = m.predict(future)
-    
     df_merged = pd.merge(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], df_prophet[['ds', 'y']], on='ds', how='left')
     df_merged['p_final'] = df_merged['y'].combine_first(df_merged['yhat'])
     df_merged['p_lower'] = df_merged['y'].combine_first(df_merged['yhat_lower'] * (1 - 0.1*ruido_factor))
     df_merged['p_upper'] = df_merged['y'].combine_first(df_merged['yhat_upper'] * (1 + 0.1*ruido_factor))
-    
     df_merged['p_rate'] = df_merged['p_final'].clip(lower=0) * 12
     df_merged['p_rate_low'] = df_merged['p_lower'].clip(lower=0) * 12
     df_merged['p_rate_high'] = df_merged['p_upper'].clip(lower=0) * 12
-    
     def calc_vec(p): return calculate_turc_row(p, altitud_ref, ki)
     central = df_merged['p_rate'].apply(calc_vec)
     df_merged['etr_est'] = [x[0] for x in central]
     df_merged['recarga_est'] = [x[1] for x in central]
-    
     low = df_merged['p_rate_low'].apply(calc_vec)
     df_merged['recarga_low'] = [x[1] for x in low]
     high = df_merged['p_rate_high'].apply(calc_vec)
     df_merged['recarga_high'] = [x[1] for x in high]
-    
     df_merged['tipo'] = np.where(df_merged['ds'] <= last_date_real, 'Histórico', 'Proyección')
     return df_merged
 
@@ -108,19 +99,19 @@ def interpolacion_segura_suave(points, values, grid_x, grid_y):
     except: return griddata(points, values, (grid_x, grid_y), method='linear')
 
 # ==============================================================================
-# 2. CARGA GIS INTELIGENTE (MODO DEPURACIÓN ACTIVADO)
+# 2. CARGA GIS CON SELECTOR MANUAL (RECUPERADO)
 # ==============================================================================
 
 @st.cache_data(ttl=60, show_spinner="Consultando BD espacial...")
-def cargar_capas_gis_inteligente(minx, miny, maxx, maxy, debug_mode=False):
+def cargar_capas_gis_manual(epsg_seleccionado):
     """
-    debug_mode=True: Ignora el filtro espacial y carga los primeros 500 registros.
+    Carga capas SIN filtro espacial estricto (para evitar que salga vacío)
+    y permite al usuario re-proyectar manualmente.
     """
     engine = get_engine()
     layers = {"suelos": None, "hidro": None, "bocatomas": None}
-    counts = {"suelos": 0, "hidro": 0, "bocatomas": 0}
     
-    if not engine: return layers, counts
+    if not engine: return layers
     
     # Tolerancia simplificación (0.001 ~100m)
     tol = 0.001 
@@ -128,61 +119,62 @@ def cargar_capas_gis_inteligente(minx, miny, maxx, maxy, debug_mode=False):
     try:
         with engine.connect() as conn:
             
-            # --- CONSTRUCCIÓN DE LA CONSULTA ---
-            # Si Debug Mode está ON, NO usamos WHERE ST_Intersects
-            spatial_filter = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326))"
-            if debug_mode:
-                spatial_filter = "" # Sin filtro, trae todo
-                st.toast("🔧 Modo Diagnóstico: Cargando datos sin filtro espacial.", icon="⚠️")
-
-            # 1. SUELOS
+            # A. SUELOS
             try:
+                # Traemos columnas CLAVE + Geometría simplificada
+                # LIMIT 2000 para no explotar la memoria
                 q_suelos = text(f"""
                     SELECT "UCS", "PAISAJE", "CLIMA", "LITOLOGÍA", ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as geometry 
-                    FROM suelos
-                    {spatial_filter}
-                    LIMIT 500
+                    FROM suelos LIMIT 2000
                 """)
                 df_s = pd.read_sql(q_suelos, conn)
                 if not df_s.empty:
                     df_s['geometry'] = df_s['geometry'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers["suelos"] = gpd.GeoDataFrame(df_s, geometry='geometry', crs="EPSG:4326")
-                    counts["suelos"] = len(df_s)
-            except Exception as e: print(f"Error Suelos: {e}")
+            except Exception: pass
 
-            # 2. HIDROGEOLOGÍA
+            # B. HIDROGEOLOGÍA
             try:
                 q_hidro = text(f"""
                     SELECT nombre_zona, potencial, unidad_geo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as geometry 
-                    FROM zonas_hidrogeologicas
-                    {spatial_filter}
-                    LIMIT 500
+                    FROM zonas_hidrogeologicas LIMIT 2000
                 """)
                 df_h = pd.read_sql(q_hidro, conn)
                 if not df_h.empty:
                     df_h['geometry'] = df_h['geometry'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers["hidro"] = gpd.GeoDataFrame(df_h, geometry='geometry', crs="EPSG:4326")
-                    counts["hidro"] = len(df_h)
-            except Exception as e: print(f"Error Hidro: {e}")
+            except Exception: pass
 
-            # 3. BOCATOMAS
+            # C. BOCATOMAS
             try:
-                # Traer todo (*) para asegurar nombres
                 q_boca = text(f"""
                     SELECT *, ST_AsGeoJSON(geom) as geometry 
-                    FROM bocatomas
-                    {spatial_filter}
-                    LIMIT 500
+                    FROM bocatomas LIMIT 2000
                 """)
                 df_b = pd.read_sql(q_boca, conn)
                 if not df_b.empty:
                     df_b['geometry'] = df_b['geometry'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers["bocatomas"] = gpd.GeoDataFrame(df_b, geometry='geometry', crs="EPSG:4326")
-                    counts["bocatomas"] = len(df_b)
-            except Exception as e: print(f"Error Bocatomas: {e}")
+            except Exception: pass
             
     except Exception as e: print(f"Error General DB: {e}")
-    return layers, counts
+    
+    # --- FASE DE REPROYECCIÓN MANUAL ---
+    # Si el usuario eligió un EPSG específico, forzamos esa conversión
+    if epsg_seleccionado != "Detectar Automático":
+        codigo_epsg = epsg_seleccionado.split(" ")[0] # Ej: "EPSG:3116"
+        
+        for key in layers:
+            if layers[key] is not None:
+                try:
+                    # 1. Decimos: "Confía en mí, estos datos ESTÁN en este sistema (ej: Metros)"
+                    layers[key].set_crs(codigo_epsg, allow_override=True, inplace=True)
+                    # 2. Decimos: "Ahora conviértelos a GPS (Lat/Lon) para el mapa"
+                    layers[key] = layers[key].to_crs("EPSG:4326")
+                except Exception as e:
+                    print(f"Error reproyectando {key}: {e}")
+
+    return layers
 
 # ==============================================================================
 # 3. INTERFAZ
@@ -192,13 +184,6 @@ ids_dummy, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_e
 
 st.sidebar.divider()
 st.sidebar.header("🌱 Suelo & Infiltración")
-
-# --- DEBUG TOGGLE ---
-st.sidebar.markdown("---")
-debug_active = st.sidebar.checkbox("🔧 Modo Diagnóstico (Forzar carga)", value=False, help="Activa esto si el mapa sale vacío. Ignora el filtro de zona.")
-if debug_active:
-    st.sidebar.warning("El Modo Diagnóstico puede ser lento. Úsalo solo para verificar datos.")
-st.sidebar.markdown("---")
 
 col_s1, col_s2 = st.sidebar.columns(2)
 pct_bosque = col_s1.number_input("% Bosque", 0, 100, 60)
@@ -262,7 +247,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 
                 st.divider()
                 
-                tab_graf, tab_mapa, tab_data = st.tabs(["📈 Análisis", "🗺️ Mapa Integrado", "💾 Datos"])
+                tab_graf, tab_mapa, tab_data = st.tabs(["📈 Análisis", "🗺️ Mapa Integrado", "💾 Descargas"])
                 
                 # --- GRÁFICOS ---
                 with tab_graf:
@@ -286,39 +271,34 @@ if gdf_zona is not None and not gdf_zona.empty:
                 with tab_mapa:
                     st.markdown("### Visor de Recursos Hídricos")
                     
-                    # 1. Cargar Capas + Diagnóstico
-                    capas, counts = cargar_capas_gis_inteligente(minx, miny, maxx, maxy, debug_mode=debug_active)
+                    # --- SELECTOR DE PROYECCIÓN (RECUPERADO) ---
+                    with st.expander("🛠️ Corrector de Coordenadas (Usar si el mapa sale vacío)", expanded=True):
+                        col_tool1, col_tool2 = st.columns([2, 1])
+                        epsg_manual = col_tool1.selectbox(
+                            "Sistema de Coordenadas Original:",
+                            options=["Detectar Automático", "EPSG:9377 (Origen Nacional)", "EPSG:3116 (Magna Bogotá)", "EPSG:3115 (Magna Oeste)"],
+                            index=2, # Default a Magna Bogotá que suele funcionar en Antioquia
+                            help="Si el mapa no muestra los polígonos, cambia esta opción."
+                        )
                     
-                    with st.expander("🔍 Diagnóstico de Capas (Clic para ver)", expanded=True):
-                        c_info1, c_info2, c_info3 = st.columns(3)
-                        c_info1.metric("Polígonos Suelo", counts["suelos"])
-                        c_info2.metric("Zonas Hidro", counts["hidro"])
-                        c_info3.metric("Bocatomas", counts["bocatomas"])
-                        if counts["suelos"] == 0 and not debug_active:
-                            st.warning("⚠️ 0 Registros encontrados. Intenta activar el 'Modo Diagnóstico' en el menú lateral.")
-
+                    # 1. Cargar Capas (Usando el selector)
+                    capas = cargar_capas_gis_manual(epsg_manual)
                     gdf_suelos = capas["suelos"]
                     gdf_hidro = capas["hidro"]
                     gdf_bocas = capas["bocatomas"]
                     
                     c_lat = df_est_filtered['lat'].mean()
                     c_lon = df_est_filtered['lon'].mean()
-                    # Si estamos en modo debug, alejamos el zoom para ver dónde cayeron los datos
-                    zoom_ini = 8 if debug_active else 11
-                    m = folium.Map(location=[c_lat, c_lon], zoom_start=zoom_ini, tiles="CartoDB positron")
+                    m = folium.Map(location=[c_lat, c_lon], zoom_start=11, tiles="CartoDB positron")
                     
-                    # ESCALA DE COLOR RECARGA
+                    # ESCALA COLOR RECARGA
                     recarga_min = df_res_avg['recarga_mm'].min()
                     recarga_max = df_res_avg['recarga_mm'].max()
                     if recarga_max == recarga_min: recarga_max += 1 
-                    
-                    cmap = LinearColormap(
-                        colors=['#ffffcc', '#a1dab4', '#41b6c4', '#225ea8'], 
-                        vmin=recarga_min, vmax=recarga_max, caption="Recarga (mm/año)"
-                    )
+                    cmap = LinearColormap(['#ffffcc', '#a1dab4', '#41b6c4', '#225ea8'], vmin=recarga_min, vmax=recarga_max, caption="Recarga (mm)")
                     m.add_child(cmap)
 
-                    # A. CAPA SUELOS
+                    # A. CAPA SUELOS (Fondo)
                     if gdf_suelos is not None:
                         def style_suelos(feature):
                             p = str(feature['properties'].get('PAISAJE', '')).lower()
@@ -345,7 +325,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                         ).add_to(fg_hidro)
                         fg_hidro.add_to(m)
 
-                    # C. RECARGA
+                    # C. RECARGA (Raster + Puntos)
                     if len(df_res_avg) >= 3:
                         fg_recarga = folium.FeatureGroup(name="🌧️ Recarga", show=True)
                         try:
