@@ -67,15 +67,13 @@ def run_prophet_forecast_hybrid(df_hist, months_ahead, altitud_ref, ki, ruido_fa
     if not PROPHET_AVAILABLE: return pd.DataFrame()
     df_prophet = df_hist.rename(columns={'fecha': 'ds', 'p_mensual': 'y'})
     m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True).fit(df_prophet)
-    future = m.make_future_dataframe(periods=months_ahead, freq='ME')
+    future = m.make_future_dataframe(periods=months_ahead, freq='ME') 
     forecast = m.predict(future)
     df_merged = pd.merge(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], df_prophet[['ds', 'y']], on='ds', how='left')
     df_merged['p_final'] = df_merged['y'].combine_first(df_merged['yhat'])
     df_merged['p_rate'] = df_merged['p_final'].clip(lower=0) * 12
-    # Simple uncertainty
     df_merged['p_lower'] = df_merged['p_rate'] * (1 - 0.1*ruido_factor)
     df_merged['p_upper'] = df_merged['p_rate'] * (1 + 0.1*ruido_factor)
-    
     def calc_vec(p): return calculate_turc_row(p, altitud_ref, ki)
     central = df_merged['p_rate'].apply(calc_vec)
     df_merged['etr_est'] = [x[0] for x in central]
@@ -89,64 +87,79 @@ def interpolacion_robusta(points, values, grid_x, grid_y):
     try:
         grid_z = griddata(points, values, (grid_x, grid_y), method='linear')
         mask = np.isnan(grid_z)
-        if np.any(mask):
+        # Rellenar solo si hay suficientes puntos
+        if np.any(mask) and len(points) > 3:
             grid_n = griddata(points, values, (grid_x, grid_y), method='nearest')
             grid_z[mask] = grid_n[mask]
+        elif np.all(mask): # Si falló todo, usar nearest directo
+             grid_z = griddata(points, values, (grid_x, grid_y), method='nearest')
         return grid_z
     except: return griddata(points, values, (grid_x, grid_y), method='nearest')
 
 # ==============================================================================
-# 2. CARGA GIS OPTIMIZADA (LIGERA)
+# 2. CARGA GIS DIAGNÓSTICA (DETECTA BOCATOMAS)
 # ==============================================================================
 
-@st.cache_data(ttl=60, show_spinner="Cargando capas optimizadas...")
-def cargar_capas_gis_light():
-    """
-    Carga capas usando ST_Simplify y LIMIT para evitar crashes de memoria.
-    No filtra por zona para asegurar que se vean datos, pero limita la cantidad.
-    """
+@st.cache_data(ttl=60, show_spinner="Escaneando BD...")
+def cargar_capas_gis_diagnostico():
     engine = get_engine()
     layers = {}
+    logs = []
     
-    if not engine: return layers
-    
-    # Tolerancia de simplificación (0.005 grados ~ 500m) -> Reduce peso drásticamente
-    tol = 0.005
+    if not engine: return layers, ["Sin conexión a BD"]
     
     try:
         with engine.connect() as conn:
             
-            # --- 1. SUELOS (Traemos todo, son pocos) ---
+            # --- 1. SUELOS ---
             try:
-                # ST_Simplify es la clave para que no explote
-                q = text(f'SELECT *, ST_AsGeoJSON(ST_Simplify(geom, {tol})) as geometry_json FROM suelos LIMIT 1000')
+                q = text('SELECT *, ST_AsGeoJSON(ST_Simplify(geom, 0.001)) as geometry_json FROM suelos LIMIT 1000')
                 df = pd.read_sql(q, conn)
                 if not df.empty:
                     df['geometry'] = df['geometry_json'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers['suelos'] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
-            except Exception as e: print(f"Error Suelos: {e}")
+                    logs.append(f"✅ Suelos: {len(df)} registros cargados.")
+                else:
+                    logs.append("⚠️ Tabla 'suelos' vacía.")
+            except Exception as e: logs.append(f"❌ Error Suelos: {e}")
 
-            # --- 2. HIDROGEOLOGÍA (Limitamos a 500 y simplificamos mucho) ---
+            # --- 2. HIDROGEOLOGÍA ---
             try:
-                # Limitamos a 500 polígonos para evitar el CRASH
-                q = text(f'SELECT *, ST_AsGeoJSON(ST_Simplify(geom, {tol})) as geometry_json FROM zonas_hidrogeologicas LIMIT 500')
+                q = text('SELECT *, ST_AsGeoJSON(ST_Simplify(geom, 0.001)) as geometry_json FROM zonas_hidrogeologicas LIMIT 500')
                 df = pd.read_sql(q, conn)
                 if not df.empty:
                     df['geometry'] = df['geometry_json'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers['hidro'] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
-            except Exception as e: print(f"Error Hidro: {e}")
+                    logs.append(f"✅ Hidro: {len(df)} registros cargados.")
+            except Exception as e: logs.append(f"❌ Error Hidro: {e}")
 
-            # --- 3. BOCATOMAS (Puntos son ligeros) ---
+            # --- 3. BOCATOMAS (INTENTO DOBLE) ---
             try:
+                # Intento A: Columna 'geom'
                 q = text('SELECT *, ST_AsGeoJSON(geom) as geometry_json FROM bocatomas LIMIT 2000')
                 df = pd.read_sql(q, conn)
                 if not df.empty:
                     df['geometry'] = df['geometry_json'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers['bocatomas'] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
-            except Exception: pass
+                    logs.append(f"✅ Bocatomas (geom): {len(df)} registros.")
+                else:
+                    # Si devuelve vacío, intentamos ver si la tabla tiene algo
+                    count = pd.read_sql("SELECT count(*) FROM bocatomas", conn).iloc[0,0]
+                    logs.append(f"⚠️ Tabla 'bocatomas' tiene {count} filas, pero la consulta geom falló o devolvió vacío.")
+            except Exception as e:
+                # Intento B: Columna 'geometry' (a veces pasa)
+                try:
+                    q = text('SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM bocatomas LIMIT 2000')
+                    df = pd.read_sql(q, conn)
+                    if not df.empty:
+                        df['geometry'] = df['geometry_json'].apply(lambda x: shape(json.loads(x)) if x else None)
+                        layers['bocatomas'] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
+                        logs.append(f"✅ Bocatomas (geometry): {len(df)} registros.")
+                except:
+                    logs.append(f"❌ Error Bocatomas: {e}")
             
-    except Exception as e: st.error(f"Error BD Light: {e}")
-    return layers
+    except Exception as e: logs.append(f"Error General: {e}")
+    return layers, logs
 
 # ==============================================================================
 # 3. INTERFAZ
@@ -176,7 +189,7 @@ if gdf_zona is not None and not gdf_zona.empty:
     engine = get_engine()
     minx, miny, maxx, maxy = gdf_zona.total_bounds
     
-    # Estaciones
+    # Cargar Datos Climáticos
     try:
         q_est = text("""
             SELECT id_estacion, nom_est, alt_est, ST_Y(geom::geometry) as lat, ST_X(geom::geometry) as lon
@@ -218,7 +231,6 @@ if gdf_zona is not None and not gdf_zona.empty:
                 
                 tab_evol, tab_mapa, tab_data = st.tabs(["📈 Análisis", "🗺️ Mapa Integrado", "💾 Datos"])
                 
-                # --- GRÁFICOS ---
                 with tab_evol:
                     if not df_serie.empty and PROPHET_AVAILABLE:
                         with st.spinner("Procesando..."):
@@ -234,21 +246,23 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 fig.update_layout(title="Dinámica Hídrica", height=450, hovermode="x unified")
                                 st.plotly_chart(fig, use_container_width=True)
                 
-                # --- MAPA INTEGRADO ---
                 with tab_mapa:
                     st.markdown("### Visor de Recursos Hídricos")
                     
-                    layers = cargar_capas_gis_light()
+                    layers, logs = cargar_capas_gis_diagnostico()
                     
+                    with st.expander("🛠️ Diagnóstico de Capas (Ver Logs)", expanded=False):
+                        for log in logs:
+                            st.caption(log)
+                        
+                        # MOSTRAR DATOS CRUDOS DE BOCATOMAS PARA DEPURAR
+                        if 'bocatomas' in layers:
+                            st.dataframe(layers['bocatomas'].drop(columns='geometry').head(3), hide_index=True)
+
                     gdf_s = layers.get('suelos')
                     gdf_h = layers.get('hidro')
                     gdf_b = layers.get('bocatomas')
                     
-                    with st.expander("Estado de Capas (Click para detalles)", expanded=False):
-                        st.write(f"Suelos Cargados: {len(gdf_s) if gdf_s is not None else 0}")
-                        st.write(f"Hidro Cargados: {len(gdf_h) if gdf_h is not None else 0} (Limitado a 500 para seguridad)")
-                        st.write(f"Bocatomas Cargadas: {len(gdf_b) if gdf_b is not None else 0}")
-
                     # Mapa Base
                     c_lat = df_est_filtered['lat'].mean()
                     c_lon = df_est_filtered['lon'].mean()
@@ -256,50 +270,48 @@ if gdf_zona is not None and not gdf_zona.empty:
                     
                     # A. SUELOS (Verde)
                     if gdf_s is not None:
-                        # Detección dinámica de columna de etiqueta
-                        cols = [c for c in gdf_s.columns if c not in ['geometry', 'geometry_json', 'id']]
-                        # Preferencias: PAISAJE > unidad_suelo > primera columna
-                        col_label = next((c for c in cols if 'PAISAJE' in c), next((c for c in cols if 'unidad' in c), cols[0] if cols else None))
-                        
-                        def style_s(feature):
-                            return {'fillColor': '#e5f5e0', 'color': 'gray', 'weight': 0.5, 'fillOpacity': 0.4}
+                        # Prioridad de etiqueta: ID si PAISAJE está vacío o no existe
+                        cols = gdf_s.columns.tolist()
+                        tooltip_fields = ['id'] # Fallback seguro
+                        if 'unidad_suelo' in cols: tooltip_fields.append('unidad_suelo')
+                        if 'PAISAJE' in cols: tooltip_fields.append('PAISAJE')
                         
                         fg_s = folium.FeatureGroup(name="🌱 Suelos")
                         folium.GeoJson(
                             gdf_s, 
-                            style_function=style_s,
-                            tooltip=folium.GeoJsonTooltip(fields=[col_label]) if col_label else None
+                            style_function=lambda x: {'fillColor': '#e5f5e0', 'color': 'gray', 'weight': 0.5, 'fillOpacity': 0.4},
+                            tooltip=folium.GeoJsonTooltip(fields=tooltip_fields)
                         ).add_to(fg_s)
                         fg_s.add_to(m)
 
                     # B. HIDRO (Azul)
                     if gdf_h is not None:
-                        cols = [c for c in gdf_h.columns if c not in ['geometry', 'geometry_json', 'id']]
-                        col_label = cols[0] if cols else None
-                        
                         fg_h = folium.FeatureGroup(name="💧 Hidrogeología", show=False)
                         folium.GeoJson(
                             gdf_h, 
                             style_function=lambda x: {'fillColor': '#2c7fb8', 'color': '#253494', 'weight': 1, 'fillOpacity': 0.4},
-                            tooltip=folium.GeoJsonTooltip(fields=[col_label]) if col_label else None
+                            tooltip=folium.GeoJsonTooltip(fields=['id'])
                         ).add_to(fg_h)
                         fg_h.add_to(m)
 
-                    # C. RECARGA (Isolíneas)
+                    # C. RECARGA (Isolíneas Ajustadas)
                     if len(df_res_avg) >= 3:
                         fg_r = folium.FeatureGroup(name="🌧️ Recarga (Mapa Calor)", show=True)
                         try:
-                            # Grid denso
-                            gx, gy = np.mgrid[minx:maxx:200j, miny:maxy:200j]
-                            # Interpolación robusta
+                            # Ajustar límites EXACTOS a las estaciones, no a la zona administrativa
+                            # Esto evita que el grid sea enorme y vacío
+                            pad = 0.05
+                            d_minx, d_miny = df_res_avg['lon'].min() - pad, df_res_avg['lat'].min() - pad
+                            d_maxx, d_maxy = df_res_avg['lon'].max() + pad, df_res_avg['lat'].max() + pad
+                            
+                            gx, gy = np.mgrid[d_minx:d_maxx:200j, d_miny:d_maxy:200j]
                             grid = interpolacion_robusta(df_res_avg[['lon','lat']].values, df_res_avg['recarga_mm'].values, gx, gy)
-                            # Colormap
+                            
                             cmap = LinearColormap(['#ffffcc', '#a1dab4', '#41b6c4', '#225ea8'], vmin=0, vmax=2000, caption="Recarga")
                             m.add_child(cmap)
                             
-                            # Imagen
                             folium.raster_layers.ImageOverlay(
-                                image=grid.T, bounds=[[miny, minx], [maxy, maxx]], opacity=0.6, 
+                                image=grid.T, bounds=[[d_miny, d_minx], [d_maxy, d_maxx]], opacity=0.6, 
                                 colormap=lambda x: cmap(x)
                             ).add_to(fg_r)
                         except Exception as e: print(e)
@@ -312,28 +324,24 @@ if gdf_zona is not None and not gdf_zona.empty:
                             ).add_to(fg_r)
                         fg_r.add_to(m)
 
-                    # D. BOCATOMAS (Puntos Rojos)
+                    # D. BOCATOMAS (Si existen)
                     if gdf_b is not None:
                         fg_b = folium.FeatureGroup(name="🚰 Bocatomas", show=True)
-                        cols = gdf_b.columns.tolist()
-                        col_n = next((c for c in cols if 'nombre' in c.lower()), cols[0] if cols else None)
-                        
                         for _, row in gdf_b.iterrows():
-                            if row.geometry.geom_type == 'Point':
+                            if row.geometry and row.geometry.geom_type == 'Point':
                                 folium.CircleMarker(
                                     [row.geometry.y, row.geometry.x], radius=4, color='red', fill=True, fill_color='darkred',
-                                    tooltip=f"{row[col_n]}" if col_n else "Bocatoma"
+                                    tooltip=f"Bocatoma ID: {row.get('id', '?')}"
                                 ).add_to(fg_b)
                         fg_b.add_to(m)
 
                     folium.LayerControl().add_to(m)
                     st_folium(m, width="100%", height=600)
 
-                # --- TAB 3: DESCARGAS ---
                 with tab_data:
                     c1, c2 = st.columns(2)
                     csv = df_res_avg.to_csv(index=False).encode('utf-8')
-                    c1.download_button("📥 Descargar Tabla (CSV)", csv, "balance.csv", "text/csv")
+                    c1.download_button("📥 Descargar Tabla", csv, "balance.csv", "text/csv")
                     st.dataframe(df_res_avg)
 
             else: st.warning("Seleccione estaciones.")
