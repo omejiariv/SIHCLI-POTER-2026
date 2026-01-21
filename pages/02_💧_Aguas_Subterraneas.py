@@ -39,21 +39,8 @@ except ImportError:
 st.title("💧 Estimación de Recarga (Modelo Turc + Zonificación)")
 
 # ==============================================================================
-# 1. FUNCIONES MATEMÁTICAS (TURC & PROPHET)
+# 1. FUNCIONES MATEMÁTICAS (CORE ORIGINAL)
 # ==============================================================================
-
-def calculate_turc_advanced(df, ki):
-    df = df.copy()
-    df['alt_est'] = pd.to_numeric(df['alt_est'], errors='coerce').fillna(0)
-    df['p_anual'] = pd.to_numeric(df['p_anual'], errors='coerce').fillna(0)
-    df['temp_est'] = 30 - (0.0065 * df['alt_est'])
-    t = df['temp_est']
-    l_t = 300 + 25*t + 0.05*(t**3)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        df['etr_mm'] = df['p_anual'] / np.sqrt(0.9 + (df['p_anual'] / l_t)**2)
-    df['excedente_mm'] = (df['p_anual'] - df['etr_mm']).clip(lower=0)
-    df['recarga_mm'] = df['excedente_mm'] * ki
-    return df
 
 def calculate_turc_row(p_anual, altitud, ki):
     temp = 30 - (0.0065 * altitud)
@@ -62,6 +49,22 @@ def calculate_turc_row(p_anual, altitud, ki):
     etr = p_anual / np.sqrt(0.9 + (p_anual / l_t)**2)
     recarga = (p_anual - etr) * ki
     return etr, max(0, recarga)
+
+def calculate_turc_advanced(df, ki):
+    df = df.copy()
+    df['alt_est'] = pd.to_numeric(df['alt_est'], errors='coerce').fillna(0)
+    df['p_anual'] = pd.to_numeric(df['p_anual'], errors='coerce').fillna(0)
+    
+    df['temp_est'] = 30 - (0.0065 * df['alt_est'])
+    t = df['temp_est']
+    l_t = 300 + 25*t + 0.05*(t**3)
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        df['etr_mm'] = df['p_anual'] / np.sqrt(0.9 + (df['p_anual'] / l_t)**2)
+    
+    df['excedente_mm'] = (df['p_anual'] - df['etr_mm']).clip(lower=0)
+    df['recarga_mm'] = df['excedente_mm'] * ki
+    return df
 
 def run_prophet_forecast_hybrid(df_hist, months_ahead, altitud_ref, ki, ruido_factor):
     if not PROPHET_AVAILABLE: return pd.DataFrame()
@@ -88,24 +91,33 @@ def run_prophet_forecast_hybrid(df_hist, months_ahead, altitud_ref, ki, ruido_fa
     df_merged['tipo'] = np.where(df_merged['ds'] <= last_date_real, 'Histórico', 'Proyección')
     return df_merged
 
-def interpolacion_segura_suave(points, values, grid_x, grid_y):
+def interpolacion_robusta(points, values, grid_x, grid_y):
+    """
+    Interpolación mejorada: Primero intenta Cúbica, rellena bordes con Nearest.
+    Garantiza que no queden huecos blancos en el mapa.
+    """
     try:
-        grid_z = griddata(points, values, (grid_x, grid_y), method='cubic')
+        # 1. Interpolación suave (Linear)
+        grid_z = griddata(points, values, (grid_x, grid_y), method='linear')
+        # 2. Rellenar NaNs con el valor más cercano (Nearest Neighbor)
         mask = np.isnan(grid_z)
         if np.any(mask):
             grid_nearest = griddata(points, values, (grid_x, grid_y), method='nearest')
             grid_z[mask] = grid_nearest[mask]
         return grid_z
-    except: return griddata(points, values, (grid_x, grid_y), method='linear')
+    except:
+        return griddata(points, values, (grid_x, grid_y), method='nearest')
 
 # ==============================================================================
-# 2. CARGA GIS TRANSFORMADA (LA CLAVE)
+# 2. CARGA GIS "TODO O NADA" (SIN FILTROS QUE FALLEN)
 # ==============================================================================
 
-@st.cache_data(ttl=60, show_spinner="Consultando BD espacial...")
-def cargar_capas_gis_transformada(minx, miny, maxx, maxy, modo_correccion):
+@st.cache_data(ttl=60, show_spinner="Cargando capas geográficas completas...")
+def cargar_capas_gis_total():
     """
-    Carga capas aplicando transformación de coordenadas al vuelo en SQL.
+    Carga TODA la información espacial disponible en la BD.
+    Sin ST_Transform (porque ya es WGS84).
+    Sin ST_Intersects (para evitar errores de borde).
     """
     engine = get_engine()
     layers = {"suelos": None, "hidro": None, "bocatomas": None}
@@ -113,46 +125,27 @@ def cargar_capas_gis_transformada(minx, miny, maxx, maxy, modo_correccion):
     
     if not engine: return layers, counts
     
-    # Tolerancia simplificación
+    # Tolerancia simplificación (0.001 grados ~ 100m) para aligerar la carga
     tol = 0.001 
     
-    # LÓGICA DE TRANSFORMACIÓN SQL
-    # Si modo es "Original", asumimos que ya es 4326.
-    # Si modo es "Forzar...", le decimos a PostGIS: "La geom original es SRID X, pásala a 4326".
-    
-    geom_sql = f"ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol}))" # Default
-    
-    if "Magna Bogotá" in modo_correccion: # SRID 3116 -> 4326
-        geom_sql = f"ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Transform(ST_SetSRID(geom, 3116), 4326), {tol}))"
-    elif "Origen Nacional" in modo_correccion: # SRID 9377 -> 4326
-        geom_sql = f"ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Transform(ST_SetSRID(geom, 9377), 4326), {tol}))"
-    elif "Magna Sirgas" in modo_correccion: # SRID 3115 -> 4326
-        geom_sql = f"ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Transform(ST_SetSRID(geom, 3115), 4326), {tol}))"
-
-    # FILTRO: Si forzamos coord, el BBOX original puede no coincidir, así que quitamos filtro espacial estricto
-    # y traemos LIMIT 500 para probar.
-    filtro_sql = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326))"
-    if "Forzar" in modo_correccion:
-        filtro_sql = "" # Sin filtro espacial, traer todo (limitado)
-    
-    limit_sql = "LIMIT 1000"
-
     try:
         with engine.connect() as conn:
             
-            # SUELOS
+            # --- A. SUELOS ---
+            # Tus datos ya son lat/lon, solo necesitamos simplificar un poco la geometría
             try:
-                q_s = text(f'SELECT "UCS", "PAISAJE", "CLIMA", {geom_sql} as geometry FROM suelos {filtro_sql} {limit_sql}')
+                q_s = text(f'SELECT "UCS", "PAISAJE", "CLIMA", "LITOLOGÍA", ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as geometry FROM suelos')
                 df_s = pd.read_sql(q_s, conn)
                 if not df_s.empty:
                     df_s['geometry'] = df_s['geometry'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers["suelos"] = gpd.GeoDataFrame(df_s, geometry='geometry', crs="EPSG:4326")
                     counts["suelos"] = len(df_s)
-            except Exception: pass
+            except Exception as e: print(f"Error Suelos: {e}")
 
-            # HIDRO
+            # --- B. HIDROGEOLOGÍA ---
             try:
-                q_h = text(f'SELECT nombre_zona, potencial, unidad_geo, {geom_sql} as geometry FROM zonas_hidrogeologicas {filtro_sql} {limit_sql}')
+                # Limitamos a 3000 para no saturar si hay demasiadas
+                q_h = text(f'SELECT nombre_zona, potencial, unidad_geo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as geometry FROM zonas_hidrogeologicas LIMIT 3000')
                 df_h = pd.read_sql(q_h, conn)
                 if not df_h.empty:
                     df_h['geometry'] = df_h['geometry'].apply(lambda x: shape(json.loads(x)) if x else None)
@@ -160,13 +153,10 @@ def cargar_capas_gis_transformada(minx, miny, maxx, maxy, modo_correccion):
                     counts["hidro"] = len(df_h)
             except Exception: pass
 
-            # BOCATOMAS
+            # --- C. BOCATOMAS ---
             try:
-                # Para puntos no simplificamos
-                geom_pt = "ST_AsGeoJSON(geom)"
-                if "Magna Bogotá" in modo_correccion: geom_pt = "ST_AsGeoJSON(ST_Transform(ST_SetSRID(geom, 3116), 4326))"
-                
-                q_b = text(f'SELECT *, {geom_pt} as geometry FROM bocatomas {filtro_sql} {limit_sql}')
+                # Puntos exactos sin simplificar
+                q_b = text('SELECT *, ST_AsGeoJSON(geom) as geometry FROM bocatomas')
                 df_b = pd.read_sql(q_b, conn)
                 if not df_b.empty:
                     df_b['geometry'] = df_b['geometry'].apply(lambda x: shape(json.loads(x)) if x else None)
@@ -174,7 +164,7 @@ def cargar_capas_gis_transformada(minx, miny, maxx, maxy, modo_correccion):
                     counts["bocatomas"] = len(df_b)
             except Exception: pass
             
-    except Exception as e: print(f"Error SQL: {e}")
+    except Exception as e: print(f"Error General DB: {e}")
     
     return layers, counts
 
@@ -185,12 +175,12 @@ def cargar_capas_gis_transformada(minx, miny, maxx, maxy, modo_correccion):
 ids_dummy, nombre_seleccion, altitud_ref, gdf_zona = selectors.render_selector_espacial()
 
 st.sidebar.divider()
-st.sidebar.header("🌱 Suelo & Infiltración")
-col_s1, col_s2 = st.sidebar.columns(2)
+st.sidebar.header("🌱 Parámetros del Suelo")
+col_s1, col_s2, col_s3 = st.sidebar.columns(3)
 pct_bosque = col_s1.number_input("% Bosque", 0, 100, 60)
 pct_cultivo = col_s2.number_input("% Agrícola", 0, 100, 30)
 pct_urbano = max(0, 100 - (pct_bosque + pct_cultivo))
-st.sidebar.metric("% Urbano", f"{pct_urbano}%")
+col_s3.metric("% Urbano", f"{pct_urbano}%")
 ki_ponderado = ((pct_bosque * 0.50) + (pct_cultivo * 0.30) + (pct_urbano * 0.10)) / 100.0
 st.sidebar.metric("Coef. Infiltración ($K_i$)", f"{ki_ponderado:.2f}")
 
@@ -207,7 +197,7 @@ if gdf_zona is not None and not gdf_zona.empty:
     engine = get_engine()
     minx, miny, maxx, maxy = gdf_zona.total_bounds
     
-    # Cargar Datos Climáticos
+    # 1. Cargar Estaciones
     try:
         q_est = text("""
             SELECT id_estacion, nom_est, alt_est, ST_Y(geom::geometry) as lat, ST_X(geom::geometry) as lon
@@ -218,7 +208,7 @@ if gdf_zona is not None and not gdf_zona.empty:
         df_est = pd.read_sql(q_est, engine, params={"minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy})
         
         if not df_est.empty:
-            sel_local = st.multiselect("📍 Filtrar Estaciones:", df_est['nom_est'].unique(), default=df_est['nom_est'].unique())
+            sel_local = st.multiselect("📍 Estaciones:", df_est['nom_est'].unique(), default=df_est['nom_est'].unique())
             df_est_filtered = df_est[df_est['nom_est'].isin(sel_local)]
             
             if not df_est_filtered.empty:
@@ -247,12 +237,13 @@ if gdf_zona is not None and not gdf_zona.empty:
                 
                 st.divider()
                 
+                # TABS
                 tab_evol, tab_mapa, tab_data = st.tabs(["📈 Análisis", "🗺️ Mapa Integrado", "💾 Descargas"])
                 
-                # --- TAB 1: GRÁFICOS (Originales) ---
+                # --- GRÁFICOS (RESTAURADOS) ---
                 with tab_evol:
                     if not df_serie.empty and PROPHET_AVAILABLE:
-                        with st.spinner("Procesando proyección..."):
+                        with st.spinner("Generando gráficos..."):
                             df_fc = run_prophet_forecast_hybrid(df_serie, horizonte_meses, altitud_ref, ki_ponderado, ruido)
                             if not df_fc.empty:
                                 fig = go.Figure()
@@ -260,44 +251,38 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 p = df_fc[df_fc['tipo']=='Proyección']
                                 fig.add_trace(go.Bar(x=h['ds'], y=h['p_rate'], name='Lluvia', marker_color='rgba(135, 206, 235, 0.5)'))
                                 fig.add_trace(go.Scatter(x=df_fc['ds'], y=df_fc['etr_est'], name='ETR', line=dict(color='orange', width=1.5, dash='dot')))
-                                fig.add_trace(go.Scatter(x=h['ds'], y=h['recarga_est'], name='Recarga Histórica', line=dict(color='blue', width=2), fill='tozeroy', fillcolor='rgba(0,0,255,0.1)'))
-                                fig.add_trace(go.Scatter(x=p['ds'], y=p['recarga_est'], name='Recarga Proyectada', line=dict(color='dodgerblue', width=2, dash='dash')))
-                                fig.update_layout(title="Dinámica de Recarga: Datos Reales + Proyección", height=500, hovermode="x unified")
+                                fig.add_trace(go.Scatter(x=h['ds'], y=h['recarga_est'], name='Recarga Hist', line=dict(color='blue', width=2), fill='tozeroy'))
+                                fig.add_trace(go.Scatter(x=p['ds'], y=p['recarga_est'], name='Recarga Fut', line=dict(color='dodgerblue', width=2, dash='dash')))
+                                fig.update_layout(title="Dinámica Hídrica", height=450, hovermode="x unified")
                                 st.plotly_chart(fig, use_container_width=True)
                 
-                # --- TAB 2: MAPA INTEGRADO ---
+                # --- MAPA INTEGRADO (ARREGLADO) ---
                 with tab_mapa:
                     st.markdown("### Visor de Recursos Hídricos")
                     
-                    # SELECTOR DE CORRECCIÓN (FORZADO)
-                    coord_mode = st.selectbox(
-                        "🛠️ Corrector de Coordenadas (Prueba estas opciones si el mapa sale vacío):",
-                        options=["Original (WGS84)", "Forzar: Magna Bogotá (EPSG:3116) -> WGS84", "Forzar: Origen Nacional (EPSG:9377) -> WGS84"],
-                        index=1 # Pre-seleccionamos Magna Bogotá porque es el fallo más común en Antioquia
-                    )
+                    # 1. CARGA DIRECTA (SIN FILTRO ESPACIAL)
+                    capas, counts = cargar_capas_gis_total()
                     
-                    # CARGA
-                    capas, counts = cargar_capas_gis_transformada(minx, miny, maxx, maxy, coord_mode)
-                    
-                    with st.expander(f"📊 Estado Capas: {counts['suelos']} Suelos | {counts['hidro']} Hidro | {counts['bocatomas']} Bocatomas", expanded=False):
-                        if counts['suelos'] == 0: st.warning("⚠️ No se encontraron capas. Cambia la opción del Corrector.")
+                    with st.expander(f"📊 Capas Disponibles: {counts['suelos']} Suelos | {counts['hidro']} Hidro | {counts['bocatomas']} Bocatomas", expanded=False):
+                        if counts['suelos'] > 0: st.success("✅ Capas cargadas exitosamente desde BD.")
+                        else: st.error("❌ No se encontraron datos en BD.")
 
                     gdf_suelos = capas["suelos"]
                     gdf_hidro = capas["hidro"]
                     gdf_bocas = capas["bocatomas"]
                     
-                    # Mapa Base
                     c_lat = df_est_filtered['lat'].mean()
                     c_lon = df_est_filtered['lon'].mean()
-                    # Zoom inteligente: Si forzamos, alejamos
-                    zoom = 11 if "Original" in coord_mode else 9
-                    m = folium.Map(location=[c_lat, c_lon], zoom_start=zoom, tiles="CartoDB positron")
+                    m = folium.Map(location=[c_lat, c_lon], zoom_start=10, tiles="CartoDB positron")
                     
-                    # Escala Recarga
-                    cmap = LinearColormap(['#ffffcc', '#a1dab4', '#41b6c4', '#225ea8'], vmin=0, vmax=2000, caption="Recarga")
+                    # ESCALA COLOR
+                    recarga_min = df_res_avg['recarga_mm'].min()
+                    recarga_max = df_res_avg['recarga_mm'].max()
+                    if recarga_max == recarga_min: recarga_max += 1
+                    cmap = LinearColormap(['#ffffcc', '#a1dab4', '#41b6c4', '#225ea8'], vmin=recarga_min, vmax=recarga_max, caption="Recarga (mm)")
                     m.add_child(cmap)
 
-                    # A. SUELOS
+                    # A. SUELOS (Verde)
                     if gdf_suelos is not None:
                         def style_s(feature):
                             p = str(feature['properties'].get('PAISAJE', '')).lower()
@@ -307,6 +292,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                             elif 'lomerío' in p: c = '#addd8e'
                             return {'fillColor': c, 'color': 'gray', 'weight': 0.5, 'fillOpacity': 0.4}
                         fg_s = folium.FeatureGroup(name="🌱 Suelos")
+                        # Tooltips con nombres reales de columnas
                         folium.GeoJson(gdf_suelos, style_function=style_s, tooltip=folium.GeoJsonTooltip(fields=['UCS', 'PAISAJE', 'CLIMA'])).add_to(fg_s)
                         fg_s.add_to(m)
 
@@ -320,14 +306,21 @@ if gdf_zona is not None and not gdf_zona.empty:
                         ).add_to(fg_h)
                         fg_h.add_to(m)
 
-                    # C. RECARGA (Interpolada + Puntos)
+                    # C. RECARGA (Interpolación Isolíneas + Puntos)
                     if len(df_res_avg) >= 3:
-                        fg_r = folium.FeatureGroup(name="🌧️ Recarga", show=True)
+                        fg_r = folium.FeatureGroup(name="🌧️ Recarga (Isolíneas)", show=True)
                         try:
+                            # Grid más denso para mejor resolución
                             gx, gy = np.mgrid[minx:maxx:200j, miny:maxy:200j]
-                            grid = interpolacion_segura_suave(df_res_avg[['lon','lat']].values, df_res_avg['recarga_mm'].values, gx, gy)
-                            folium.raster_layers.ImageOverlay(image=grid.T, bounds=[[miny, minx], [maxy, maxx]], opacity=0.6, colormap=lambda x: cmap(x)).add_to(fg_r)
-                        except: pass
+                            # Interpolación robusta que rellena huecos
+                            grid = interpolacion_robusta(df_res_avg[['lon','lat']].values, df_res_avg['recarga_mm'].values, gx, gy)
+                            
+                            folium.raster_layers.ImageOverlay(
+                                image=grid.T, bounds=[[miny, minx], [maxy, maxx]], opacity=0.6, 
+                                colormap=lambda x: cmap(x)
+                            ).add_to(fg_r)
+                        except Exception as e: print(f"Error grid: {e}")
+                        
                         for _, row in df_res_avg.iterrows():
                             val = row['recarga_mm']
                             folium.CircleMarker(
@@ -336,12 +329,14 @@ if gdf_zona is not None and not gdf_zona.empty:
                             ).add_to(fg_r)
                         fg_r.add_to(m)
 
-                    # D. BOCATOMAS
+                    # D. BOCATOMAS (Puntos Rojos)
                     if gdf_bocas is not None:
                         fg_b = folium.FeatureGroup(name="🚰 Bocatomas", show=True)
+                        # Busca columnas insensitivas
                         cols_b = {c.upper(): c for c in gdf_bocas.columns}
-                        col_n = cols_b.get('NOMBRE_ACU', cols_b.get('NOMBRE', 'id'))
+                        col_nom = cols_b.get('NOMBRE_ACU', cols_b.get('NOMBRE', 'id'))
                         col_mun = cols_b.get('MUNICIPIO', '')
+                        
                         for _, row in gdf_bocas.iterrows():
                             if row.geometry.geom_type == 'Point':
                                 txt = f"{row.get(col_nom, '')} ({row.get(col_mun, '')})"
@@ -358,7 +353,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 with tab_data:
                     c1, c2 = st.columns(2)
                     csv = df_res_avg.to_csv(index=False).encode('utf-8')
-                    c1.download_button("📥 Descargar Tabla (CSV)", csv, "balance.csv", "text/csv")
+                    c1.download_button("📥 Descargar Tabla (CSV)", csv, "balance_hidrico.csv", "text/csv")
                     st.dataframe(df_res_avg)
 
             else: st.warning("Seleccione estaciones.")
