@@ -218,9 +218,6 @@ if gdf_zona is not None and not gdf_zona.empty:
                 k4.metric("Estaciones", len(df_res_avg))
                 
                 # BLOQUE 2: 
-                # ==============================================================================
-                # ==============================================================================
-                
                 st.divider()
                 
                 # --- DEFINICIÓN DE PESTAÑAS ---
