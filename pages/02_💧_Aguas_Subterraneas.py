@@ -111,46 +111,36 @@ def run_prophet_forecast_hybrid(df_hist, months_ahead, altitud_ref, ki, ruido_fa
     return df_merged
 
 # 3. CARGA GIS INTELIGENTE (SELECT * + DETECCIÓN DE COLUMNAS)
-# ==============================================================================
-# BLOQUE 1: 
-# ==============================================================================
-
-@st.cache_data(ttl=60, show_spinner="Consultando Base de Datos...")
+@st.cache_data(ttl=60, show_spinner="Cargando datos espaciales...")
 def cargar_capas_gis_light():
     engine = get_engine()
     layers = {}
     
     if not engine: return layers
     
-    # Tolerancia para suavizar líneas (0.001 ~ 100m)
-    tol = 0.001
-    
     try:
         with engine.connect() as conn:
-            
-            # --- 1. SUELOS ---
+            # 1. SUELOS (Simplificación leve para polígonos)
             try:
-                # Usamos SELECT * para traer CLIMA, LITOLOGÍA, etc.
-                # ST_Simplify reduce el peso para que no se caiga el navegador
-                q = text(f'SELECT *, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as geometry_json FROM suelos LIMIT 1500')
+                # Traemos TODO (*) para asegurar que vengan tus campos COD, SIGLA, etc.
+                q = text('SELECT *, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, 0.001)) as geometry_json FROM suelos LIMIT 1500')
                 df = pd.read_sql(q, conn)
                 if not df.empty:
                     df['geometry'] = df['geometry_json'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers['suelos'] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
             except Exception as e: print(f"Error Suelos: {e}")
 
-            # --- 2. HIDROGEOLOGÍA ---
+            # 2. HIDROGEOLOGÍA (Simplificación leve)
             try:
-                q = text(f'SELECT *, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as geometry_json FROM zonas_hidrogeologicas LIMIT 1500')
+                q = text('SELECT *, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, 0.001)) as geometry_json FROM zonas_hidrogeologicas LIMIT 1500')
                 df = pd.read_sql(q, conn)
                 if not df.empty:
                     df['geometry'] = df['geometry_json'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers['hidro'] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
             except Exception as e: print(f"Error Hidro: {e}")
 
-            # --- 3. BOCATOMAS ---
+            # 3. BOCATOMAS (¡SIN SIMPLIFICAR! Esto arregla que desaparezcan)
             try:
-                # Intento robusto para Bocatomas
                 q = text('SELECT *, ST_AsGeoJSON(geom) as geometry_json FROM bocatomas LIMIT 2500')
                 df = pd.read_sql(q, conn)
                 if not df.empty:
@@ -158,7 +148,7 @@ def cargar_capas_gis_light():
                     layers['bocatomas'] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
             except Exception as e: print(f"Error Bocatomas: {e}")
             
-    except Exception as e: st.error(f"Error General BD: {e}")
+    except Exception as e: st.error(f"Error Base de Datos: {e}")
     return layers
 
 # ==============================================================================
@@ -233,6 +223,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                 
                 st.divider()
                 
+                # --- DEFINICIÓN DE PESTAÑAS ---
                 tab_evol, tab_mapa, tab_iso, tab_data = st.tabs([
                     "📈 Análisis Temporal", 
                     "🗺️ Capas (Suelos/Hidro)", 
@@ -256,7 +247,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                                 fig.update_layout(title="Dinámica Hídrica", height=400, hovermode="x unified")
                                 st.plotly_chart(fig, use_container_width=True)
 
-                # --- PESTAÑA 2: MAPA DE CAPAS ---
+                # --- PESTAÑA 2: VISOR DE CAPAS VECTORIALES ---
                 with tab_mapa:
                     st.markdown("### Visor de Capas Vectoriales")
                     
@@ -276,7 +267,6 @@ if gdf_zona is not None and not gdf_zona.empty:
                         cols = {c.lower(): c for c in gdf_s.columns}
                         
                         # Campos solicitados: CLIMA, TIPO_RELIE, LITOLOGÍA, CARACTERÍ
-                        # Usamos .get() para evitar errores si alguna no existe exactamente así
                         tips_s = [
                             cols.get('clima', 'CLIMA'), 
                             cols.get('tipo_relie', 'TIPO_RELIE'), 
@@ -298,8 +288,7 @@ if gdf_zona is not None and not gdf_zona.empty:
                     if gdf_h is not None and not gdf_h.empty:
                         cols = {c.lower(): c for c in gdf_h.columns}
                         
-                        # Campos solicitados: Unidad_Geo, Potencial_, COD
-                        # NOTA: COD se agrega aquí
+                        # Campos solicitados: COD, Unidad_Geo, Potencial_
                         tips_h = [
                             cols.get('cod', 'COD'),
                             cols.get('unidad_geo', 'Unidad_Geo'), 
@@ -307,108 +296,118 @@ if gdf_zona is not None and not gdf_zona.empty:
                         ]
                         tips_h = [c for c in tips_h if c in gdf_h.columns]
                         
+                        # Estilo por Potencial
+                        col_pot = cols.get('potencial_')
+                        def style_h(feature):
+                            c = '#3182bd'
+                            if col_pot:
+                                val = str(feature['properties'].get(col_pot, '')).lower()
+                                if 'muy alto' in val: c = '#08306b'
+                                elif 'alto' in val: c = '#08519c'
+                                elif 'medio' in val: c = '#4292c6'
+                                elif 'bajo' in val: c = '#9ecae1'
+                            return {'fillColor': c, 'color': '#2171b5', 'weight': 1, 'fillOpacity': 0.5}
+
                         fg_h = folium.FeatureGroup(name="💧 Hidrogeología", show=False)
                         folium.GeoJson(
-                            gdf_h, 
-                            style_function=lambda x: {'fillColor': '#2c7fb8', 'color': '#253494', 'weight': 1, 'fillOpacity': 0.4},
+                            gdf_h, style_function=style_h,
                             tooltip=folium.GeoJsonTooltip(fields=tips_h, aliases=tips_h) if tips_h else None
                         ).add_to(fg_h)
                         fg_h.add_to(m)
 
-                    # --- C. BOCATOMAS ---
+                    # --- C. BOCATOMAS (ARREGLADA) ---
                     if gdf_b is not None and not gdf_b.empty:
                         fg_b = folium.FeatureGroup(name="🚰 Bocatomas", show=True)
+                        
+                        # Buscar columnas para etiqueta
                         cols = {c.lower(): c for c in gdf_b.columns}
+                        col_lbl = cols.get('nombre_acu', cols.get('municipio', list(gdf_b.columns)[0]))
                         
-                        # Campos clave
-                        col_nom = cols.get('nombre_acu', cols.get('nombre'))
-                        col_mun = cols.get('municipio')
-                        col_tip = cols.get('tipo')
-                        
-                        fields_b = [c for c in [col_nom, col_mun, col_tip] if c]
-                        
-                        if fields_b:
-                            folium.GeoJson(
-                                gdf_b,
-                                marker=folium.CircleMarker(radius=4, color='red', fill=True, fill_color='darkred', fill_opacity=1),
-                                tooltip=folium.GeoJsonTooltip(fields=fields_b, aliases=fields_b)
-                            ).add_to(fg_b)
-                        
+                        # GeoJson optimizado para puntos
+                        folium.GeoJson(
+                            gdf_b,
+                            marker=folium.CircleMarker(radius=4, color='red', fill=True, fill_color='darkred', fill_opacity=1),
+                            tooltip=folium.GeoJsonTooltip(fields=[col_lbl])
+                        ).add_to(fg_b)
                         fg_b.add_to(m)
 
                     folium.LayerControl().add_to(m)
-                    st_folium(m, width="100%", height=500)
+                    st_folium(m, width="100%", height=600)
 
-                # --- PESTAÑA 3: MAPA DE ISOLÍNEAS (CORREGIDO) ---
+                # --- PESTAÑA 3: MAPA ISOLÍNEAS (CORREGIDO ERROR DUPLICADOS) ---
                 with tab_iso:
                     st.markdown("### 🌈 Mapa de Isolíneas de Recarga")
                     
                     if len(df_res_avg) >= 3:
-                        # CORRECCIÓN DE ERROR "tuple index out of range":
-                        # 1. Eliminar duplicados de coordenadas (causa principal del error en griddata)
-                        df_clean = df_res_avg.drop_duplicates(subset=['lat', 'lon'])
+                        # 1. LIMPIEZA DE DUPLICADOS ESPACIALES
+                        # Agrupamos por Lat/Lon para eliminar puntos superpuestos que rompen la interpolación
+                        df_clean = df_res_avg.groupby(['lat', 'lon', 'nom_est'], as_index=False)['recarga_mm'].mean()
                         
+                        # Aseguramos mínimo 3 puntos ÚNICOS
                         if len(df_clean) >= 3:
                             try:
-                                # Grid bounds ajustados a los datos
+                                m_iso = folium.Map(location=[c_lat, c_lon], zoom_start=11, tiles="CartoDB dark_matter")
+                                
+                                # Grid bounds ajustados con un pequeño margen
                                 pad = 0.05
                                 x_min, x_max = df_clean['lon'].min() - pad, df_clean['lon'].max() + pad
                                 y_min, y_max = df_clean['lat'].min() - pad, df_clean['lat'].max() + pad
                                 
-                                # Grid generation
-                                grid_x, grid_y = np.mgrid[x_min:x_max:200j, y_min:y_max:200j]
+                                # Generación del Grid
+                                gx, gy = np.mgrid[x_min:x_max:200j, y_min:y_max:200j]
                                 
-                                # Interpolación
-                                points = df_clean[['lon', 'lat']].values
-                                values = df_clean['recarga_mm'].values
-                                grid_z = griddata(points, values, (grid_x, grid_y), method='linear')
+                                grid_z = griddata(
+                                    df_clean[['lon', 'lat']].values, 
+                                    df_clean['recarga_mm'].values, 
+                                    (gx, gy), 
+                                    method='linear'
+                                )
                                 
-                                # Mapa Isolíneas
-                                m_iso = folium.Map(location=[c_lat, c_lon], zoom_start=11, tiles="CartoDB dark_matter")
-                                cmap = LinearColormap(['#ffffcc', '#a1dab4', '#41b6c4', '#225ea8'], vmin=0, vmax=2000, caption="Recarga (mm)")
+                                # VALIDACIÓN DE RANGOS (Evita error "Thresholds not sorted")
+                                vmin = df_clean['recarga_mm'].min()
+                                vmax = df_clean['recarga_mm'].max()
+                                if vmax <= vmin: vmax = vmin + 0.01
+                                
+                                cmap = LinearColormap(['#ffffcc', '#a1dab4', '#41b6c4', '#225ea8'], vmin=vmin, vmax=vmax, caption="Recarga (mm)")
                                 m_iso.add_child(cmap)
                                 
                                 folium.raster_layers.ImageOverlay(
-                                    image=grid_z.T, # Transponer es clave
+                                    image=grid_z.T, 
                                     bounds=[[y_min, x_min], [y_max, x_max]], 
                                     opacity=0.7, colormap=lambda x: cmap(x)
                                 ).add_to(m_iso)
                                 
-                                # Puntos
                                 for _, row in df_clean.iterrows():
                                     folium.CircleMarker(
-                                        [row['lat'], row['lon']], radius=4, color='white', fill=True, fill_color='black',
+                                        [row['lat'], row['lon']], radius=5, color='white', fill=True, fill_color='black',
                                         tooltip=f"{row['nom_est']}: {row['recarga_mm']:.0f} mm"
                                     ).add_to(m_iso)
                                 
-                                st_folium(m_iso, width="100%", height=600, key="iso_map")
+                                st_folium(m_iso, width="100%", height=600, key="iso_map_final")
                                 
-                            except Exception as e:
-                                st.error(f"Error matemático al generar isolíneas: {e}")
-                        else: st.warning("Datos insuficientes tras limpiar duplicados.")
-                    else: st.warning("Se necesitan al menos 3 estaciones con datos únicos.")
+                            except Exception as e: st.error(f"Error generando mapa: {e}")
+                        else: st.warning("⚠️ Hay estaciones, pero están en la misma coordenada. Se necesitan 3 ubicaciones distintas.")
+                    else: st.warning("Datos insuficientes para interpolar.")
 
-                # --- PESTAÑA 4: DESCARGAS (NUEVA FUNCIONALIDAD) ---
+                # --- PESTAÑA 4: DESCARGAS COMPLETAS ---
                 with tab_data:
-                    st.subheader("💾 Centro de Descargas")
-                    
+                    st.subheader("💾 Descarga de Datos y Capas")
                     c1, c2, c3, c4 = st.columns(4)
                     
-                    # 1. Tabla de Balance (CSV)
-                    csv_bal = df_res_avg.to_csv(index=False).encode('utf-8')
-                    c1.download_button("📥 Balance Hídrico (CSV)", csv_bal, "balance_hidrico.csv", "text/csv")
+                    # Tabla Balance
+                    csv = df_res_avg.to_csv(index=False).encode('utf-8')
+                    c1.download_button("📥 Tabla Balance (CSV)", csv, "balance.csv", "text/csv")
                     
-                    # 2. Suelos (GeoJSON)
-                    if gdf_s is not None:
-                        c2.download_button("🌍 Capa Suelos (GeoJSON)", gdf_s.to_json(), "suelos.geojson", "application/json")
-                    
-                    # 3. Hidrogeología (GeoJSON)
-                    if gdf_h is not None:
-                        c3.download_button("🌍 Capa Hidrogeología (GeoJSON)", gdf_h.to_json(), "hidrogeologia.geojson", "application/json")
-                    
-                    # 4. Bocatomas (GeoJSON)
-                    if gdf_b is not None:
-                        c4.download_button("🌍 Capa Bocatomas (GeoJSON)", gdf_b.to_json(), "bocatomas.geojson", "application/json")
+                    # Botones Capas
+                    # Reusamos la variable 'layers' que ya cargamos arriba
+                    if layers.get('suelos') is not None:
+                        c2.download_button("🌍 Suelos (GeoJSON)", layers['suelos'].to_json(), "suelos.geojson", "application/json")
+                        
+                    if layers.get('hidro') is not None:
+                        c3.download_button("🌍 Hidrogeología (GeoJSON)", layers['hidro'].to_json(), "hidro.geojson", "application/json")
+                        
+                    if layers.get('bocatomas') is not None:
+                        c4.download_button("🌍 Bocatomas (GeoJSON)", layers['bocatomas'].to_json(), "bocatomas.geojson", "application/json")
                     
                     st.divider()
                     st.dataframe(df_res_avg)
