@@ -447,11 +447,15 @@ def create_interpolation_surface(
 
 
 @st.cache_data
-def create_kriging_by_basin(gdf_points, grid_lon, grid_lat, value_col="Valor"):
+
+def create_kriging_by_basin(_gdf_points, grid_lon, grid_lat, value_col="Valor"):
     """
-    Realiza Kriging. Si falla, usa un respaldo de interpolación lineal y relleno
-    para asegurar una superficie con gradiente y sin vacíos.
+    Realiza Kriging. El argumento _gdf_points tiene guion bajo para evitar
+    el error de hashing de Streamlit.
     """
+    # Dentro de la función, usa la variable normal (quitamos el guion bajo para usarla)
+    gdf_points = _gdf_points 
+    
     lons = gdf_points.geometry.x
     lats = gdf_points.geometry.y
     vals = gdf_points[value_col].values

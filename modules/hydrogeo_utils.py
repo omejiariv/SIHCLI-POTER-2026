@@ -90,3 +90,53 @@ def obtener_datos_estaciones_recarga(engine):
     df_full.loc[df_full['recarga_media'] < 0, 'recarga_media'] = 0
     
     return df_full
+
+# ... importaciones existentes ...
+import io
+import rasterio
+from rasterio.transform import from_origin
+
+def generar_geotiff_bytes(z_grid, bounds, crs_code=4326):
+    """
+    Convierte una matriz numpy (grid) en un archivo GeoTIFF en memoria.
+    bounds: [min_lon, min_lat, max_lon, max_lat]
+    """
+    min_x, min_y, max_x, max_y = bounds
+    height, width = z_grid.shape
+    
+    # Calcular tamaño de pixel
+    pixel_width = (max_x - min_x) / width
+    pixel_height = (max_y - min_y) / height # Usualmente negativo en transform
+    
+    # Definir transformación (Ojo: Rasterio usa origen arriba-izquierda)
+    transform = from_origin(min_x, max_y, pixel_width, pixel_height)
+    
+    memfile = io.BytesIO()
+    with rasterio.open(
+        memfile, 'w', driver='GTiff',
+        height=height, width=width,
+        count=1, dtype=str(z_grid.dtype),
+        crs=f"EPSG:{crs_code}",
+        transform=transform,
+        nodata=-9999
+    ) as dst:
+        dst.write(z_grid, 1)
+        
+    memfile.seek(0)
+    return memfile
+
+def generar_geojson_bytes(df_estaciones):
+    """Convierte el DataFrame de estaciones a GeoJSON bytes."""
+    # Asumiendo que df_estaciones tiene lat/lon
+    import geopandas as gpd
+    
+    if 'geometry' not in df_estaciones.columns:
+        gdf = gpd.GeoDataFrame(
+            df_estaciones, 
+            geometry=gpd.points_from_xy(df_estaciones.longitud, df_estaciones.latitud),
+            crs="EPSG:4326"
+        )
+    else:
+        gdf = df_estaciones
+        
+    return gdf.to_json().encode('utf-8')
