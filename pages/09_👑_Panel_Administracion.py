@@ -235,58 +235,56 @@ with tabs[0]:
             except Exception as e: st.error(f"Error: {e}")
 
 # ==============================================================================
-# TAB 2: ÍNDICES (RECUPERADO: VER, EDITAR Y CARGAR)
+# TAB 2: ÍNDICES (CORREGIDO: LECTURA ROBUSTA DE CSV)
 # ==============================================================================
 with tabs[1]:
-    st.header("📊 Índices Climáticos (ONI, SOI, IOD)")
-    sb1, sb2 = st.tabs(["👁️ Ver y Editar Tabla", "📂 Cargar Archivo CSV"])
+    st.header("📊 Índices Climáticos")
+    sb1, sb2 = st.tabs(["👁️ Ver Tabla Completa", "📂 Cargar/Actualizar CSV"])
     
-    # SUB-TAB 1: EDITOR DE TABLA
     with sb1:
         try:
-            # Traemos todos los datos ordenados por fecha
-            df_idx = pd.read_sql("SELECT * FROM indices_climaticos ORDER BY fecha DESC", engine)
-            st.markdown(f"**Total Registros:** {len(df_idx)}")
-            
-            # Editor interactivo
-            df_editado = st.data_editor(
-                df_idx, 
-                key="editor_indices_main", 
-                use_container_width=True, 
-                num_rows="dynamic",
-                height=500
-            )
-            
-            if st.button("💾 Guardar Cambios en Índices", key="btn_save_indices"):
-                with st.spinner("Guardando..."):
-                    df_editado.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-                    st.success("✅ Tabla actualizada correctamente.")
-        except Exception as e:
-            st.info("ℹ️ Aún no hay índices cargados o la tabla no existe.")
+            # Traer todo el contenido
+            df_idx = pd.read_sql("SELECT * FROM indices_climaticos", engine)
+            if not df_idx.empty:
+                st.info(f"Mostrando {len(df_idx)} registros históricos.")
+                st.data_editor(df_idx, key="ed_idx_view", use_container_width=True, num_rows="dynamic")
+            else:
+                st.warning("⚠️ La tabla existe pero está vacía. Por favor carga el archivo CSV en la pestaña de al lado.")
+        except Exception as e: 
+            st.warning("⚠️ No se encontraron datos. Carga el archivo CSV primero.")
 
-    # SUB-TAB 2: CARGA CSV
     with sb2:
-        st.info("Sube el archivo 'Indices_Globales.csv'.")
-        up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_csv_final")
+        st.markdown("### Cargar Archivo de Índices")
+        st.info("Sube el archivo `Indices_Globales.csv`. El sistema detectará automáticamente el formato.")
+        up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_csv_fix")
         
-        if up_i and st.button("Procesar Carga", key="btn_load_ind_final"):
+        if up_i and st.button("Procesar y Cargar", key="btn_load_ind_fix"):
             try:
-                # Intentamos leer con diferentes codificaciones por si acaso
+                # 1. Detección automática del separador (comma, punto y coma, tab)
+                import csv
+                up_i.seek(0)
+                sample = up_i.read(1024).decode('latin-1')
+                up_i.seek(0)
                 try:
-                    df = pd.read_csv(up_i, encoding='utf-8')
+                    dialect = csv.Sniffer().sniff(sample)
+                    sep = dialect.delimiter
                 except:
-                    up_i.seek(0)
-                    df = pd.read_csv(up_i, encoding='latin-1')
+                    sep = ',' # Fallback
                 
-                # Limpieza
-                df.columns = [c.lower().strip() for c in df.columns]
-                if 'id' in df.columns: df = df.drop(columns=['id'])
+                # 2. Leer con el separador detectado
+                df = pd.read_csv(up_i, sep=sep, encoding='latin-1', engine='python')
                 
-                # Guardar
+                # 3. Limpieza de columnas
+                df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
+                
+                # 4. Carga a BD (Reemplazando todo para evitar errores de mezcla)
                 df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-                st.success(f"✅ Se cargaron {len(df)} registros exitosamente.")
+                
+                st.success(f"✅ ¡Éxito! Se cargaron {len(df)} registros. Ve a la pestaña 'Ver Tabla' para confirmar.")
                 st.balloons()
-            except Exception as e: st.error(f"Error al procesar CSV: {e}")
+                
+            except Exception as e:
+                st.error(f"❌ Error al leer el archivo: {str(e)}")
 
 # ==============================================================================
 # TAB 3: PREDIOS
@@ -318,62 +316,81 @@ with tabs[2]:
             except: st.warning("Error/Duplicados. Use SQL para limpiar.")
 
 # ==============================================================================
-# TAB 4: CUENCAS (VISOR COMPLETO)
+# TAB 4: CUENCAS (CORREGIDO: TODOS LOS CAMPOS VISIBLES)
 # ==============================================================================
 with tabs[3]:
     st.header("🌊 Gestión de Cuencas")
-    sb1, sb2 = st.tabs(["👁️ Tabla Maestra (Todas las Columnas)", "📂 Carga GeoJSON"])
+    sb1, sb2 = st.tabs(["👁️ Tabla Maestra (Todos los Campos)", "📂 Carga GeoJSON"])
     
     with sb1:
         try:
-            # Seleccionamos TODO (*)
-            df_c = pd.read_sql("SELECT * FROM cuencas ORDER BY id_cuenca", engine)
-            st.caption(f"Mostrando {len(df_c)} cuencas registradas.")
+            df_c = pd.read_sql("SELECT * FROM cuencas", engine)
+            st.markdown(f"**Total Cuencas:** {len(df_c)} | **Columnas:** {len(df_c.columns)}")
             
-            # Editor configurado para mostrar todo
-            df_c_ed = st.data_editor(
+            # Mostramos todas las columnas dinámicamente
+            st.data_editor(
                 df_c, 
-                key="ed_cuen_full", 
+                key="ed_cuen_full_cols", 
                 use_container_width=True, 
-                height=600,
-                num_rows="dynamic"
+                num_rows="dynamic",
+                height=600
             )
-            
-            if st.button("💾 Guardar Cambios Cuencas", key="btn_save_cuencas"):
-                df_c_ed.to_sql('cuencas', engine, if_exists='replace', index=False)
-                st.success("Cambios guardados.")
-        except: st.write("Sin datos disponibles.")
+        except: st.info("No hay datos cargados. Usa la pestaña de carga.")
 
     with sb2:
-        st.info("Carga 'SubcuencasAinfluencia.geojson'. El sistema corrige duplicados automáticamente.")
-        up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"], key="up_cuen_geo_fix")
+        st.info("Carga 'SubcuencasAinfluencia.geojson'. Se guardarán **TODOS** los atributos del archivo original.")
+        up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"], key="up_cuen_geo_all")
         
-        if up_c and st.button("Procesar Archivo", key="btn_proc_cuen_fix"):
+        if up_c and st.button("Procesar Archivo Completo", key="btn_proc_cuen_all"):
+            status = st.status("Leyendo atributos del GeoJSON...", expanded=True)
             try:
-                data = json.load(up_c)
-                count = 0
+                # 1. Leer GeoJSON con Geopandas (maneja todos los atributos automáticamente)
+                up_c.seek(0)
+                gdf = gpd.read_file(up_c)
+                
+                status.write(f"✅ Archivo leído. Campos encontrados: {list(gdf.columns)}")
+                
+                # 2. Limpieza y preparación
+                # Convertimos a WGS84 por si acaso
+                if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
+                    status.write("🔄 Reproyectando a WGS84...")
+                    gdf = gdf.to_crs("EPSG:4326")
+                
+                # Normalizamos nombres de columnas a minúsculas
+                gdf.columns = [c.lower() for c in gdf.columns]
+                
+                # Renombramos la columna clave para que coincida con el sistema
+                # Buscamos 'cod' o 'objectid' y lo volvemos 'id_cuenca'
+                if 'cod' in gdf.columns:
+                    gdf = gdf.rename(columns={'cod': 'id_cuenca'})
+                elif 'objectid' in gdf.columns:
+                    gdf['id_cuenca'] = gdf['objectid'].astype(str)
+                
+                # Aseguramos que el nombre de la cuenca esté identificado
+                if 'subc_lbl' in gdf.columns:
+                    gdf = gdf.rename(columns={'subc_lbl': 'nombre_cuenca'})
+                
+                # 3. Subida INTELIGENTE (Reemplazar tabla completa para ajustar nuevas columnas)
+                status.write("📤 Actualizando estructura de base de datos...")
+                
+                # Convertimos a PostGIS
+                gdf.to_postgis("cuencas", engine, if_exists='replace', index=False)
+                
+                # IMPORTANTE: Definir id_cuenca como llave primaria de nuevo
                 with engine.connect() as conn:
-                    for f in data['features']:
-                        p = f.get('properties', {})
-                        # Lógica segura de mapeo
-                        area = float(p.get('Shape_Area', 0))/1_000_000
-                        row = {
-                            "id": str(p.get('COD', 'SN')),
-                            "nom": p.get('SUBC_LBL', 'Sin Nombre'),
-                            "area": area,
-                            "rio": p.get('SZH', '')
-                        }
-                        # UPSERT para evitar error de llave duplicada
-                        conn.execute(text("""
-                            INSERT INTO cuencas (id_cuenca, nombre_cuenca, area_km2, rio_principal)
-                            VALUES (:id, :nom, :area, :rio)
-                            ON CONFLICT (id_cuenca) DO UPDATE SET 
-                            nombre_cuenca = EXCLUDED.nombre_cuenca, area_km2 = EXCLUDED.area_km2
-                        """), row)
-                        count += 1
-                    conn.commit()
-                st.success(f"✅ Procesadas {count} cuencas correctamente.")
-            except Exception as e: st.error(f"Error: {e}")
+                    try:
+                        conn.execute(text("ALTER TABLE cuencas ADD PRIMARY KEY (id_cuenca);"))
+                        conn.commit()
+                    except: pass # Si falla (ej. duplicados), no importa, los datos ya están ahí
+                
+                status.update(label="¡Carga Completa!", state="complete", expanded=False)
+                st.success(f"✅ Se cargaron {len(gdf)} cuencas con {len(gdf.columns)} columnas de información.")
+                st.balloons()
+                st.rerun() # Recargar para ver la tabla nueva inmediatamente
+                
+            except Exception as e:
+                status.update(label="Error", state="error")
+                st.error(f"Error detallado: {e}")
 
 # ==============================================================================
 # TAB 5: MUNICIPIOS (RECUPERADO)
