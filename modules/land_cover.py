@@ -1,3 +1,5 @@
+# modules/land_cover.py
+
 import numpy as np
 import pandas as pd
 import rasterio
