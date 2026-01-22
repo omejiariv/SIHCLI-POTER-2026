@@ -129,37 +129,63 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
 # ---------------------------------------------------------
 # 3. CARGA GIS OPTIMIZADA
 # ---------------------------------------------------------
-def cargar_capas_gis_optimizadas(engine):
+
+def cargar_capas_gis_optimizadas(engine, bounds=None):
+    """
+    Carga capas GIS recortadas espacialmente al área de interés para evitar colapsos de memoria.
+    bounds: tupla (minx, miny, maxx, maxy)
+    """
     layers = {}
     if not engine: return layers
     
-    tol = 0.001 # Tolerancia de simplificación geométrica
+    # Tolerancia de simplificación (Más alto = polígonos más ligeros)
+    tol = 0.003 
+    
+    # Construir cláusula WHERE espacial
+    where_clause = ""
+    if bounds:
+        minx, miny, maxx, maxy = bounds
+        # Agregamos un pequeño buffer (pad) para que no se corte feo en los bordes
+        pad = 0.02
+        # ST_MakeEnvelope crea un rectángulo con las coordenadas
+        where_clause = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({minx-pad}, {miny-pad}, {maxx+pad}, {maxy+pad}, 4326))"
     
     try:
         with engine.connect() as conn:
-            # SUELOS
-            q_s = text(f"SELECT *, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM suelos LIMIT 1500")
+            # SUELOS - Solo traemos lo que intersecta la vista
+            # Limitamos a 500 polígonos por seguridad
+            q_s = text(f"""
+                SELECT codigo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj 
+                FROM suelos 
+                {where_clause}
+                LIMIT 500
+            """)
             df_s = pd.read_sql(q_s, conn)
             if not df_s.empty:
                 df_s['geometry'] = df_s['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
                 layers['suelos'] = gpd.GeoDataFrame(df_s, geometry='geometry', crs="EPSG:4326")
 
             # HIDROGEOLOGIA
-            q_h = text(f"SELECT *, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM zonas_hidrogeologicas LIMIT 1500")
+            q_h = text(f"""
+                SELECT tipo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj 
+                FROM zonas_hidrogeologicas 
+                {where_clause}
+                LIMIT 500
+            """)
             df_h = pd.read_sql(q_h, conn)
             if not df_h.empty:
                 df_h['geometry'] = df_h['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
                 layers['hidro'] = gpd.GeoDataFrame(df_h, geometry='geometry', crs="EPSG:4326")
             
-            # BOCATOMAS
-            q_b = text("SELECT *, ST_AsGeoJSON(geom) as gj FROM bocatomas LIMIT 2000")
+            # BOCATOMAS (Puntos son ligeros, podemos traer más o filtrar igual)
+            q_b = text(f"SELECT nom_bocatoma, ST_AsGeoJSON(geom) as gj FROM bocatomas {where_clause} LIMIT 500")
             df_b = pd.read_sql(q_b, conn)
             if not df_b.empty:
                 df_b['geometry'] = df_b['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
                 layers['bocatomas'] = gpd.GeoDataFrame(df_b, geometry='geometry', crs="EPSG:4326")
                 
     except Exception as e:
-        print(f"Error GIS: {e}")
+        print(f"⚠️ Error GIS (Optimizado): {e}")
         
     return layers
 

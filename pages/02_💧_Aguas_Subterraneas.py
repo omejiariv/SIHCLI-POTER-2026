@@ -146,18 +146,43 @@ if gdf_zona is not None:
         fig.update_layout(height=450, hovermode="x unified", title="Dinámica de Recarga")
         st.plotly_chart(fig, use_container_width=True)
 
-    # TAB 2: MAPA BASE (Corregido para evitar ValueError)
+    # TAB 2: MAPA CONTEXTO
     with tab2:
-        layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine)
+        # Calcular los límites (bounding box) para optimizar la carga
+        bounds = None
+        if gdf_zona is not None:
+             bounds = gdf_zona.total_bounds
+        elif not df_puntos.empty:
+             # Fallback: Usamos los límites de las estaciones si no hay zona definida
+             bounds = [
+                 df_puntos['longitud'].min(), df_puntos['latitud'].min(),
+                 df_puntos['longitud'].max(), df_puntos['latitud'].max()
+             ]
+
+        # Llamamos a la función optimizada pasando los límites
+        with st.spinner("Cargando capas geográficas (recortadas)..."):
+            layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds)
+        
+        # Centrar mapa
         mean_lat, mean_lon = df_puntos['latitud'].mean(), df_puntos['longitud'].mean()
         m = folium.Map(location=[mean_lat, mean_lon], zoom_start=11, tiles="CartoDB positron")
         
-        # CORRECCIÓN: Usamos 'in' para verificar existencia sin evaluar el DataFrame
+        # Renderizado seguro
         if 'suelos' in layers: 
-            folium.GeoJson(layers['suelos'], name="Suelos", style_function=lambda x: {'color': 'green', 'weight': 0.5, 'fillOpacity': 0.1}).add_to(m)
+            folium.GeoJson(
+                layers['suelos'], 
+                name="Suelos", 
+                style_function=lambda x: {'color': 'green', 'weight': 0.5, 'fillOpacity': 0.1},
+                tooltip=folium.GeoJsonTooltip(fields=['codigo'], aliases=['Suelo:']) # Tooltip ligero
+            ).add_to(m)
         
         if 'hidro' in layers: 
-            folium.GeoJson(layers['hidro'], name="Hidrogeología", style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.1}).add_to(m)
+            folium.GeoJson(
+                layers['hidro'], 
+                name="Hidrogeología", 
+                style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.1},
+                tooltip=folium.GeoJsonTooltip(fields=['tipo'], aliases=['Tipo:'])
+            ).add_to(m)
         
         if 'bocatomas' in layers: 
             folium.GeoJson(layers['bocatomas'], name="Bocatomas", marker=folium.CircleMarker(radius=3, color='red')).add_to(m)
@@ -167,6 +192,7 @@ if gdf_zona is not None:
             
         folium.LayerControl().add_to(m)
         st_folium(m, width=1400, height=600)
+
 
     # TAB 3: INTERPOLACIÓN
     with tab3:
