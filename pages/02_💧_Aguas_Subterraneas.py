@@ -248,23 +248,24 @@ with tab2:
     Fullscreen().add_to(m)
     st_folium(m, width=1400, height=600, returned_objects=[])
 
-# TAB 3: Interpolación (Suave)
+# TAB 3: Interpolación (Suave, Sin líneas cruzadas + Etiquetas de Valor)
 with tab3:
     if Zi is None:
-        st.warning("Se requieren 4+ estaciones.")
+        st.warning("ℹ️ Se requieren 4+ estaciones para interpolar.")
     else:
         vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
-        if vmin==vmax: vmax+=0.1
+        if vmin == vmax: vmax += 0.1
         
         # Mapa Base Oscuro
         m_iso = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB dark_matter")
         
-        # 1. Raster Suave
+        # 1. Capa Raster (Mapa de Calor)
         try: cmap = plt.colormaps['viridis']
         except: cmap = cm.get_cmap('viridis')
+        
         norm_Zi = (Zi - vmin) / (vmax - vmin)
         rgba = cmap(norm_Zi)
-        rgba[np.isnan(Zi), 3] = 0
+        rgba[np.isnan(Zi), 3] = 0 # Transparencia en NaNs
         
         folium.raster_layers.ImageOverlay(
             image=rgba, 
@@ -272,24 +273,45 @@ with tab3:
             opacity=0.7, origin='lower'
         ).add_to(m_iso)
         
-        # 2. Isolíneas (Contours) Suaves
+        # 2. Isolíneas (Contours) - ¡CORREGIDO!
         try:
             fig_c, ax_c = plt.subplots()
-            # Usamos el Zi suavizado por gaussian_filter
+            # Generamos contornos
             cs = ax_c.contour(Xi, Yi, Zi, levels=12, colors='white', linewidths=0.8, alpha=0.8)
             plt.close(fig_c)
             
-            for col in cs.collections:
-                for path in col.get_paths():
-                    coords = path.vertices
-                    lat_lon = [[lat, lon] for lon, lat in coords]
-                    folium.PolyLine(lat_lon, color='white', weight=1, opacity=0.7).add_to(m_iso)
+            # Iteramos por cada nivel de isolínea (ej: 10mm, 20mm...)
+            for i, collection in enumerate(cs.collections):
+                level_val = cs.levels[i] # El valor de la isolínea (ej: 50.0)
+                
+                for path in collection.get_paths():
+                    # ¡LA CLAVE! .to_polygons() separa los segmentos y evita las líneas cruzadas
+                    for poly_coords in path.to_polygons():
+                        # Convertimos coordenadas (X,Y) -> (Lat,Lon)
+                        lat_lon = [[lat, lon] for lon, lat in poly_coords]
+                        
+                        # Dibujamos cada segmento limpio con Tooltip del valor
+                        folium.PolyLine(
+                            lat_lon, 
+                            color='white', 
+                            weight=1, 
+                            opacity=0.7,
+                            tooltip=f"Recarga: {level_val:.1f} mm" # Punto 5: Valor en la línea
+                        ).add_to(m_iso)
+                        
         except Exception as e:
             st.warning(f"Error trazando líneas: {e}")
             
+        # Leyenda de Colores
         m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga (mm/mes)"))
+        
+        # Botón Pantalla Completa
+        from folium.plugins import Fullscreen
         Fullscreen().add_to(m_iso)
+        
+        # Renderizar mapa
         st_folium(m_iso, width=1400, height=600, returned_objects=[])
+
 
 # TAB 4: Descargas
 with tab4:
