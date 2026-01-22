@@ -178,7 +178,14 @@ with tab1:
 
 # TAB 2: Contexto (Capas + Popups Ricos)
 with tab2:
-    bounds = df_puntos.total_bounds
+    # --- CORRECCIÓN: Cálculo manual de límites ---
+    bounds = [
+        df_puntos['longitud'].min(),
+        df_puntos['latitud'].min(),
+        df_puntos['longitud'].max(),
+        df_puntos['latitud'].max()
+    ]
+    
     # Carga capas con query robusta
     layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds)
     
@@ -223,7 +230,7 @@ with tab2:
         ).add_to(m)
         
     folium.LayerControl().add_to(m)
-    st_folium(m, width=1400, height=600, returned_objects=[]) # <-- TRUCO PARA EVITAR RECARGAS AL MOVER
+    st_folium(m, width=1400, height=600, returned_objects=[])
 
 # TAB 3: Interpolación (Suave)
 with tab3:
