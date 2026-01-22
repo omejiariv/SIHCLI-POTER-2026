@@ -91,7 +91,6 @@ def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
             status.error("No se pudo leer el archivo geográfico.")
             return
 
-        # Calcular centroide para zoom (opcional)
         status.write(f"✅ Leído: {len(gdf)} registros. Columnas: {list(gdf.columns)}")
 
         # REPROYECCIÓN OBLIGATORIA A WGS84
@@ -133,18 +132,22 @@ def editor_tabla_gis(nombre_tabla, key_editor):
         # Consultamos columnas excepto 'geometry' para que la tabla sea ligera y legible
         q_cols = text(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{nombre_tabla}' AND column_name != 'geometry'")
         cols = pd.read_sql(q_cols, engine)['column_name'].tolist()
+        if not cols:
+             st.warning(f"La tabla {nombre_tabla} existe pero no tiene columnas legibles.")
+             return
+
         cols_str = ", ".join([f'"{c}"' for c in cols]) # Comillas para nombres seguros
         
         df = pd.read_sql(f"SELECT {cols_str} FROM {nombre_tabla} LIMIT 1000", engine)
         st.info(f"Mostrando primeros 1000 registros de **{nombre_tabla}**. ({len(df.columns)} campos)")
         
+        # KEY ÚNICA AQUÍ TAMBIÉN
         df_editado = st.data_editor(df, key=key_editor, use_container_width=True, num_rows="dynamic")
         
         if st.button(f"💾 Guardar Cambios en {nombre_tabla}", key=f"btn_{key_editor}"):
-            st.warning("⚠️ La edición de atributos GIS complejos es mejor realizarla subiendo el archivo corregido. "
-                       "Esta función es solo para visualización rápida en esta versión para evitar corromper geometrías.")
+            st.warning("⚠️ Edición directa deshabilitada por seguridad en esta versión. Use la carga de archivos para cambios masivos.")
     except Exception as e:
-        st.warning(f"La tabla '{nombre_tabla}' aún no tiene datos o no existe.")
+        st.warning(f"La tabla '{nombre_tabla}' aún no tiene datos o no existe. Cargue un archivo primero.")
 
 # --- 4. INTERFAZ PRINCIPAL ---
 st.title("👑 Panel de Administración y Edición de Datos")
@@ -209,8 +212,8 @@ with tabs[0]:
                         except Exception as e: st.error(f"Error: {e}")
 
     with sub_carga:
-        up_meta = st.file_uploader("Cargar 'mapaCVENSO.csv'", type=["csv"])
-        if up_meta and st.button("Procesar"):
+        up_meta = st.file_uploader("Cargar 'mapaCVENSO.csv'", type=["csv"], key="up_meta_csv")
+        if up_meta and st.button("Procesar", key="btn_proc_meta"):
             try:
                 df = pd.read_csv(up_meta, sep=';', encoding='latin-1')
                 with engine.connect() as conn:
@@ -241,13 +244,13 @@ with tabs[1]:
         try:
             df_idx = pd.read_sql("SELECT * FROM indices_climaticos ORDER BY fecha DESC LIMIT 1000", engine)
             df_edit = st.data_editor(df_idx, key="ed_idx", use_container_width=True, num_rows="dynamic")
-            if st.button("💾 Guardar Cambios"):
+            if st.button("💾 Guardar Cambios", key="btn_save_idx"):
                 df_edit.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
                 st.success("Guardado.")
         except: st.warning("Sin datos.")
     with sb2:
-        up_i = st.file_uploader("CSV", type=["csv"])
-        if up_i and st.button("Cargar"):
+        up_i = st.file_uploader("CSV", type=["csv"], key="up_ind_csv")
+        if up_i and st.button("Cargar", key="btn_load_ind"):
             df = pd.read_csv(up_i)
             df.columns = [c.lower().strip() for c in df.columns]
             if 'id' in df.columns: df = df.drop(columns=['id'])
@@ -266,8 +269,8 @@ with tabs[2]:
             st.data_editor(df_p, key="ed_pred", use_container_width=True)
         except: st.warning("Sin datos.")
     with sb2:
-        up_gp = st.file_uploader("GeoJSON", type=["geojson", "json"])
-        if up_gp and st.button("Procesar"):
+        up_gp = st.file_uploader("GeoJSON", type=["geojson", "json"], key="up_pred_geo")
+        if up_gp and st.button("Procesar", key="btn_proc_pred"):
             try:
                 data = json.load(up_gp)
                 rows = []
@@ -295,8 +298,8 @@ with tabs[3]:
             st.data_editor(df_c, key="ed_cuen", use_container_width=True)
         except: st.write("Sin datos.")
     with sb2:
-        up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"])
-        if up_c and st.button("Procesar"):
+        up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"], key="up_cuen_geo")
+        if up_c and st.button("Procesar", key="btn_proc_cuen"):
             try:
                 data = json.load(up_c)
                 with engine.connect() as conn:
@@ -330,39 +333,42 @@ with tabs[4]:
 # ==============================================================================
 with tabs[5]:
     st.header("🌲 Coberturas Vegetales")
-    f_tiff = st.file_uploader("Cargar 'Cob25m_WGS84.tiff'", type=["tiff", "tif"])
-    if f_tiff and st.button("Guardar"):
+    f_tiff = st.file_uploader("Cargar 'Cob25m_WGS84.tiff'", type=["tiff", "tif"], key="up_cob_tif")
+    if f_tiff and st.button("Guardar", key="btn_save_cob"):
         os.makedirs("data", exist_ok=True)
         with open("data/coberturas.tif", "wb") as f:
             f.write(f_tiff.getbuffer())
         st.success("Archivo guardado.")
 
 # ==============================================================================
-# TABS 7, 8, 9: GIS ROBUSTO + VISORES DE TABLA
+# TABS 7, 8, 9: GIS ROBUSTO + VISORES DE TABLA (CLAVES ÚNICAS AÑADIDAS)
 # ==============================================================================
 with tabs[6]: # Bocatomas
     st.header("💧 Bocatomas")
     sb1, sb2 = st.tabs(["👁️ Ver Atributos", "📂 Cargar Archivo"])
     with sb1: editor_tabla_gis("bocatomas", "ed_boca")
     with sb2:
-        f = st.file_uploader("Archivo (ZIP/GeoJSON)", type=["zip", "geojson"])
-        if st.button("Cargar"): cargar_capa_gis_robusta(f, "bocatomas", engine)
+        # AÑADIDA KEY ÚNICA PARA EVITAR ERROR
+        f = st.file_uploader("Archivo (ZIP/GeoJSON)", type=["zip", "geojson"], key="up_boca_file")
+        if st.button("Cargar", key="btn_load_boca"): cargar_capa_gis_robusta(f, "bocatomas", engine)
 
 with tabs[7]: # Hidro
     st.header("⛰️ Hidrogeología")
     sb1, sb2 = st.tabs(["👁️ Ver Atributos", "📂 Cargar Archivo"])
     with sb1: editor_tabla_gis("zonas_hidrogeologicas", "ed_hidro")
     with sb2:
-        f = st.file_uploader("Archivo (ZIP/GeoJSON)", type=["zip", "geojson"])
-        if st.button("Cargar"): cargar_capa_gis_robusta(f, "zonas_hidrogeologicas", engine)
+        # AÑADIDA KEY ÚNICA PARA EVITAR ERROR
+        f = st.file_uploader("Archivo (ZIP/GeoJSON)", type=["zip", "geojson"], key="up_hidro_file")
+        if st.button("Cargar", key="btn_load_hidro"): cargar_capa_gis_robusta(f, "zonas_hidrogeologicas", engine)
 
 with tabs[8]: # Suelos
     st.header("🌱 Suelos")
     sb1, sb2 = st.tabs(["👁️ Ver Atributos", "📂 Cargar Archivo"])
     with sb1: editor_tabla_gis("suelos", "ed_suelo")
     with sb2:
-        f = st.file_uploader("Archivo (ZIP/GeoJSON)", type=["zip", "geojson"])
-        if st.button("Cargar"): cargar_capa_gis_robusta(f, "suelos", engine)
+        # AÑADIDA KEY ÚNICA PARA EVITAR ERROR
+        f = st.file_uploader("Archivo (ZIP/GeoJSON)", type=["zip", "geojson"], key="up_suelo_file")
+        if st.button("Cargar", key="btn_load_suelo"): cargar_capa_gis_robusta(f, "suelos", engine)
 
 # ==============================================================================
 # TAB 10: SQL
@@ -370,7 +376,7 @@ with tabs[8]: # Suelos
 with tabs[9]:
     st.header("🛠️ Consola SQL")
     q = st.text_area("Query:")
-    if st.button("Ejecutar"):
+    if st.button("Ejecutar", key="btn_run_sql"):
         try:
             with engine.connect() as conn:
                 if q.strip().lower().startswith("select"):
