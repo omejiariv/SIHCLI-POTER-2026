@@ -1,20 +1,79 @@
 # pages/09_👑_Panel_Administracion.py
 
+import streamlit as st
+import pandas as pd
+import json
+import io
+import time
+import sys
+import os
+import tempfile
+import zipfile
+import geopandas as gpd
+from sqlalchemy import text
+import folium
+from streamlit_folium import st_folium
+from shapely.geometry import shape
 
-# --- FUNCIÓN ROBUSTA DE CARGA GIS (NUEVA) ---
-# Esta función arregla las coordenadas automáticamente
+# --- TRUCO DE RUTAS (PATH)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
+try:
+    from modules.db_manager import get_engine
+except ImportError:
+    from db_manager import get_engine
+
+# --- CONFIGURACIÓN DE PÁGINA
+st.set_page_config(page_title="Panel de Administración", page_icon="👑", layout="wide")
+
+# --- AUTENTICACIÓN
+def check_password():
+    """Valida usuario/contraseña contra secrets.toml"""
+    if st.session_state.get("password_correct", False):
+        return True
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.title("🔐 Acceso Restringido")
+        st.info("Panel de Control SIHCLI-POTER (Nube)")
+        
+        if "iri" not in st.secrets:
+            st.error("⚠️ Falta configuración [iri] en secrets.toml")
+            return False
+
+        user_input = st.text_input("Usuario")
+        pass_input = st.text_input("Contraseña", type="password")
+
+        if st.button("Ingresar"):
+            sec_user = st.secrets["iri"]["username"]
+            sec_pass = st.secrets["iri"]["password"]
+
+            if user_input == sec_user and pass_input == sec_pass:
+                st.session_state.password_correct = True
+                st.rerun()
+            else:
+                st.error("🚫 Acceso Denegado")
+                return False
+    return False
+
+if not check_password():
+    st.stop()
+
+# --- NUEVA FUNCIÓN: CARGA GIS ROBUSTA (CORRIGE COORDENADAS) ---
 def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
     if uploaded_file is None: return
     
     status = st.status(f"🚀 Procesando {nombre_tabla}...", expanded=True)
     try:
-        # 1. Guardar archivo temporal
+        # 1. Guardar temporalmente
         suffix = os.path.splitext(uploaded_file.name)[1].lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
         
-        # 2. Leer archivo (Soporte para Zip/SHP y GeoJSON)
+        # 2. Leer archivo
         gdf = None
         if suffix == '.zip':
             with tempfile.TemporaryDirectory() as tmp_dir:
@@ -32,36 +91,38 @@ def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
             status.error("No se pudo leer el archivo geográfico.")
             return
 
-        status.write(f"✅ Leído: {len(gdf)} registros. Sist. Coordenadas: {gdf.crs}")
+        status.write(f"✅ Leído: {len(gdf)} registros. CRS original: {gdf.crs}")
 
-        # 3. Limpieza y Reproyección OBLIGATORIA a WGS84
-        if gdf.crs is None or gdf.crs.to_string() != "EPSG:4326":
-            status.write("🔄 Reproyectando a Latitud/Longitud (WGS84)...")
+        # 3. REPROYECCIÓN AUTOMÁTICA A WGS84 (Lat/Lon)
+        # Esto soluciona que los mapas no aparezcan
+        if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
+            status.write("🔄 Reproyectando a WGS84 (EPSG:4326)...")
             gdf = gdf.to_crs("EPSG:4326")
         
-        # Normalizar columnas
+        # 4. Normalización de columnas
         gdf.columns = [c.lower() for c in gdf.columns]
         
-        # Mapeo de columnas específicas para tus tablas
+        # Mapeo inteligente de columnas
         rename_map = {}
         if 'bocatomas' in nombre_tabla:
             if 'nombre' in gdf.columns: rename_map['nombre'] = 'nom_bocatoma'
         elif 'suelos' in nombre_tabla:
             if 'gridcode' in gdf.columns: rename_map['gridcode'] = 'codigo'
-            if 'simbolo' in gdf.columns: rename_map['simbolo'] = 'codigo' # Caso común
+            if 'simbolo' in gdf.columns: rename_map['simbolo'] = 'codigo'
         elif 'zonas_hidrogeologicas' in nombre_tabla:
             if 'nombre' in gdf.columns: rename_map['nombre'] = 'nombre_zona'
             
         if rename_map:
             gdf = gdf.rename(columns=rename_map)
 
-        # 4. Subir a PostGIS (Reemplazando tabla)
+        # 5. Carga a PostGIS
         status.write("📤 Subiendo a Base de Datos...")
         gdf.to_postgis(nombre_tabla, engine, if_exists='replace', index=False)
         
         status.update(label="¡Carga Exitosa!", state="complete", expanded=False)
-        st.success(f"Capa **{nombre_tabla}** actualizada ({len(gdf)} regs).")
-        st.balloons()
+        st.success(f"Capa **{nombre_tabla}** actualizada ({len(gdf)} registros).")
+        if len(gdf) > 0:
+            st.balloons()
         
     except Exception as e:
         status.update(label="Error", state="error")
@@ -69,17 +130,18 @@ def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
     finally:
         if os.path.exists(tmp_path): os.remove(tmp_path)
 
-# --- 3. INTERFAZ PRINCIPAL
+# --- INTERFAZ PRINCIPAL
 st.title("👑 Panel de Administración y Edición de Datos")
 st.markdown("---")
 
-# Definición de Pestañas (AGREGAMOS BOCATOMAS)
+engine = get_engine()
+
+# Definición de Pestañas (Fusionando lo viejo con lo nuevo)
 tabs = st.tabs([
     "📡 Estaciones", "📊 Índices", "🏠 Predios", "🌊 Cuencas", 
     "🏙️ Municipios", "💧 Bocatomas", "⛰️ Hidrogeología", "🌱 Suelos", "🛠️ SQL"
 ])
 
-engine = get_engine()
 
 # ====================================================================
 # TAB 1: GESTIÓN DE ESTACIONES (EDICIÓN + CREACIÓN + CARGA)
@@ -777,11 +839,11 @@ with tab_mun:
             except Exception as e:
                 st.error(f"Error procesando: {e}")
 
-# TAB 6: BOCATOMAS (¡NUEVO!)
+# TAB 6: BOCATOMAS (¡NUEVO Y ROBUSTO!)
 # ==============================================================================
 with tabs[5]:
     st.header("💧 Gestión de Bocatomas")
-    st.info("Sube 'Bocatomas_Ant.shp' (preferiblemente en .zip) o GeoJSON.")
+    st.info("Sube tu archivo 'Bocatomas_Ant.shp' (en ZIP) o GeoJSON. El sistema corregirá las coordenadas.")
     f_boca = st.file_uploader("Archivo Bocatomas", type=["zip", "geojson", "kml"])
     
     if st.button("Cargar Bocatomas"):
@@ -789,32 +851,34 @@ with tabs[5]:
         
     st.divider()
     try:
-        count = pd.read_sql("SELECT count(*) FROM bocatomas", engine).iloc[0,0]
-        st.metric("Bocatomas en BD", count)
-    except: st.warning("Tabla no existe.")
+        c = pd.read_sql("SELECT count(*) FROM bocatomas", engine).iloc[0,0]
+        st.metric("Registros en BD", c)
+    except: st.warning("La tabla aún no existe.")
 
 # ==============================================================================
-# TAB 7: HIDROGEOLOGÍA (MEJORADO CON FUNCIÓN ROBUSTA)
+# TAB 7: HIDROGEOLOGÍA (¡NUEVO Y ROBUSTO!)
 # ==============================================================================
 with tabs[6]:
     st.header("⛰️ Gestión Hidrogeológica")
+    st.info("Sube 'Zonas_PotHidrogeologico.geojson'.")
     f_hidro = st.file_uploader("Archivo Zonas Hidro", type=["geojson", "zip"])
     
     if st.button("Cargar Hidrogeología"):
         cargar_capa_gis_robusta(f_hidro, "zonas_hidrogeologicas", engine)
 
 # ==============================================================================
-# TAB 8: SUELOS (MEJORADO CON FUNCIÓN ROBUSTA)
+# TAB 8: SUELOS (¡NUEVO Y ROBUSTO!)
 # ==============================================================================
 with tabs[7]:
     st.header("🌱 Gestión de Suelos")
-    f_suelo = st.file_uploader("Archivo Suelos Antioquia", type=["geojson", "zip"])
+    st.info("Sube 'Suelos_Antioquia.geojson'.")
+    f_suelo = st.file_uploader("Archivo Suelos", type=["geojson", "zip"])
     
     if st.button("Cargar Suelos"):
         cargar_capa_gis_robusta(f_suelo, "suelos", engine)
 
 # ==============================================================================
-# TAB 9: SQL (CONSERVADO)
+# TAB 9: SQL
 # ==============================================================================
 with tabs[8]:
     st.header("🛠️ Consola SQL")
@@ -827,5 +891,5 @@ with tabs[8]:
                 else:
                     conn.execute(text(q))
                     conn.commit()
-                    st.success("Ejecutado.")
+                    st.success("Hecho.")
         except Exception as e: st.error(str(e))
