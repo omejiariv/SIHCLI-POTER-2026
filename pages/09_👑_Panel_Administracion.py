@@ -235,27 +235,58 @@ with tabs[0]:
             except Exception as e: st.error(f"Error: {e}")
 
 # ==============================================================================
-# TAB 2: ÍNDICES
+# TAB 2: ÍNDICES (RECUPERADO: VER, EDITAR Y CARGAR)
 # ==============================================================================
 with tabs[1]:
-    st.header("📊 Índices Climáticos")
-    sb1, sb2 = st.tabs(["👁️ Ver/Editar", "📂 Cargar CSV"])
+    st.header("📊 Índices Climáticos (ONI, SOI, IOD)")
+    sb1, sb2 = st.tabs(["👁️ Ver y Editar Tabla", "📂 Cargar Archivo CSV"])
+    
+    # SUB-TAB 1: EDITOR DE TABLA
     with sb1:
         try:
-            df_idx = pd.read_sql("SELECT * FROM indices_climaticos ORDER BY fecha DESC LIMIT 1000", engine)
-            df_edit = st.data_editor(df_idx, key="ed_idx", use_container_width=True, num_rows="dynamic")
-            if st.button("💾 Guardar Cambios", key="btn_save_idx"):
-                df_edit.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-                st.success("Guardado.")
-        except: st.warning("Sin datos.")
+            # Traemos todos los datos ordenados por fecha
+            df_idx = pd.read_sql("SELECT * FROM indices_climaticos ORDER BY fecha DESC", engine)
+            st.markdown(f"**Total Registros:** {len(df_idx)}")
+            
+            # Editor interactivo
+            df_editado = st.data_editor(
+                df_idx, 
+                key="editor_indices_main", 
+                use_container_width=True, 
+                num_rows="dynamic",
+                height=500
+            )
+            
+            if st.button("💾 Guardar Cambios en Índices", key="btn_save_indices"):
+                with st.spinner("Guardando..."):
+                    df_editado.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
+                    st.success("✅ Tabla actualizada correctamente.")
+        except Exception as e:
+            st.info("ℹ️ Aún no hay índices cargados o la tabla no existe.")
+
+    # SUB-TAB 2: CARGA CSV
     with sb2:
-        up_i = st.file_uploader("CSV", type=["csv"], key="up_ind_csv")
-        if up_i and st.button("Cargar", key="btn_load_ind"):
-            df = pd.read_csv(up_i)
-            df.columns = [c.lower().strip() for c in df.columns]
-            if 'id' in df.columns: df = df.drop(columns=['id'])
-            df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-            st.success("Cargado.")
+        st.info("Sube el archivo 'Indices_Globales.csv'.")
+        up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_csv_final")
+        
+        if up_i and st.button("Procesar Carga", key="btn_load_ind_final"):
+            try:
+                # Intentamos leer con diferentes codificaciones por si acaso
+                try:
+                    df = pd.read_csv(up_i, encoding='utf-8')
+                except:
+                    up_i.seek(0)
+                    df = pd.read_csv(up_i, encoding='latin-1')
+                
+                # Limpieza
+                df.columns = [c.lower().strip() for c in df.columns]
+                if 'id' in df.columns: df = df.drop(columns=['id'])
+                
+                # Guardar
+                df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
+                st.success(f"✅ Se cargaron {len(df)} registros exitosamente.")
+                st.balloons()
+            except Exception as e: st.error(f"Error al procesar CSV: {e}")
 
 # ==============================================================================
 # TAB 3: PREDIOS
@@ -287,58 +318,154 @@ with tabs[2]:
             except: st.warning("Error/Duplicados. Use SQL para limpiar.")
 
 # ==============================================================================
-# TAB 4: CUENCAS
+# TAB 4: CUENCAS (VISOR COMPLETO)
 # ==============================================================================
 with tabs[3]:
     st.header("🌊 Gestión de Cuencas")
-    sb1, sb2 = st.tabs(["👁️ Tabla Completa", "📂 Carga GeoJSON"])
+    sb1, sb2 = st.tabs(["👁️ Tabla Maestra (Todas las Columnas)", "📂 Carga GeoJSON"])
+    
     with sb1:
         try:
-            df_c = pd.read_sql("SELECT * FROM cuencas", engine)
-            st.data_editor(df_c, key="ed_cuen", use_container_width=True)
-        except: st.write("Sin datos.")
+            # Seleccionamos TODO (*)
+            df_c = pd.read_sql("SELECT * FROM cuencas ORDER BY id_cuenca", engine)
+            st.caption(f"Mostrando {len(df_c)} cuencas registradas.")
+            
+            # Editor configurado para mostrar todo
+            df_c_ed = st.data_editor(
+                df_c, 
+                key="ed_cuen_full", 
+                use_container_width=True, 
+                height=600,
+                num_rows="dynamic"
+            )
+            
+            if st.button("💾 Guardar Cambios Cuencas", key="btn_save_cuencas"):
+                df_c_ed.to_sql('cuencas', engine, if_exists='replace', index=False)
+                st.success("Cambios guardados.")
+        except: st.write("Sin datos disponibles.")
+
     with sb2:
-        up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"], key="up_cuen_geo")
-        if up_c and st.button("Procesar", key="btn_proc_cuen"):
+        st.info("Carga 'SubcuencasAinfluencia.geojson'. El sistema corrige duplicados automáticamente.")
+        up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"], key="up_cuen_geo_fix")
+        
+        if up_c and st.button("Procesar Archivo", key="btn_proc_cuen_fix"):
             try:
                 data = json.load(up_c)
+                count = 0
                 with engine.connect() as conn:
                     for f in data['features']:
                         p = f.get('properties', {})
+                        # Lógica segura de mapeo
+                        area = float(p.get('Shape_Area', 0))/1_000_000
                         row = {
                             "id": str(p.get('COD', 'SN')),
                             "nom": p.get('SUBC_LBL', 'Sin Nombre'),
-                            "area": float(p.get('Shape_Area', 0))/1_000_000,
+                            "area": area,
                             "rio": p.get('SZH', '')
                         }
+                        # UPSERT para evitar error de llave duplicada
                         conn.execute(text("""
                             INSERT INTO cuencas (id_cuenca, nombre_cuenca, area_km2, rio_principal)
                             VALUES (:id, :nom, :area, :rio)
                             ON CONFLICT (id_cuenca) DO UPDATE SET 
                             nombre_cuenca = EXCLUDED.nombre_cuenca, area_km2 = EXCLUDED.area_km2
                         """), row)
+                        count += 1
                     conn.commit()
-                st.success("Procesado (Duplicados actualizados).")
+                st.success(f"✅ Procesadas {count} cuencas correctamente.")
             except Exception as e: st.error(f"Error: {e}")
 
 # ==============================================================================
-# TAB 5: MUNICIPIOS
+# TAB 5: MUNICIPIOS (RECUPERADO)
 # ==============================================================================
 with tabs[4]:
     st.header("🏙️ Municipios")
-    st.info("Funcionalidad de carga disponible (simplificada).")
+    sb1, sb2 = st.tabs(["👁️ Ver y Editar Tabla", "📂 Cargar GeoJSON"])
+    
+    with sb1:
+        try:
+            df_m = pd.read_sql("SELECT * FROM municipios ORDER BY nombre_municipio", engine)
+            st.info(f"Gestionando {len(df_m)} municipios.")
+            
+            # Tabla editable
+            df_m_edit = st.data_editor(
+                df_m, 
+                key="editor_municipios", 
+                use_container_width=True,
+                height=500
+            )
+            
+            if st.button("💾 Guardar Cambios Municipios", key="btn_save_mun"):
+                df_m_edit.to_sql('municipios', engine, if_exists='replace', index=False)
+                st.success("✅ Municipios actualizados.")
+        except Exception as e:
+            st.warning("No hay municipios cargados.")
+
+    with sb2:
+        st.info("Carga el archivo 'Municipios.geojson' para poblar la base de datos.")
+        up_m = st.file_uploader("GeoJSON Municipios", type=["geojson", "json"], key="up_mun_geo")
+        
+        if up_m and st.button("Procesar Municipios", key="btn_proc_mun"):
+            try:
+                data = json.load(up_m)
+                rows = []
+                for f in data['features']:
+                    p = f.get('properties', {})
+                    rows.append({
+                        "id_municipio": str(p.get('MPIO_CDPMP', '00000')),
+                        "nombre_municipio": p.get('MPIO_CNMBR', ''),
+                        "departamento": p.get('DPTO_CNMBR', 'Antioquia'),
+                        "poblacion": 0
+                    })
+                pd.DataFrame(rows).drop_duplicates('id_municipio').to_sql('municipios', engine, if_exists='replace', index=False)
+                st.success(f"✅ Cargados {len(rows)} municipios.")
+            except Exception as e: st.error(f"Error: {e}")
 
 # ==============================================================================
-# TAB 6: COBERTURAS
+# TAB 6: COBERTURAS (VER INFO + GUARDAR)
 # ==============================================================================
 with tabs[5]:
-    st.header("🌲 Coberturas Vegetales")
-    f_tiff = st.file_uploader("Cargar 'Cob25m_WGS84.tiff'", type=["tiff", "tif"], key="up_cob_tif")
-    if f_tiff and st.button("Guardar", key="btn_save_cob"):
-        os.makedirs("data", exist_ok=True)
-        with open("data/coberturas.tif", "wb") as f:
-            f.write(f_tiff.getbuffer())
-        st.success("Archivo guardado.")
+    st.header("🌲 Coberturas Vegetales (Raster .TIFF)")
+    
+    col_info, col_load = st.columns([1, 2])
+    
+    # Lógica para mostrar info del archivo actual
+    path_cob = "data/coberturas.tif"
+    existe = os.path.exists(path_cob)
+    
+    with col_info:
+        st.subheader("ℹ️ Archivo Actual")
+        if existe:
+            try:
+                with rasterio.open(path_cob) as src:
+                    st.success("✅ Archivo cargado")
+                    st.json({
+                        "Ancho (px)": src.width,
+                        "Alto (px)": src.height,
+                        "Bandas": src.count,
+                        "CRS": str(src.crs),
+                        "Límites": dict(zip(["Oeste", "Sur", "Este", "Norte"], src.bounds))
+                    })
+            except Exception as e:
+                st.error(f"Archivo corrupto: {e}")
+        else:
+            st.warning("⚠️ No hay archivo de coberturas en el sistema.")
+
+    with col_load:
+        st.subheader("📂 Actualizar / Editar Archivo")
+        st.info("Para 'editar' las coberturas, debes subir una nueva versión del archivo **Cob25m_WGS84.tiff**.")
+        
+        f_tiff = st.file_uploader("Seleccionar nuevo .TIFF", type=["tiff", "tif"], key="up_cob_tif_final")
+        
+        if f_tiff:
+            st.warning("⚠️ Esta acción reemplazará el archivo actual.")
+            if st.button("💾 Guardar y Reemplazar", key="btn_save_cob_final"):
+                os.makedirs("data", exist_ok=True)
+                with open(path_cob, "wb") as f:
+                    f.write(f_tiff.getbuffer())
+                st.success("✅ Archivo de coberturas actualizado correctamente.")
+                time.sleep(1)
+                st.rerun()
 
 # ==============================================================================
 # TABS 7, 8, 9: GIS ROBUSTO + VISORES DE TABLA (CLAVES ÚNICAS AÑADIDAS)
