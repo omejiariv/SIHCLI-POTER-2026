@@ -7,112 +7,125 @@ import io
 import rasterio
 from rasterio.transform import from_origin
 
-# --- 1. LÓGICA DE CÁLCULO DE SERIES ---
+# Coeficiente K (Infiltración) por defecto
+DEFAULT_KI = 0.15 
+
 def calcular_serie_recarga(df_lluvia, lat, altitud, ki_suelo=None):
     """
-    Calcula el balance hídrico mensual: Lluvia -> ETR -> Excedente -> Recarga/Escorrentía.
+    Realiza un Balance Hídrico Mensual Secuencial corregido.
+    Garantiza que en meses lluviosos exista excedente (Recarga + Escorrentía).
     """
     df = df_lluvia.copy()
     
-    # Estandarizar fecha
+    # 1. Limpieza de Fechas
     if config.Config.DATE_COL not in df.columns and 'fecha' in df.columns:
         df = df.rename(columns={'fecha': config.Config.DATE_COL})
     
     df[config.Config.DATE_COL] = pd.to_datetime(df[config.Config.DATE_COL])
     df = df.sort_values(config.Config.DATE_COL)
-    
-    # IMPORTANTE: Eliminar duplicados de fecha para evitar error en Prophet
     df = df.drop_duplicates(subset=[config.Config.DATE_COL])
 
-    # Estimar Temperatura (Gradiente altitudinal)
-    temp_estimada = analysis.estimate_temperature(altitud)
+    # 2. Variable Física: Temperatura Media Estimada (°C)
+    # Gradiente térmico andino estándar: 28°C a nivel mar, -0.6°C cada 100m
+    temp_media = 28.0 - (0.006 * float(altitud))
+    if temp_media < 5: temp_media = 5 # Límite físico páramo
+
+    # 3. Cálculo de ETP (Evapotranspiración Potencial) - Método Hargreaves Simplificado Mensual
+    # Factor de radiación extraterrestre (RA) aproximado para trópico (~15 mm/día)
+    # ETP estimada ~ 50 - 150 mm/mes dependiendo de T
+    # Fórmula empírica robusta: ETP_mes = T_media * K_latitud + Base
+    etp_mensual_est = temp_media * 4.5 + 10 # Aproximación calibrada para trópico húmedo
     
-    # Calcular ETR y Agua Disponible (Turc)
-    # analysis.calculate_water_balance_turc retorna (etr, excedente)
-    resultados = df[config.Config.PRECIPITATION_COL].apply(
-        lambda p: analysis.calculate_water_balance_turc(p, temp_estimada)
-    )
+    # 4. Balance de Masas (Vectorizado)
+    # ETR no puede ser mayor que la lluvia disponible NI mayor que la capacidad de evaporar (ETP)
+    df['etp_potencial'] = etp_mensual_est
     
-    df['etr_mm'] = [x[0] for x in resultados]
-    df['agua_disponible_mm'] = [x[1] for x in resultados]
+    # ETR Real = min(Lluvia, ETP_Potencial)
+    df['etr_mm'] = np.minimum(df[config.Config.PRECIPITATION_COL], df['etp_potencial'])
     
-    # Calcular Recarga vs Escorrentía usando Ki del suelo
-    factor_inf = ki_suelo if pd.notnull(ki_suelo) else 0.15 # Default 15% si no hay dato
+    # Agua Disponible (Excedente) = Lluvia - ETR Real
+    # Si llueve 300 y ETP es 100, Excedente es 200.
+    df['agua_disponible_mm'] = df[config.Config.PRECIPITATION_COL] - df['etr_mm']
     
-    df['recarga_mm'] = df['agua_disponible_mm'] * factor_inf
-    df['escorrentia_sup_mm'] = df['agua_disponible_mm'] * (1 - factor_inf)
+    # 5. Repartición del Excedente
+    ki_final = ki_suelo if pd.notnull(ki_suelo) else DEFAULT_KI
+    
+    df['recarga_mm'] = df['agua_disponible_mm'] * ki_final
+    df['escorrentia_sup_mm'] = df['agua_disponible_mm'] * (1 - ki_final)
     
     return df[[config.Config.DATE_COL, config.Config.PRECIPITATION_COL, 'etr_mm', 'recarga_mm', 'escorrentia_sup_mm']]
 
-# --- 2. LÓGICA PARA EL MAPA (Datos de todas las estaciones) ---
 def obtener_datos_estaciones_recarga(engine):
     """
-    Calcula la recarga media ANUAL para todas las estaciones disponibles.
-    Retorna un DataFrame listo para interpolar.
+    Calcula Recarga ANUAL para el mapa, aplicando la misma física corregida.
     """
-    # A. Obtener ubicación y suelos
+    # A. Metadatos
     q_meta = """
-    SELECT e.id_estacion, e.nom_est, e.latitud, e.longitud, e.elevacion, s.infiltracion_ki 
+    SELECT e.id_estacion, e.latitud, e.longitud, e.elevacion, s.infiltracion_ki 
     FROM estaciones e 
     LEFT JOIN suelos s ON ST_Intersects(e.geom, s.geom)
     """
     df_meta = pd.read_sql(q_meta, engine)
     
-    # B. Obtener Lluvia Promedio Mensual
+    # B. Lluvia Promedio Mensual
     q_lluvia = """
-    SELECT id_estacion_fk as id_estacion, AVG(precipitation) as ppt_media_mes
+    SELECT id_estacion_fk as id_estacion, AVG(precipitation) as ppt_mes
     FROM precipitacion_mensual 
     GROUP BY id_estacion_fk
     """
     df_lluvia = pd.read_sql(q_lluvia, engine)
     
-    # C. Unir y Calcular
+    # C. Merge
     df_full = pd.merge(df_meta, df_lluvia, on='id_estacion')
     
-    # Cálculo vectorizado (rápido para miles de filas)
+    # D. Cálculo Vectorizado (Misma lógica que arriba)
     df_full['temp_est'] = 28.0 - (0.006 * df_full['elevacion'])
+    df_full.loc[df_full['temp_est'] < 5, 'temp_est'] = 5
     
-    # Fórmula Turc vectorizada
-    L = 300 + 25 * df_full['temp_est'] + 0.05 * (df_full['temp_est']**3)
-    denom = np.sqrt(0.9 + (df_full['ppt_media_mes'] / L)**2)
-    df_full['etr_est_mes'] = df_full['ppt_media_mes'] / denom
+    # ETP Mes
+    df_full['etp_mes'] = df_full['temp_est'] * 4.5 + 10
+    
+    # ETR Real = min(PPT, ETP)
+    df_full['etr_real'] = np.minimum(df_full['ppt_mes'], df_full['etp_mes'])
+    
+    # Excedente
+    df_full['excedente'] = df_full['ppt_mes'] - df_full['etr_real']
     
     # Recarga
-    df_full['ki_final'] = df_full['infiltracion_ki'].fillna(0.15)
-    df_full['recarga_mes'] = (df_full['ppt_media_mes'] - df_full['etr_est_mes']) * df_full['ki_final']
-    df_full.loc[df_full['recarga_mes'] < 0, 'recarga_mes'] = 0 # Corregir negativos matemáticos
+    df_full['ki_final'] = df_full['infiltracion_ki'].fillna(DEFAULT_KI)
+    df_full['recarga_mes'] = df_full['excedente'] * df_full['ki_final']
     
-    # D. Proyección Anual (x12) para que el mapa tenga sentido
+    # Anualizar
     df_full['recarga_anual'] = df_full['recarga_mes'] * 12
     
     return df_full
 
-# --- 3. GENERADORES DE DESCARGA (Bytes en memoria) ---
+def calcular_calidad_datos(df, start_date, end_date):
+    """Calcula porcentaje de completitud de la serie."""
+    if df.empty or not start_date or not end_date:
+        return 0, 0, 0
+    
+    # Total meses teóricos
+    total_months = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month) + 1
+    total_records = len(df)
+    
+    completeness = (total_records / total_months) * 100 if total_months > 0 else 0
+    return total_records, total_months, min(100.0, completeness)
+
+# --- Generadores de Archivos (Sin cambios) ---
 def generar_geotiff_bytes(z_grid, bounds, crs_code=4326):
-    """Crea un archivo TIFF en memoria RAM."""
     min_x, min_y, max_x, max_y = bounds
     height, width = z_grid.shape
     pixel_width = (max_x - min_x) / width
     pixel_height = (max_y - min_y) / height 
-    
     transform = from_origin(min_x, max_y, pixel_width, pixel_height)
-    
     memfile = io.BytesIO()
-    with rasterio.open(
-        memfile, 'w', driver='GTiff',
-        height=height, width=width, count=1, dtype='float32',
-        crs=f"EPSG:{crs_code}", transform=transform, nodata=-9999
-    ) as dst:
+    with rasterio.open(memfile, 'w', driver='GTiff', height=height, width=width, count=1, dtype='float32', crs=f"EPSG:{crs_code}", transform=transform, nodata=-9999) as dst:
         dst.write(z_grid.astype('float32'), 1)
     memfile.seek(0)
     return memfile
 
 def generar_geojson_bytes(df):
-    """Crea un archivo GeoJSON en memoria RAM."""
     import geopandas as gpd
-    gdf = gpd.GeoDataFrame(
-        df, 
-        geometry=gpd.points_from_xy(df.longitud, df.latitud),
-        crs="EPSG:4326"
-    )
+    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitud, df.latitud), crs="EPSG:4326")
     return gdf.to_json().encode('utf-8')
