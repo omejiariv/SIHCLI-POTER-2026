@@ -15,7 +15,7 @@ import folium
 from streamlit_folium import st_folium
 from shapely.geometry import shape
 
-# --- TRUCO DE RUTAS (PATH)
+# --- CONFIGURACIÓN DE RUTAS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
@@ -25,11 +25,12 @@ try:
 except ImportError:
     from db_manager import get_engine
 
-# --- CONFIGURACIÓN DE PÁGINA
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Panel de Administración", page_icon="👑", layout="wide")
 
-# --- AUTENTICACIÓN
+# --- AUTENTICACIÓN (ORIGINAL) ---
 def check_password():
+    """Valida usuario/contraseña contra secrets.toml"""
     if st.session_state.get("password_correct", False):
         return True
     
@@ -37,18 +38,16 @@ def check_password():
     with col2:
         st.title("🔐 Acceso Restringido")
         st.info("Panel de Control SIHCLI-POTER (Nube)")
-        
         if "iri" not in st.secrets:
             st.error("⚠️ Falta configuración [iri] en secrets.toml")
             return False
-
+        
         user_input = st.text_input("Usuario")
         pass_input = st.text_input("Contraseña", type="password")
-
+        
         if st.button("Ingresar"):
             sec_user = st.secrets["iri"]["username"]
             sec_pass = st.secrets["iri"]["password"]
-
             if user_input == sec_user and pass_input == sec_pass:
                 st.session_state.password_correct = True
                 st.rerun()
@@ -60,17 +59,19 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- FUNCIÓN DE CARGA GIS ROBUSTA (CORRIGE COORDENADAS) ---
+# --- NUEVA FUNCIÓN: CARGA GIS ROBUSTA (CORRIGE COORDENADAS) ---
 def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
     if uploaded_file is None: return
     
     status = st.status(f"🚀 Procesando {nombre_tabla}...", expanded=True)
     try:
+        # 1. Guardar temporalmente
         suffix = os.path.splitext(uploaded_file.name)[1].lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
         
+        # 2. Leer archivo
         gdf = None
         if suffix == '.zip':
             with tempfile.TemporaryDirectory() as tmp_dir:
@@ -88,16 +89,17 @@ def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
             status.error("No se pudo leer el archivo geográfico.")
             return
 
-        status.write(f"✅ Leído: {len(gdf)} registros. CRS: {gdf.crs}")
+        status.write(f"✅ Leído: {len(gdf)} registros. CRS original: {gdf.crs}")
 
-        # REPROYECCIÓN OBLIGATORIA A WGS84
+        # 3. REPROYECCIÓN OBLIGATORIA A WGS84 (Lat/Lon)
         if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
             status.write("🔄 Reproyectando a WGS84 (EPSG:4326)...")
             gdf = gdf.to_crs("EPSG:4326")
         
-        # Normalización
+        # 4. Normalización de columnas
         gdf.columns = [c.lower() for c in gdf.columns]
         
+        # Mapeo inteligente de columnas
         rename_map = {}
         if 'bocatomas' in nombre_tabla:
             if 'nombre' in gdf.columns: rename_map['nombre'] = 'nom_bocatoma'
@@ -110,6 +112,7 @@ def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
         if rename_map:
             gdf = gdf.rename(columns=rename_map)
 
+        # 5. Carga a PostGIS
         status.write("📤 Subiendo a Base de Datos...")
         gdf.to_postgis(nombre_tabla, engine, if_exists='replace', index=False)
         
@@ -123,25 +126,26 @@ def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
     finally:
         if os.path.exists(tmp_path): os.remove(tmp_path)
 
-# --- INTERFAZ PRINCIPAL
+# --- INTERFAZ PRINCIPAL ---
 st.title("👑 Panel de Administración y Edición de Datos")
 st.markdown("---")
 
 engine = get_engine()
 
-# DEFINICIÓN EXPLÍCITA DE PESTAÑAS (SOLUCIONA EL NameError)
+# DEFINICIÓN DE PESTAÑAS (INCLUYENDO LA NUEVA DE BOCATOMAS)
 tab_est, tab_indices, tab_predios, tab_cuencas, tab_mun, tab_boca, tab_hidro, tab_suelos, tab_sql = st.tabs([
     "📡 Estaciones", "📊 Índices", "🏠 Predios", "🌊 Cuencas", 
     "🏙️ Municipios", "💧 Bocatomas", "⛰️ Hidrogeología", "🌱 Suelos", "🛠️ SQL"
 ])
 
 # ==============================================================================
-# TAB 1: ESTACIONES (TU LÓGICA DEL PDF - RESTAURADA)
+# TAB 1: ESTACIONES (TU LÓGICA ORIGINAL RESTAURADA)
 # ==============================================================================
 with tab_est:
-    st.header("📡 Gestión de Estaciones Hidroclimáticas")
+    st.header("Gestión de Estaciones Hidroclimáticas")
     sub_editar, sub_crear, sub_carga = st.tabs(["✏️ Editar Existente", "➕ Crear Nueva", "📂 Carga Masiva"])
     
+    # --- Sub-pestaña Editar ---
     with sub_editar:
         st.info("Busca una estación para corregir sus coordenadas.")
         if engine:
@@ -166,7 +170,6 @@ with tab_est:
                                 with c1:
                                     nn = st.text_input("Nombre", value=est_data.get('nom_est', ''))
                                     
-                                    # Selectboxes con lógica segura
                                     cat_actual = est_data.get('categoria', 'Pluviométrica')
                                     opt_cat = ["Pluviométrica", "Limnimétrica", "Climática", "Otras"]
                                     idx_cat = opt_cat.index(cat_actual) if cat_actual in opt_cat else 0
@@ -197,7 +200,9 @@ with tab_est:
                                     time.sleep(1)
                                     st.rerun()
 
+    # --- Sub-pestaña Crear ---
     with sub_crear:
+        st.markdown("### Registrar Nueva Estación")
         with st.form("new_est"):
             c1, c2 = st.columns(2)
             nid = c1.text_input("ID (Único)")
@@ -205,7 +210,7 @@ with tab_est:
             nmun = c1.text_input("Municipio")
             nlat = c2.number_input("Latitud", value=6.0, format="%.5f")
             nlon = c2.number_input("Longitud", value=-75.0, format="%.5f")
-            nelev = c2.number_input("Elevación")
+            nelev = c2.number_input("Elevación", value=1500.0)
             
             if st.form_submit_button("Crear Estación"):
                 if nid and nnom:
@@ -216,46 +221,155 @@ with tab_est:
                                 VALUES (:id, :n, :m, :la, :lo, :e)
                             """), {"id": nid, "n": nnom, "m": nmun, "la": nlat, "lo": nlon, "e": nelev})
                             conn.commit()
-                            st.success("Estación creada.")
+                            st.success("Estación creada exitosamente.")
                         except Exception as e: st.error(f"Error: {e}")
 
+    # --- Sub-pestaña Carga ---
     with sub_carga:
-        st.info("Carga masiva desde 'mapaCVENSO.csv'")
+        st.markdown("### Carga de Metadatos")
+        st.info("Sube 'mapaCVENSO.csv' para actualizar metadatos.")
         up_meta = st.file_uploader("CSV Metadatos", type=["csv"])
-        if up_meta and st.button("Procesar"):
+        if up_meta and st.button("Procesar Metadatos"):
             try:
-                df = pd.read_csv(up_meta, sep=';', encoding='latin-1')
-                # (Lógica simplificada de carga para brevedad, pero funcional)
-                st.write("Vista previa:", df.head())
-                st.info("Implementación completa conservada en backend.")
+                df = pd.read_csv(up_meta, sep=';', encoding='latin-1', engine='python')
+                df.columns = [c.strip() for c in df.columns]
+                
+                with engine.connect() as conn:
+                    count = 0
+                    for _, row in df.iterrows():
+                        try:
+                            sid = str(row['Id_estacio']).strip()
+                            snom = str(row['Nom_Est']).strip()
+                            slat = float(str(row['Latitud_geo']).replace(',', '.'))
+                            slon = float(str(row['Longitud_geo']).replace(',', '.'))
+                            conn.execute(text("""
+                                INSERT INTO estaciones (id_estacion, nom_est, latitud, longitud)
+                                VALUES (:id, :n, :la, :lo)
+                                ON CONFLICT (id_estacion) DO UPDATE SET
+                                nom_est = EXCLUDED.nom_est, latitud = EXCLUDED.latitud, longitud = EXCLUDED.longitud
+                            """), {"id": sid, "n": snom, "la": slat, "lo": slon})
+                            count += 1
+                        except: pass
+                    conn.commit()
+                st.success(f"Procesados {count} registros.")
             except Exception as e: st.error(f"Error: {e}")
 
 # ==============================================================================
-# TAB 2: ÍNDICES
+# TAB 2: ÍNDICES (TU LÓGICA ORIGINAL RESTAURADA)
 # ==============================================================================
 with tab_indices:
-    st.header("📊 Índices Climáticos")
-    up_idx = st.file_uploader("CSV Índices", type=["csv"])
-    if up_idx and st.button("Cargar"):
-        df = pd.read_csv(up_idx)
-        df.columns = [c.lower().strip() for c in df.columns]
-        if 'id' in df.columns: df = df.drop(columns=['id'])
-        df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-        st.success("Índices cargados.")
+    st.header("📊 Gestión de Índices Climáticos")
+    up_idx = st.file_uploader("CSV Índices (ONI, SOI, IOD)", type=["csv"])
+    if up_idx and st.button("Cargar Índices"):
+        try:
+            df = pd.read_csv(up_idx, engine='python')
+            df.columns = [c.lower().strip() for c in df.columns]
+            if 'id' in df.columns: df = df.drop(columns=['id'])
+            df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
+            st.success(f"Cargados {len(df)} registros.")
+        except Exception as e: st.error(str(e))
 
 # ==============================================================================
-# TAB 3, 4, 5: PREDIOS, CUENCAS, MUNICIPIOS
+# TAB 3: PREDIOS (TU LÓGICA ORIGINAL RESTAURADA)
 # ==============================================================================
-with tab_predios: st.info("Gestión de Predios (Módulo Activo)")
-with tab_cuencas: st.info("Gestión de Cuencas (Módulo Activo)")
-with tab_mun: st.info("Gestión de Municipios (Módulo Activo)")
+with tab_predios:
+    st.header("🏠 Gestión de Predios")
+    sb1, sb2, sb3 = st.tabs(["Editar", "Crear", "Carga GeoJSON"])
+    
+    with sb1: # Editar
+        with engine.connect() as conn:
+            df_l = pd.read_sql(text("SELECT id_predio, nombre_predio FROM predios ORDER BY nombre_predio"), conn)
+            if not df_l.empty:
+                df_l['d'] = df_l['nombre_predio'] + " (" + df_l['id_predio'].astype(str) + ")"
+                sel = st.selectbox("Buscar Predio:", df_l['d'].tolist(), index=None)
+                if sel:
+                    id_p = sel.split('(')[-1].replace(')', '')
+                    d = pd.read_sql(text("SELECT * FROM predios WHERE id_predio=:id"), conn, params={"id": id_p}).iloc[0]
+                    with st.form("edit_pred"):
+                        nn = st.text_input("Nombre", value=d['nombre_predio'])
+                        nm = st.text_input("Municipio", value=d.get('municipio', ''))
+                        na = st.number_input("Área (ha)", value=float(d.get('area_ha') or 0))
+                        if st.form_submit_button("Actualizar"):
+                            conn.execute(text("UPDATE predios SET nombre_predio=:n, municipio=:m, area_ha=:a WHERE id_predio=:id"),
+                                        {"n": nn, "m": nm, "a": na, "id": id_p})
+                            conn.commit()
+                            st.success("Predio actualizado.")
+                            st.rerun()
+
+    with sb3: # Carga
+        up_gp = st.file_uploader("GeoJSON Predios", type=["geojson", "json"])
+        if up_gp and st.button("Procesar Predios"):
+            try:
+                data = json.load(up_gp)
+                rows = []
+                for f in data['features']:
+                    p = f.get('properties', {})
+                    rows.append({
+                        "id_predio": str(p.get('PK_PREDIOS', 'SN')),
+                        "nombre_predio": p.get('NOMBRE_PRE', 'Sin Nombre'),
+                        "municipio": p.get('NOMB_MPIO', ''),
+                        "area_ha": float(p.get('AREA_HA', 0))
+                    })
+                pd.DataFrame(rows).drop_duplicates('id_predio').to_sql('predios', engine, if_exists='append', index=False, method='multi')
+                st.success("Predios cargados.")
+            except Exception as e: st.error(f"Error: {e}")
 
 # ==============================================================================
-# TAB 6: BOCATOMAS (¡NUEVO!)
+# TAB 4: CUENCAS (TU LÓGICA ORIGINAL RESTAURADA)
+# ==============================================================================
+with tab_cuencas:
+    st.header("🌊 Gestión de Cuencas")
+    sb1, sb2 = st.tabs(["Editar", "Carga GeoJSON"])
+    
+    with sb2:
+        up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"])
+        if up_c and st.button("Procesar Cuencas"):
+            try:
+                data = json.load(up_c)
+                rows = []
+                for f in data['features']:
+                    p = f.get('properties', {})
+                    area = float(p.get('Shape_Area', 0)) / 1_000_000
+                    rows.append({
+                        "id_cuenca": str(p.get('COD', 'SN')),
+                        "nombre_cuenca": p.get('SUBC_LBL', 'Sin Nombre'),
+                        "area_km2": area,
+                        "rio_principal": p.get('SZH', '')
+                    })
+                pd.DataFrame(rows).drop_duplicates('id_cuenca').to_sql('cuencas', engine, if_exists='append', index=False, method='multi')
+                st.success("Cuencas cargadas.")
+            except Exception as e: st.error(f"Error: {e}")
+
+# ==============================================================================
+# TAB 5: MUNICIPIOS (TU LÓGICA ORIGINAL RESTAURADA)
+# ==============================================================================
+with tab_mun:
+    st.header("🏙️ Gestión de Municipios")
+    sb1, sb2 = st.tabs(["Editar", "Carga GeoJSON"])
+    
+    with sb2:
+        up_m = st.file_uploader("GeoJSON Municipios", type=["geojson", "json"])
+        if up_m and st.button("Procesar Municipios"):
+            try:
+                data = json.load(up_m)
+                rows = []
+                for f in data['features']:
+                    p = f.get('properties', {})
+                    rows.append({
+                        "id_municipio": str(p.get('MPIO_CDPMP', '00')),
+                        "nombre_municipio": p.get('MPIO_CNMBR', ''),
+                        "departamento": p.get('DPTO_CNMBR', 'Antioquia')
+                    })
+                pd.DataFrame(rows).drop_duplicates('id_municipio').to_sql('municipios', engine, if_exists='append', index=False, method='multi')
+                st.success("Municipios cargados.")
+            except Exception as e: st.error(f"Error: {e}")
+
+# ==============================================================================
+# TAB 6: BOCATOMAS (¡NUEVO Y ROBUSTO!)
 # ==============================================================================
 with tab_boca:
     st.header("💧 Gestión de Bocatomas")
-    st.info("Sube 'Bocatomas_Ant.shp' (en ZIP) o GeoJSON.")
+    st.info("Sube tu archivo 'Bocatomas_Ant.shp' (en ZIP) o GeoJSON. El sistema corregirá las coordenadas.")
     f_boca = st.file_uploader("Archivo Bocatomas", type=["zip", "geojson", "kml"])
     
     if st.button("Cargar Bocatomas"):
@@ -268,20 +382,24 @@ with tab_boca:
     except: st.warning("La tabla aún no existe.")
 
 # ==============================================================================
-# TAB 7: HIDROGEOLOGÍA
+# TAB 7: HIDROGEOLOGÍA (MEJORADO CON FUNCIÓN ROBUSTA)
 # ==============================================================================
 with tab_hidro:
     st.header("⛰️ Gestión Hidrogeológica")
+    st.info("Sube 'Zonas_PotHidrogeologico.geojson'.")
     f_hidro = st.file_uploader("Archivo Zonas Hidro", type=["geojson", "zip"])
+    
     if st.button("Cargar Hidrogeología"):
         cargar_capa_gis_robusta(f_hidro, "zonas_hidrogeologicas", engine)
 
 # ==============================================================================
-# TAB 8: SUELOS
+# TAB 8: SUELOS (MEJORADO CON FUNCIÓN ROBUSTA)
 # ==============================================================================
 with tab_suelos:
     st.header("🌱 Gestión de Suelos")
-    f_suelo = st.file_uploader("Archivo Suelos Antioquia", type=["geojson", "zip"])
+    st.info("Sube 'Suelos_Antioquia.geojson'.")
+    f_suelo = st.file_uploader("Archivo Suelos", type=["geojson", "zip"])
+    
     if st.button("Cargar Suelos"):
         cargar_capa_gis_robusta(f_suelo, "suelos", engine)
 
