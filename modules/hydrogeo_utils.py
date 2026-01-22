@@ -92,30 +92,27 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
 # ---------------------------------------------------------
 # 3. CARGA GIS OPTIMIZADA (ROBUSTA)
 # ---------------------------------------------------------
-@st.cache_data(show_spinner=False) # Cacheamos para que no consulte la BD al hacer zoom
 def cargar_capas_gis_optimizadas(_engine, bounds=None):
-    """
-    Carga capas GIS. Usamos _engine con guion bajo para que streamlit no intente hashearlo.
-    """
     layers = {}
     if not _engine: return layers
     
-    tol = 0.005 # Mayor tolerancia = menos vértices = carga más rápida
+    # Aumentamos tolerancia y límite para asegurar que lleguen datos
+    tol = 0.005 
     where_clause = ""
     
     if bounds is not None:
         try:
             minx, miny, maxx, maxy = bounds
-            pad = 0.05 # Buffer generoso para asegurar que traiga datos
-            # Aseguramos formato float y orden correcto
+            pad = 0.1 # Buffer más grande (0.1 grados ~ 10km) para asegurar intersección
             where_clause = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({float(minx)-pad}, {float(miny)-pad}, {float(maxx)+pad}, {float(maxy)+pad}, 4326))"
         except:
-            where_clause = "" # Si falla el bounds, trae todo (con limite)
+            where_clause = "" 
     
     try:
         with _engine.connect() as conn:
-            # SUELOS
-            q_s = text(f"SELECT codigo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM suelos {where_clause} LIMIT 300")
+
+            # SUELOS (Aumentado LIMIT a 1000)
+            q_s = text(f"SELECT codigo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM suelos {where_clause} LIMIT 1000")
             df_s = pd.read_sql(q_s, conn)
             if not df_s.empty:
                 df_s['geometry'] = df_s['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
@@ -141,7 +138,7 @@ def cargar_capas_gis_optimizadas(_engine, bounds=None):
     return layers
 
 # ---------------------------------------------------------
-# 4. GENERADOR GEOTIFF
+# 4. GENERADORES DE DESCARGA (TIFF + GEOJSON)
 # ---------------------------------------------------------
 def generar_geotiff(z_grid, bounds):
     min_x, min_y, max_x, max_y = bounds
@@ -152,3 +149,22 @@ def generar_geotiff(z_grid, bounds):
         dst.write(z_grid.astype('float32'), 1)
     mem.seek(0)
     return mem
+
+def generar_geojson_isolines(contour_set):
+    """Convierte un conjunto de contornos de matplotlib a GeoJSON"""
+    features = []
+    for i, collection in enumerate(contour_set.collections):
+        level = contour_set.levels[i]
+        for path in collection.get_paths():
+            coords = [list(v) for v in path.vertices] # [x, y] = [lon, lat]
+            # Matplotlib usa X,Y. GeoJSON usa Lon,Lat. Coinciden.
+            if len(coords) > 2:
+                features.append({
+                    "type": "Feature",
+                    "properties": {"recarga_mm": float(level)},
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": coords
+                    }
+                })
+    return json.dumps({"type": "FeatureCollection", "features": features})
