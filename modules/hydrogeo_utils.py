@@ -96,45 +96,44 @@ def cargar_capas_gis_optimizadas(_engine, bounds=None):
     layers = {}
     if not _engine: return layers
     
-    # Aumentamos tolerancia y límite para asegurar que lleguen datos
     tol = 0.005 
-    where_clause = ""
     
+    # 1. Intentamos primero con filtro espacial (Plan A)
+    where_clause = ""
     if bounds is not None:
         try:
             minx, miny, maxx, maxy = bounds
-            pad = 0.1 # Buffer más grande (0.1 grados ~ 10km) para asegurar intersección
-            where_clause = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({float(minx)-pad}, {float(miny)-pad}, {float(maxx)+pad}, {float(maxy)+pad}, 4326))"
-        except:
-            where_clause = "" 
-    
-    try:
-        with _engine.connect() as conn:
+            # Buffer de seguridad para evitar errores de punto único
+            if minx == maxx: minx -= 0.01; maxx += 0.01
+            if miny == maxy: miny -= 0.01; maxy += 0.01
+            pad = 0.05 
+            where_clause = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({minx-pad}, {miny-pad}, {maxx+pad}, {maxy+pad}, 4326))"
+        except: where_clause = ""
 
-            # SUELOS (Aumentado LIMIT a 1000)
-            q_s = text(f"SELECT codigo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM suelos {where_clause} LIMIT 1000")
-            df_s = pd.read_sql(q_s, conn)
-            if not df_s.empty:
-                df_s['geometry'] = df_s['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
-                layers['suelos'] = gpd.GeoDataFrame(df_s, geometry='geometry', crs="EPSG:4326")
+    queries = {
+        'suelos': f"SELECT codigo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM suelos {where_clause} LIMIT 1000",
+        'hidro': f"SELECT tipo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM zonas_hidrogeologicas {where_clause} LIMIT 1000",
+        'bocatomas': f"SELECT nom_bocatoma, ST_AsGeoJSON(geom) as gj FROM bocatomas {where_clause} LIMIT 1000"
+    }
 
-            # HIDROGEOLOGIA
-            q_h = text(f"SELECT tipo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM zonas_hidrogeologicas {where_clause} LIMIT 300")
-            df_h = pd.read_sql(q_h, conn)
-            if not df_h.empty:
-                df_h['geometry'] = df_h['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
-                layers['hidro'] = gpd.GeoDataFrame(df_h, geometry='geometry', crs="EPSG:4326")
-            
-            # BOCATOMAS
-            q_b = text(f"SELECT nom_bocatoma, ST_AsGeoJSON(geom) as gj FROM bocatomas {where_clause} LIMIT 300")
-            df_b = pd.read_sql(q_b, conn)
-            if not df_b.empty:
-                df_b['geometry'] = df_b['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
-                layers['bocatomas'] = gpd.GeoDataFrame(df_b, geometry='geometry', crs="EPSG:4326")
+    with _engine.connect() as conn:
+        for key, query in queries.items():
+            try:
+                # PLAN A: Ejecutar Query normal
+                df = pd.read_sql(text(query), conn)
                 
-    except Exception as e:
-        print(f"⚠️ Error GIS: {e}")
-        
+                # PLAN B: Si viene vacío y teníamos filtro, probamos SIN filtro (Fallback)
+                if df.empty and where_clause != "":
+                    # Quitamos el WHERE y probamos traer 100 registros para verificar existencia
+                    q_fallback = query.split("WHERE")[0] + " LIMIT 100"
+                    df = pd.read_sql(text(q_fallback), conn)
+                
+                if not df.empty:
+                    df['geometry'] = df['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
+                    layers[key] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
+            except Exception as e:
+                print(f"Error cargando capa {key}: {e}")
+                
     return layers
 
 # ---------------------------------------------------------

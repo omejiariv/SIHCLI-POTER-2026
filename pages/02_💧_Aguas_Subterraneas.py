@@ -250,57 +250,104 @@ with tab2:
     st_folium(m, width=1400, height=600, returned_objects=[])
 
 # TAB 3: Interpolación (Suave, Sin líneas cruzadas + Etiquetas de Valor)
-# TAB 3: Interpolación (CORREGIDA)
+# TAB 3: Interpolación (Corregida: Validación anti-crash y Etiquetas)
 with tab3:
-    if Zi is None: st.warning("Requiere 4+ estaciones.")
+    if Zi is None: 
+        st.warning("⚠️ Se requieren al menos 4 estaciones para interpolar.")
     else:
+        # Configuración de límites y colores
         vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
+        if vmin == vmax: vmax += 0.1
+        
         m_iso = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB dark_matter")
         
-        # 1. Raster
-        try: cmap = plt.colormaps['viridis']
-        except: cmap = cm.get_cmap('viridis')
-        rgba = cmap((Zi - vmin) / (vmax - vmin))
-        rgba[np.isnan(Zi), 3] = 0
-        folium.raster_layers.ImageOverlay(image=rgba, bounds=[[grid_coords[1].min(), grid_coords[0].min()], [grid_coords[1].max(), grid_coords[0].max()]], opacity=0.7, origin='lower').add_to(m_iso)
+        # 1. Capa Raster (Fondo de color)
+        try: 
+            cmap = plt.colormaps['viridis']
+        except: 
+            cmap = cm.get_cmap('viridis')
+            
+        norm_Zi = (Zi - vmin) / (vmax - vmin)
+        rgba = cmap(norm_Zi)
+        rgba[np.isnan(Zi), 3] = 0 # Transparencia en nulos
         
-        # 2. Isolíneas LIMPIAS (allsegs) + ETIQUETAS (DivIcon)
+        folium.raster_layers.ImageOverlay(
+            image=rgba, 
+            bounds=[[grid_coords[1].min(), grid_coords[0].min()], [grid_coords[1].max(), grid_coords[0].max()]], 
+            opacity=0.7, 
+            origin='lower'
+        ).add_to(m_iso)
+        
+        # 2. Isolíneas y Etiquetas (VALIDADO)
         try:
             fig_c, ax_c = plt.subplots()
+            # Usamos Zi_smooth o Zi según corresponda. (Asegúrate de que 'Zi' es el dato limpio)
             cs = ax_c.contour(Xi, Yi, Zi, levels=12, colors='white', linewidths=0.8)
             plt.close(fig_c)
             
-            # Recorremos cada nivel
+            # Recorremos los segmentos generados
             for i, collection in enumerate(cs.allsegs):
                 level_val = cs.levels[i]
                 for segment in collection:
-                    # Segment es un array [[x, y], [x, y]...]
+                    # VALIDACIÓN CRÍTICA: Ignorar segmentos vacíos o puntos únicos
+                    if len(segment) < 2: 
+                        continue
+                        
+                    # Convertir coordenadas (X, Y) -> (Lat, Lon)
+                    # Nota: Matplotlib devuelve (x, y), Folium pide [lat, lon]
                     lat_lon = [[y, x] for x, y in segment]
                     
-                    # Dibujar línea
-                    folium.PolyLine(lat_lon, color='white', weight=0.8, opacity=0.8, tooltip=f"{level_val:.0f} mm").add_to(m_iso)
+                    # VALIDACIÓN DOBLE: Si la conversión falló o quedó vacía
+                    if not lat_lon: 
+                        continue
                     
-                    # Añadir Etiqueta (Label) en el punto medio si la línea es suficientemente larga
-                    if len(lat_lon) > 10: 
+                    # Dibujar línea
+                    folium.PolyLine(
+                        lat_lon, 
+                        color='white', 
+                        weight=0.8, 
+                        opacity=0.8, 
+                        tooltip=f"Recarga: {level_val:.0f} mm"
+                    ).add_to(m_iso)
+                    
+                    # Añadir Etiqueta Flotante (Solo en líneas largas para no saturar)
+                    if len(lat_lon) > 15: 
                         mid_idx = len(lat_lon) // 2
                         mid_pt = lat_lon[mid_idx]
+                        
+                        icon_html = f"""
+                        <div style="
+                            font-size: 8pt; 
+                            font-weight: bold;
+                            color: white; 
+                            background: rgba(0,0,0,0.4); 
+                            padding: 1px 4px; 
+                            border-radius: 4px;
+                            border: 1px solid rgba(255,255,255,0.3);
+                        ">{level_val:.0f}</div>
+                        """
+                        
                         folium.map.Marker(
                             mid_pt,
                             icon=DivIcon(
-                                icon_size=(30, 10),
-                                icon_anchor=(15, 5),
-                                html=f'<div style="font-size: 8pt; color: white; background: rgba(0,0,0,0.3); padding: 0 2px; border-radius: 3px;">{level_val:.0f}</div>'
+                                icon_size=(30, 15),
+                                icon_anchor=(15, 7),
+                                html=icon_html
                             )
                         ).add_to(m_iso)
 
-        except Exception as e: st.warning(f"Error líneas: {e}")
+        except Exception as e: 
+            st.warning(f"Aviso de visualización: {e}")
             
-        m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga (mm/mes)"))
+        # Leyenda y Controles
+        m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga Potencial (mm/mes)"))
         Fullscreen().add_to(m_iso)
+        
         st_folium(m_iso, width=1400, height=600, returned_objects=[])
         
-        # Guardar ContourSet en SessionState para descarga GeoJSON
+        # Guardar para descarga
         st.session_state['last_contour'] = cs
+
 
 # TAB 4: Descargas
 with tab4:
