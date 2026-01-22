@@ -90,51 +90,78 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
         return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
 
 # ---------------------------------------------------------
-# 3. CARGA GIS OPTIMIZADA (ROBUSTA)
+# 3. CARGA GIS BLINDADA (DIAGNÓSTICO AUTOMÁTICO)
 # ---------------------------------------------------------
 def cargar_capas_gis_optimizadas(_engine, bounds=None):
     layers = {}
     if not _engine: return layers
     
-    tol = 0.005 
-    
-    # 1. Intentamos primero con filtro espacial (Plan A)
-    where_clause = ""
-    if bounds is not None:
-        try:
-            minx, miny, maxx, maxy = bounds
-            # Buffer de seguridad para evitar errores de punto único
-            if minx == maxx: minx -= 0.01; maxx += 0.01
-            if miny == maxy: miny -= 0.01; maxy += 0.01
-            pad = 0.05 
-            where_clause = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({minx-pad}, {miny-pad}, {maxx+pad}, {maxy+pad}, 4326))"
-        except: where_clause = ""
-
-    queries = {
-        'suelos': f"SELECT codigo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM suelos {where_clause} LIMIT 1000",
-        'hidro': f"SELECT tipo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM zonas_hidrogeologicas {where_clause} LIMIT 1000",
-        'bocatomas': f"SELECT nom_bocatoma, ST_AsGeoJSON(geom) as gj FROM bocatomas {where_clause} LIMIT 1000"
+    # Lista de capas que SÍ existen según tu auditoría SQL
+    # Nota: 'bocatomas' ha sido removida intencionalmente.
+    config_capas = {
+        'suelos': {'tabla': 'suelos', 'campo_info': 'codigo', 'color': 'green'},
+        'hidro': {'tabla': 'zonas_hidrogeologicas', 'campo_info': 'tipo', 'color': 'blue'}
     }
+    
+    tol = 0.005 
 
     with _engine.connect() as conn:
-        for key, query in queries.items():
+        for key, cfg in config_capas.items():
             try:
-                # PLAN A: Ejecutar Query normal
-                df = pd.read_sql(text(query), conn)
+                # 1. Detectar nombre de la columna geométrica (geom, geometry, wkb_geometry)
+                # Esta consulta es segura y rápida
+                q_col = text(f"""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = '{cfg['tabla']}' 
+                    AND udt_name = 'geometry'
+                    LIMIT 1
+                """)
+                res_col = pd.read_sql(q_col, conn)
                 
-                # PLAN B: Si viene vacío y teníamos filtro, probamos SIN filtro (Fallback)
-                if df.empty and where_clause != "":
-                    # Quitamos el WHERE y probamos traer 100 registros para verificar existencia
-                    q_fallback = query.split("WHERE")[0] + " LIMIT 100"
-                    df = pd.read_sql(text(q_fallback), conn)
+                if res_col.empty:
+                    print(f"⚠️ No se encontró columna geométrica en {cfg['tabla']}")
+                    continue
+                    
+                col_geom = res_col.iloc[0]['column_name']
+                
+                # 2. Construir Query Inteligente
+                # ST_Transform(..., 4326) asegura que salga en Lat/Lon aunque el original esté mal
+                base_query = f"""
+                    SELECT {cfg['campo_info']}, 
+                           ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Transform({col_geom}, 4326), {tol})) as gj 
+                    FROM {cfg['tabla']}
+                """
+                
+                # Intentamos filtrar espacialmente si hay bounds
+                final_query = base_query + " LIMIT 500" # Default
+                
+                if bounds is not None:
+                    try:
+                        minx, miny, maxx, maxy = bounds
+                        pad = 0.05
+                        # ST_MakeEnvelope en 4326
+                        envelope = f"ST_MakeEnvelope({minx-pad}, {miny-pad}, {maxx+pad}, {maxy+pad}, 4326)"
+                        # Transformamos el envelope al SRID de la tabla para comparar manzanas con manzanas
+                        final_query = f"{base_query} WHERE ST_Intersects({col_geom}, ST_Transform({envelope}, ST_SRID({col_geom}))) LIMIT 500"
+                    except:
+                        pass # Si falla el filtro, usamos el default
+
+                # 3. Ejecutar
+                df = pd.read_sql(text(final_query), conn)
                 
                 if not df.empty:
                     df['geometry'] = df['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers[key] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
+                    print(f"✅ Capa {key} cargada: {len(df)} registros.")
+                else:
+                    print(f"⚠️ Capa {key} vacía en esta zona.")
+
             except Exception as e:
-                print(f"Error cargando capa {key}: {e}")
+                print(f"❌ Error crítico cargando {key}: {e}")
                 
     return layers
+
 
 # ---------------------------------------------------------
 # 4. GENERADORES DE DESCARGA (TIFF + GEOJSON)
