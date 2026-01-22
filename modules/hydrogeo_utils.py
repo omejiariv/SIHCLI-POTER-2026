@@ -1,5 +1,6 @@
 # modules/hydrogeo_utils.py
 
+import streamlit as st
 import pandas as pd
 import numpy as np
 import io
@@ -41,8 +42,9 @@ def calcular_balance_turc(df_lluvia, altitud, ki):
     return df_monthly
 
 # ---------------------------------------------------------
-# 2. PROPHET HÍBRIDO
+# 2. PROPHET HÍBRIDO (CON CACHE)
 # ---------------------------------------------------------
+@st.cache_data(show_spinner=False)
 def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
     try:
         df_work = df_hist.copy()
@@ -88,39 +90,46 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
         return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
 
 # ---------------------------------------------------------
-# 3. CARGA GIS OPTIMIZADA (CORREGIDA)
+# 3. CARGA GIS OPTIMIZADA (ROBUSTA)
 # ---------------------------------------------------------
-def cargar_capas_gis_optimizadas(engine, bounds=None):
+@st.cache_data(show_spinner=False) # Cacheamos para que no consulte la BD al hacer zoom
+def cargar_capas_gis_optimizadas(_engine, bounds=None):
+    """
+    Carga capas GIS. Usamos _engine con guion bajo para que streamlit no intente hashearlo.
+    """
     layers = {}
-    if not engine: return layers
+    if not _engine: return layers
     
-    tol = 0.003
+    tol = 0.005 # Mayor tolerancia = menos vértices = carga más rápida
     where_clause = ""
     
-    # ✅ CORRECCIÓN CRÍTICA: "is not None" para evitar crash con arrays de NumPy
     if bounds is not None:
-        minx, miny, maxx, maxy = bounds
-        pad = 0.02
-        where_clause = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({minx-pad}, {miny-pad}, {maxx+pad}, {maxy+pad}, 4326))"
+        try:
+            minx, miny, maxx, maxy = bounds
+            pad = 0.05 # Buffer generoso para asegurar que traiga datos
+            # Aseguramos formato float y orden correcto
+            where_clause = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({float(minx)-pad}, {float(miny)-pad}, {float(maxx)+pad}, {float(maxy)+pad}, 4326))"
+        except:
+            where_clause = "" # Si falla el bounds, trae todo (con limite)
     
     try:
-        with engine.connect() as conn:
+        with _engine.connect() as conn:
             # SUELOS
-            q_s = text(f"SELECT codigo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM suelos {where_clause} LIMIT 500")
+            q_s = text(f"SELECT codigo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM suelos {where_clause} LIMIT 300")
             df_s = pd.read_sql(q_s, conn)
             if not df_s.empty:
                 df_s['geometry'] = df_s['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
                 layers['suelos'] = gpd.GeoDataFrame(df_s, geometry='geometry', crs="EPSG:4326")
 
             # HIDROGEOLOGIA
-            q_h = text(f"SELECT tipo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM zonas_hidrogeologicas {where_clause} LIMIT 500")
+            q_h = text(f"SELECT tipo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj FROM zonas_hidrogeologicas {where_clause} LIMIT 300")
             df_h = pd.read_sql(q_h, conn)
             if not df_h.empty:
                 df_h['geometry'] = df_h['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
                 layers['hidro'] = gpd.GeoDataFrame(df_h, geometry='geometry', crs="EPSG:4326")
             
             # BOCATOMAS
-            q_b = text(f"SELECT nom_bocatoma, ST_AsGeoJSON(geom) as gj FROM bocatomas {where_clause} LIMIT 500")
+            q_b = text(f"SELECT nom_bocatoma, ST_AsGeoJSON(geom) as gj FROM bocatomas {where_clause} LIMIT 300")
             df_b = pd.read_sql(q_b, conn)
             if not df_b.empty:
                 df_b['geometry'] = df_b['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
