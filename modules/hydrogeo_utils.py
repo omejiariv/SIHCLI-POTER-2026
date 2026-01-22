@@ -132,28 +132,25 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
 
 def cargar_capas_gis_optimizadas(engine, bounds=None):
     """
-    Carga capas GIS recortadas espacialmente al área de interés para evitar colapsos de memoria.
-    bounds: tupla (minx, miny, maxx, maxy)
+    Carga capas GIS recortadas espacialmente al área de interés.
     """
     layers = {}
     if not engine: return layers
     
-    # Tolerancia de simplificación (Más alto = polígonos más ligeros)
-    tol = 0.003 
-    
-    # Construir cláusula WHERE espacial
+    tol = 0.003
     where_clause = ""
-    if bounds:
+    
+    # --- CORRECCIÓN AQUÍ ---
+    # Usamos "is not None" para evitar el error con arrays de NumPy
+    if bounds is not None:
         minx, miny, maxx, maxy = bounds
-        # Agregamos un pequeño buffer (pad) para que no se corte feo en los bordes
         pad = 0.02
-        # ST_MakeEnvelope crea un rectángulo con las coordenadas
         where_clause = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({minx-pad}, {miny-pad}, {maxx+pad}, {maxy+pad}, 4326))"
+    # -----------------------
     
     try:
         with engine.connect() as conn:
-            # SUELOS - Solo traemos lo que intersecta la vista
-            # Limitamos a 500 polígonos por seguridad
+            # SUELOS
             q_s = text(f"""
                 SELECT codigo, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {tol})) as gj 
                 FROM suelos 
@@ -177,7 +174,7 @@ def cargar_capas_gis_optimizadas(engine, bounds=None):
                 df_h['geometry'] = df_h['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
                 layers['hidro'] = gpd.GeoDataFrame(df_h, geometry='geometry', crs="EPSG:4326")
             
-            # BOCATOMAS (Puntos son ligeros, podemos traer más o filtrar igual)
+            # BOCATOMAS
             q_b = text(f"SELECT nom_bocatoma, ST_AsGeoJSON(geom) as gj FROM bocatomas {where_clause} LIMIT 500")
             df_b = pd.read_sql(q_b, conn)
             if not df_b.empty:
