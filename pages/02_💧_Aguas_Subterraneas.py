@@ -1,5 +1,7 @@
 # pages/02_💧_Aguas_Subterraneas.py
 
+# pages/02_💧_Aguas_Subterraneas.py
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -38,7 +40,7 @@ st.sidebar.divider()
 meses_futuros = st.sidebar.slider("Horizonte Pronóstico", 12, 60, 24)
 ruido = st.sidebar.slider("Incertidumbre", 0.0, 1.0, 0.1)
 
-# Inicializamos variables de exportación
+# Inicializamos variables de exportación para evitar errores si no se generan
 Zi = None
 xi, yi = None, None
 
@@ -75,13 +77,6 @@ if gdf_zona is not None:
     WHERE id_estacion_fk IN {ids_sql}
     """
     df_raw = pd.read_sql(q_serie, engine)
-
-    # --- DEBUG TEMPORAL (Borrar después) ---
-    with st.expander("🕵️‍♂️ DEBUG: Inspección de Datos Crudos"):
-        st.write("Dimensiones:", df_raw.shape)
-        st.write("Primeras filas:", df_raw.head())
-        st.write("Tipos de datos:", df_raw.dtypes)
-    # ---------------------------------------
     
     if df_raw.empty:
         st.error("⚠️ Las estaciones encontradas no tienen datos históricos de precipitación.")
@@ -151,15 +146,21 @@ if gdf_zona is not None:
         fig.update_layout(height=450, hovermode="x unified", title="Dinámica de Recarga")
         st.plotly_chart(fig, use_container_width=True)
 
-    # TAB 2: MAPA BASE
+    # TAB 2: MAPA BASE (Corregido para evitar ValueError)
     with tab2:
         layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine)
         mean_lat, mean_lon = df_puntos['latitud'].mean(), df_puntos['longitud'].mean()
         m = folium.Map(location=[mean_lat, mean_lon], zoom_start=11, tiles="CartoDB positron")
         
-        if layers.get('suelos'): folium.GeoJson(layers['suelos'], name="Suelos", style_function=lambda x: {'color': 'green', 'weight': 0.5, 'fillOpacity': 0.1}).add_to(m)
-        if layers.get('hidro'): folium.GeoJson(layers['hidro'], name="Hidrogeología", style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.1}).add_to(m)
-        if layers.get('bocatomas'): folium.GeoJson(layers['bocatomas'], name="Bocatomas", marker=folium.CircleMarker(radius=3, color='red')).add_to(m)
+        # CORRECCIÓN: Usamos 'in' para verificar existencia sin evaluar el DataFrame
+        if 'suelos' in layers: 
+            folium.GeoJson(layers['suelos'], name="Suelos", style_function=lambda x: {'color': 'green', 'weight': 0.5, 'fillOpacity': 0.1}).add_to(m)
+        
+        if 'hidro' in layers: 
+            folium.GeoJson(layers['hidro'], name="Hidrogeología", style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.1}).add_to(m)
+        
+        if 'bocatomas' in layers: 
+            folium.GeoJson(layers['bocatomas'], name="Bocatomas", marker=folium.CircleMarker(radius=3, color='red')).add_to(m)
             
         for _, r in df_puntos.iterrows():
             folium.Marker([r['latitud'], r['longitud']], popup=r['nom_est'], icon=folium.Icon(color='black', icon='tint')).add_to(m)
