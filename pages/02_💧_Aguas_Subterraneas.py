@@ -3,257 +3,248 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
+from sqlalchemy import text
 import geopandas as gpd
+from scipy.interpolate import griddata
+import folium
+from streamlit_folium import st_folium
+from branca.colormap import LinearColormap
 
-from modules import db_manager, hydrogeo_utils, forecasting, interpolation, config
+# Importaciones locales
+from modules import db_manager, hydrogeo_utils, selectors
 
 st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
 
-# --- FUNCIONES ---
-def haversine_vectorized(lat1, lon1, lat_series, lon_series):
-    R = 6371
-    phi1, phi2 = np.radians(lat1), np.radians(lat_series)
-    dphi = np.radians(lat_series - lat1)
-    dlambda = np.radians(lon_series - lon1)
-    a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2)*np.sin(dlambda/2)**2
-    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
-    return R * c
+# --- CSS PERSONALIZADO ---
+st.markdown("""
+<style>
+    .stMetric {
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# --- INIT ---
-engine = db_manager.get_engine()
-if not engine:
-    st.error("Sin conexión BD")
+st.title("💧 Sistema de Inteligencia: Aguas Subterráneas")
+st.markdown("---")
+
+# ==============================================================================
+# 1. SELECTOR ESPACIAL (Tu módulo)
+# ==============================================================================
+# Esto reemplaza todo el código manual de sidebar anterior
+ids_estaciones, nombre_zona, altitud_ref, gdf_zona = selectors.render_selector_espacial()
+
+if gdf_zona is None:
+    st.info("👈 Por favor, selecciona una Cuenca o Municipio en el menú lateral para comenzar.")
     st.stop()
 
-st.title("💧 Sistema de Recarga y Aguas Subterráneas")
-
 # ==============================================================================
-# 1. SIDEBAR (FILTROS CORREGIDOS)
+# 2. CONFIGURACIÓN LATERAL ADICIONAL
 # ==============================================================================
 with st.sidebar:
-    st.header("📍 Configuración")
+    st.divider()
+    st.header("⚙️ Parámetros del Modelo")
     
-    # Cargar Maestros
-    df_estaciones = pd.read_sql("SELECT id_estacion, nom_est, municipio, latitud, longitud FROM estaciones ORDER BY nom_est", engine)
+    # Tu excelente idea de sliders para Ki ponderado
+    col_s1, col_s2 = st.columns(2)
+    pct_bosque = col_s1.number_input("% Bosque", 0, 100, 50)
+    pct_cultivo = col_s2.number_input("% Agrícola", 0, 100, 30)
+    pct_urbano = max(0, 100 - (pct_bosque + pct_cultivo))
+    st.caption(f"Calculado: % Urbano/Otros: {pct_urbano}%")
     
-    try:
-        df_cuencas = pd.read_sql("SELECT DISTINCT nombre_cuenca, municipios_influencia FROM cuencas ORDER BY nombre_cuenca", engine)
-        lista_cuencas = ["Todas"] + df_cuencas['nombre_cuenca'].tolist()
-    except:
-        lista_cuencas = ["Todas"]
-        df_cuencas = pd.DataFrame()
-
-    # --- A. Filtro Cuenca (Flexible) ---
-    sel_cuenca = st.selectbox("1. Cuenca:", lista_cuencas)
+    # Coeficiente Ki Ponderado
+    ki_ponderado = ((pct_bosque * 0.50) + (pct_cultivo * 0.30) + (pct_urbano * 0.10)) / 100.0
+    st.metric("Coef. Infiltración (Ki)", f"{ki_ponderado:.2f}")
     
-    # Determinar municipios válidos
-    munis_validos = sorted(df_estaciones['municipio'].dropna().unique())
-    
-    if sel_cuenca != "Todas" and not df_cuencas.empty:
-        # Buscar la fila de la cuenca
-        row_c = df_cuencas[df_cuencas['nombre_cuenca'] == sel_cuenca]
-        if not row_c.empty:
-            txt_infl = str(row_c.iloc[0]['municipios_influencia']).lower() # Convertir a minúsculas para buscar
-            # Filtramos municipios que estén CONTENIDOS en el texto de influencia
-            munis_validos = [m for m in munis_validos if m.lower() in txt_infl]
-            
-            if not munis_validos:
-                st.warning(f"No se detectaron municipios vinculados textualmente a '{sel_cuenca}'. Mostrando todos.")
-                munis_validos = sorted(df_estaciones['municipio'].dropna().unique())
-
-    # --- B. Filtro Municipio ---
-    sel_muni = st.selectbox("2. Municipio:", ["Todos"] + munis_validos)
-    
-    # --- C. Filtrar Estaciones ---
-    df_final = df_estaciones.copy()
-    
-    # Aplicar Cuenca (vía municipios)
-    if sel_cuenca != "Todas":
-        df_final = df_final[df_final['municipio'].isin(munis_validos)]
-    
-    # Aplicar Municipio
-    if sel_muni != "Todos":
-        df_final = df_final[df_final['municipio'] == sel_muni]
-        
-    st.caption(f"Estaciones encontradas: {len(df_final)}")
-    
-    if df_final.empty:
-        st.error("No hay estaciones con estos filtros.")
-        st.stop()
-
-    # --- D. Estación Central ---
-    est_seleccion = st.selectbox("3. Estación:", df_final['id_estacion'] + " - " + df_final['nom_est'])
-    id_est = est_seleccion.split(" - ")[0]
-    est_central = df_final[df_final['id_estacion'] == id_est].iloc[0]
-
-    # --- E. Buffer (Solo Visual) ---
-    st.markdown("---")
-    usar_buffer = st.toggle("Buffer (Mapa)", value=True)
-    radio_km = st.slider("Radio (km)", 5, 100, 20) if usar_buffer else 0
-
-    # --- F. Fechas ---
-    st.markdown("---")
-    fechas = pd.read_sql(f"SELECT MIN(fecha_mes_año), MAX(fecha_mes_año) FROM precipitacion_mensual WHERE id_estacion_fk='{id_est}'", engine)
-    if fechas.iloc[0,0]:
-        start_dt, end_dt = fechas.iloc[0,0], fechas.iloc[0,1]
-        date_range = st.slider("Rango", min_value=start_dt.date(), max_value=end_dt.date(), value=(start_dt.date(), end_dt.date()))
-    else:
-        st.error("Estación vacía.")
-        st.stop()
+    st.divider()
+    st.subheader("🔮 Pronóstico")
+    meses_futuros = st.slider("Horizonte (Meses)", 12, 60, 24)
+    ruido = st.slider("Factor Incertidumbre", 0.0, 1.0, 0.1)
 
 # ==============================================================================
-# 2. CÁLCULO PUNTUAL (Serie de Tiempo)
+# 3. CARGA DE DATOS
 # ==============================================================================
-# Consulta Nearest Neighbor para el punto central (arregla el 15% fijo)
-q_geo = f"""
-SELECT e.latitud, e.longitud, e.elevacion, s.infiltracion_ki, s.unidad_suelo, zh.potencial 
-FROM estaciones e
-LEFT JOIN LATERAL (
-    SELECT infiltracion_ki, unidad_suelo FROM suelos s ORDER BY e.geom <-> s.geom LIMIT 1
-) s ON true
-LEFT JOIN zonas_hidrogeologicas zh ON ST_Intersects(e.geom, zh.geom)
-WHERE e.id_estacion = '{id_est}'
+engine = db_manager.get_engine()
+if not engine:
+    st.error("Error de conexión.")
+    st.stop()
+
+# Convertir lista de IDs a formato SQL
+if not ids_estaciones:
+    st.warning("La zona seleccionada no tiene estaciones activas.")
+    st.stop()
+
+ids_sql = tuple(ids_estaciones)
+if len(ids_sql) == 1: ids_sql = f"('{ids_estaciones[0]}')" # Fix para tupla de 1 elemento
+
+# A. Datos de Lluvia Histórica (Promedio de la zona)
+q_serie = f"""
+SELECT fecha_mes_año as fecha, AVG(precipitation) as precipitation 
+FROM precipitacion_mensual 
+WHERE id_estacion_fk IN {ids_sql} 
+GROUP BY fecha_mes_año 
+ORDER BY fecha_mes_año
 """
-geo_data = pd.read_sql(q_geo, engine)
+df_serie = pd.read_sql(q_serie, engine)
 
-q_lluvia = f"SELECT fecha_mes_año as {config.Config.DATE_COL}, precipitation as {config.Config.PRECIPITATION_COL} FROM precipitacion_mensual WHERE id_estacion_fk = '{id_est}' ORDER BY fecha_mes_año"
-df_lluvia = pd.read_sql(q_lluvia, engine)
+# B. Datos Geoespaciales de las Estaciones (Para el mapa)
+q_puntos = f"""
+SELECT id_estacion, nom_est, latitud, longitud, alt_est 
+FROM estaciones 
+WHERE id_estacion IN {ids_sql}
+"""
+df_puntos = pd.read_sql(q_puntos, engine)
 
-df_vis = pd.DataFrame()
-ki, potencial = 0.15, "N/A"
-stats_qa = (0,0,0)
+# ==============================================================================
+# 4. CÁLCULOS (Usando el módulo híbrido)
+# ==============================================================================
 
-if not df_lluvia.empty:
-    lat, alt = est_central.latitud, geo_data.iloc[0]['elevacion']
-    # Recuperar Ki del SQL
-    ki_val = geo_data.iloc[0]['infiltracion_ki']
-    ki = ki_val if pd.notnull(ki_val) else 0.15
-    potencial = geo_data.iloc[0]['potencial']
+# Calcular Proyección Híbrida (Histórico + Futuro)
+df_proyeccion = hydrogeo_utils.ejecutar_pronostico_prophet(
+    df_serie, meses_futuros, altitud_ref, ki_ponderado, ruido
+)
+
+# KPIs Generales (Promedios Anuales)
+if not df_proyeccion.empty:
+    df_hist = df_proyeccion[df_proyeccion['tipo'] == 'Histórico']
+    p_anual = df_hist['p_final'].mean() * 12
+    recarga_anual = df_hist['recarga_mm'].mean() * 12
+    etr_anual = df_hist['etr_mm'].mean() * 12
     
-    df_balance = hydrogeo_utils.calcular_serie_recarga(df_lluvia, lat, alt, ki)
-    mask_date = (df_balance[config.Config.DATE_COL].dt.date >= date_range[0]) & (df_balance[config.Config.DATE_COL].dt.date <= date_range[1])
-    df_vis = df_balance[mask_date].copy()
-    stats_qa = hydrogeo_utils.calcular_calidad_datos(df_vis, date_range[0], date_range[1])
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Precipitación Media", f"{p_anual:,.0f} mm/año")
+    c2.metric("ETR (Turc)", f"{etr_anual:,.0f} mm/año")
+    c3.metric("Recarga Potencial", f"{recarga_anual:,.0f} mm/año", delta="Acuífero")
+    c4.metric("Estaciones en Zona", len(ids_estaciones))
 
 # ==============================================================================
-# 3. CÁLCULO ESPACIAL (Mapa) - INDEPENDIENTE DEL FILTRO SIDEBAR
+# 5. VISUALIZACIÓN (TABS)
 # ==============================================================================
-# Traemos TODAS las estaciones siempre para poder calcular el buffer real
-df_map_data_full = hydrogeo_utils.obtener_datos_estaciones_recarga(engine)
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Análisis & Pronóstico", "🗺️ Mapa Interactivo", "🌈 Superficie Recarga", "📥 Descargas"])
 
-if usar_buffer:
-    # Calculamos distancia desde la estación seleccionada a TODAS las demás
-    df_map_data_full['distancia_km'] = haversine_vectorized(
-        est_central.latitud, est_central.longitud, 
-        df_map_data_full['latitud'], df_map_data_full['longitud']
-    )
-    # Filtramos por radio
-    df_map_view = df_map_data_full[df_map_data_full['distancia_km'] <= radio_km].copy()
-else:
-    # Si no usa buffer, mostramos solo las estaciones que pasaron el filtro del sidebar (Cuenca/Muni)
-    ids_permitidos = df_final['id_estacion'].unique()
-    df_map_view = df_map_data_full[df_map_data_full['id_estacion'].isin(ids_permitidos)].copy()
-
-# ==============================================================================
-# 4. FRONTEND
-# ==============================================================================
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Balance", "🔮 Pronóstico", "🗺️ Mapa", "📥 Descargas"])
-
+# --- TAB 1: GRÁFICO ---
 with tab1:
-    if not df_vis.empty:
-        st.info(f"Datos: {stats_qa[0]} meses ({stats_qa[2]:.1f}%). Ki real: {ki*100:.1f}%")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Recarga Anual", f"{(df_vis['recarga_mm'].mean()*12):,.0f} mm")
-        c2.metric("Infiltración", f"{ki*100:.1f}%")
-        c3.metric("Potencial", potencial)
-        
+    if not df_proyeccion.empty:
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_vis[config.Config.DATE_COL], y=df_vis[config.Config.PRECIPITATION_COL], mode='lines', name='Lluvia', line=dict(color='blue', width=1), fill='tozeroy', fillcolor='rgba(0,0,255,0.1)'))
-        fig.add_trace(go.Scatter(x=df_vis[config.Config.DATE_COL], y=df_vis['recarga_mm'], mode='lines', name='Recarga', line=dict(color='green', width=2)))
-        fig.add_trace(go.Scatter(x=df_vis[config.Config.DATE_COL], y=df_vis['escorrentia_sup_mm'], mode='lines', name='Escorrentía', line=dict(color='orange')))
-        fig.add_trace(go.Scatter(x=df_vis[config.Config.DATE_COL], y=df_vis['etr_mm'], mode='lines', name='ETR', line=dict(color='red', dash='dot')))
-        fig.update_layout(title="Balance Mensual", hovermode="x unified", height=450)
+        
+        # Histórico
+        hist = df_proyeccion[df_proyeccion['tipo'] == 'Histórico']
+        fig.add_trace(go.Scatter(x=hist['fecha'], y=hist['p_final'], name='Lluvia Histórica', line=dict(color='gray', width=1)))
+        fig.add_trace(go.Scatter(x=hist['fecha'], y=hist['recarga_mm'], name='Recarga Histórica', line=dict(color='blue', width=2), fill='tozeroy'))
+        
+        # Futuro
+        fut = df_proyeccion[df_proyeccion['tipo'] == 'Proyección']
+        fig.add_trace(go.Scatter(x=fut['fecha'], y=fut['p_final'], name='Lluvia Proyectada', line=dict(color='silver', dash='dot')))
+        fig.add_trace(go.Scatter(x=fut['fecha'], y=fut['recarga_mm'], name='Recarga Futura', line=dict(color='cyan', width=2, dash='solid')))
+        
+        # Bandas
+        fig.add_trace(go.Scatter(x=fut['fecha'], y=fut['yhat_upper'], showlegend=False, line=dict(width=0)))
+        fig.add_trace(go.Scatter(x=fut['fecha'], y=fut['yhat_lower'], fill='tonexty', fillcolor='rgba(0,255,255,0.1)', name='Incertidumbre', line=dict(width=0)))
+        
+        fig.update_layout(title="Dinámica de Recarga (Histórico + IA)", yaxis_title="mm/mes", hovermode="x unified", height=500)
         st.plotly_chart(fig, use_container_width=True)
 
+# --- TAB 2: VISOR GIS (Tu código optimizado) ---
 with tab2:
-    st.subheader("Pronóstico Prophet")
-    h = st.slider("Horizonte:", 12, 60, 24)
-    if st.button("Ejecutar"):
-        with st.spinner("Calculando..."):
-            try:
-                # PREPARACIÓN CRÍTICA PARA PROPHET
-                # 1. Asegurar índice mensual único
-                df_proph = df_vis.set_index(config.Config.DATE_COL).resample('MS').mean().reset_index()
-                # 2. Renombrar explícitamente a lo que espera Prophet
-                df_proph = df_proph.rename(columns={config.Config.DATE_COL: 'ds', 'recarga_mm': 'y'})
-                # 3. Eliminar nulos en la target
-                df_proph = df_proph.dropna(subset=['y'])
-                
-                # Engañamos al módulo 'forecasting' pasándole 'y' renombrada a 'precipitation' si es lo que pide
-                # Pero Prophet puro usa 'ds' y 'y'. Revisando tu módulo forecasting, usa 'ds' y 'y' internamente.
-                # Si tu funcion forecasting.generate_prophet_forecast espera un DF con columna config.PRECIPITATION_COL:
-                df_to_mod = df_proph.rename(columns={'y': config.Config.PRECIPITATION_COL, 'ds': config.Config.DATE_COL})
-                
-                if len(df_to_mod) < 24:
-                    st.error("Datos insuficientes (<24 meses).")
-                else:
-                    _, forecast, metrics = forecasting.generate_prophet_forecast(df_to_mod, h, 12)
-                    
-                    fig_fc = go.Figure()
-                    fig_fc.add_trace(go.Scatter(x=df_to_mod[config.Config.DATE_COL], y=df_to_mod[config.Config.PRECIPITATION_COL], name="Histórico", line=dict(color='gray')))
-                    fig_fc.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], name="Pronóstico", line=dict(color='blue')))
-                    fig_fc.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', width=0, showlegend=False))
-                    fig_fc.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_upper'], mode='lines', width=0, fill='tonexty', fillcolor='rgba(0,0,255,0.2)', name="IC"))
-                    st.plotly_chart(fig_fc, use_container_width=True)
-                    st.success(f"MAE: {metrics['MAE']:.2f}")
-            except Exception as e:
-                st.error(f"Error Prophet: {e}")
-
-with tab3:
-    st.subheader("Mapa Recarga")
-    c1, c2 = st.columns([1, 4])
-    with c1:
-        st.write(f"**Puntos:** {len(df_map_view)}")
-        metodo = st.radio("Método", ["IDW", "Kriging Ordinario"])
-        res = st.select_slider("Resolución", [50, 100], value=50)
+    st.markdown("#### Contexto Hidrogeológico y Bocatomas")
+    layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine)
     
-    with c2:
-        if len(df_map_view) < 4:
-            st.warning("Se necesitan min 4 estaciones. Aumenta el radio.")
-        else:
-            m = 0.05
-            b = [df_map_view.longitud.min()-m, df_map_view.latitud.min()-m, df_map_view.longitud.max()+m, df_map_view.latitud.max()+m]
-            gx = np.linspace(b[0], b[2], res)
-            gy = np.linspace(b[1], b[3], res)
-            
-            with st.spinner("Interpolando..."):
-                val = 'recarga_anual'
-                if metodo == "IDW":
-                    z = interpolation.interpolate_idw(df_map_view.longitud.values, df_map_view.latitud.values, df_map_view[val].values, gx, gy)
-                else:
-                    gdf_p = gpd.GeoDataFrame(df_map_view, geometry=gpd.points_from_xy(df_map_view.longitud, df_map_view.latitud))
-                    z, _ = interpolation.create_kriging_by_basin(_gdf_points=gdf_p, grid_lon=gx, grid_lat=gy, value_col=val)
-            
-            vmin, vmax = np.nanpercentile(z, 2), np.nanpercentile(z, 98)
-            fig_map = go.Figure(data=go.Contour(z=z, x=gx, y=gy, colorscale="Viridis", zmin=vmin, zmax=vmax, colorbar=dict(title="mm/año"), hoverinfo='skip'))
-            
-            df_map_view['hover'] = df_map_view.apply(lambda r: f"<b>{r['nom_est']}</b><br>Recarga: {r['recarga_anual']:.0f}<br>Ki: {r['ki_final']:.2f}", axis=1)
-            fig_map.add_trace(go.Scatter(x=df_map_view.longitud, y=df_map_view.latitud, mode='markers', marker=dict(color='black', size=5), text=df_map_view['hover'], hoverinfo='text', name='Estaciones'))
-            fig_map.add_trace(go.Scatter(x=[est_central.longitud], y=[est_central.latitud], mode='markers', marker=dict(color='red', size=12, symbol='star'), name='Centro'))
-            fig_map.update_layout(height=600, xaxis=dict(scaleanchor="y", scaleratio=1), margin=dict(l=0,r=0,t=0,b=0))
-            st.plotly_chart(fig_map, use_container_width=True)
+    # Centro del mapa
+    mean_lat = df_puntos['latitud'].mean()
+    mean_lon = df_puntos['longitud'].mean()
+    
+    m = folium.Map(location=[mean_lat, mean_lon], zoom_start=11, tiles="CartoDB positron")
+    
+    # Capas
+    if 'suelos' in layers:
+        folium.GeoJson(layers['suelos'], name="Suelos", 
+                       style_function=lambda x: {'fillColor': 'green', 'color': 'none', 'fillOpacity': 0.1},
+                       tooltip=folium.GeoJsonTooltip(fields=['unidad_suelo', 'textura'])).add_to(m)
+                       
+    if 'hidro' in layers:
+        folium.GeoJson(layers['hidro'], name="Hidrogeología", 
+                       style_function=lambda x: {'fillColor': 'blue', 'color': 'blue', 'fillOpacity': 0.1},
+                       tooltip=folium.GeoJsonTooltip(fields=['potencial', 'unidad_geo'])).add_to(m)
+                       
+    if 'bocatomas' in layers:
+        folium.GeoJson(layers['bocatomas'], name="Bocatomas",
+                       marker=folium.CircleMarker(radius=4, color='red', fill=True),
+                       tooltip=folium.GeoJsonTooltip(fields=['nombre', 'municipio'])).add_to(m)
+    
+    folium.LayerControl().add_to(m)
+    st_folium(m, width=1400, height=600)
 
+# --- TAB 3: INTERPOLACIÓN (Tu código de isolíneas mejorado) ---
+with tab3:
+    st.markdown("#### Superficie Interpolada de Recarga (mm/mes promedio)")
+    
+    if len(df_puntos) < 4:
+        st.warning("Se necesitan al menos 4 estaciones en la zona para interpolar.")
+    else:
+        # Calcular Recarga Promedio por Estación para el mapa
+        # Usamos la misma lógica de Turc pero por estación
+        # 1. Traer lluvia media por estación
+        q_avg = f"SELECT id_estacion_fk as id_estacion, AVG(precipitation) as p_media FROM precipitacion_mensual WHERE id_estacion_fk IN {ids_sql} GROUP BY 1"
+        df_avg = pd.read_sql(q_avg, engine)
+        df_mapa = pd.merge(df_puntos, df_avg, on='id_estacion')
+        
+        # Calcular Recarga puntual
+        temp_est = 30 - (0.0065 * df_mapa['alt_est'])
+        l_t = 300 + 25*temp_est + 0.05*(temp_est**3)
+        etr = df_mapa['p_media'] / np.sqrt(0.9 + (df_mapa['p_media'] / (l_t/12))**2)
+        df_mapa['recarga_val'] = (df_mapa['p_media'] - etr).clip(lower=0) * ki_ponderado
+        
+        # Grid Data
+        x = df_mapa['longitud'].values
+        y = df_mapa['latitud'].values
+        z = df_mapa['recarga_val'].values
+        
+        # Crear Grid
+        pad = 0.05
+        xi = np.linspace(x.min()-pad, x.max()+pad, 100)
+        yi = np.linspace(y.min()-pad, y.max()+pad, 100)
+        Xi, Yi = np.meshgrid(xi, yi)
+        
+        # Interpolar (Linear con relleno Nearest para bordes)
+        Zi = griddata((x, y), z, (Xi, Yi), method='linear')
+        mask_nan = np.isnan(Zi)
+        if np.any(mask_nan):
+            Zi_nearest = griddata((x, y), z, (Xi, Yi), method='nearest')
+            Zi[mask_nan] = Zi_nearest[mask_nan]
+            
+        # Mapa Folium
+        m_iso = folium.Map(location=[mean_lat, mean_lon], zoom_start=11, tiles="CartoDB dark_matter")
+        
+        # Colormap
+        vmin, vmax = z.min(), z.max()
+        if vmin == vmax: vmax += 0.1
+        cmap = LinearColormap(['#ffffcc', '#a1dab4', '#41b6c4', '#225ea8'], vmin=vmin, vmax=vmax, caption="Recarga (mm/mes)")
+        m_iso.add_child(cmap)
+        
+        # Overlay Imagen
+        folium.raster_layers.ImageOverlay(
+            image=Zi[::-1], # Flip vertical para folium
+            bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]],
+            opacity=0.7,
+            colormap=lambda x: cmap(x)
+        ).add_to(m_iso)
+        
+        # Puntos
+        for _, row in df_mapa.iterrows():
+            folium.CircleMarker(
+                [row['latitud'], row['longitud']], radius=3, color='white', fill=True,
+                tooltip=f"{row['nom_est']}: {row['recarga_val']:.1f} mm"
+            ).add_to(m_iso)
+            
+        st_folium(m_iso, width=1400, height=600)
+
+# --- TAB 4: DESCARGAS ---
 with tab4:
     c1, c2 = st.columns(2)
-    with c1:
-        if not df_vis.empty: st.download_button("Descargar CSV", df_vis.to_csv(index=False), f"recarga_{id_est}.csv")
-    with c2:
-        if 'z' in locals() and z is not None:
-            try:
-                tif = hydrogeo_utils.generar_geotiff_bytes(z, b)
-                st.download_button("Descargar Raster", tif, "recarga.tif")
-                geo = hydrogeo_utils.generar_geojson_bytes(df_map_view)
-                st.download_button("Descargar GeoJSON", geo, "estaciones.geojson")
-            except: pass
+    c1.download_button("📥 Descargar Serie (CSV)", df_proyeccion.to_csv(index=False), "serie_recarga.csv")
+    
+    if 'Zi' in locals():
+        tif_bytes = hydrogeo_utils.generar_geotiff(Zi[::-1], [xi.min(), yi.min(), xi.max(), yi.max()])
+        c2.download_button("📥 Descargar Raster (GeoTIFF)", tif_bytes, "mapa_recarga.tif")
