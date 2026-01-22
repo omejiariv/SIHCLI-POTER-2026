@@ -1,82 +1,85 @@
 # pages/09_👑_Panel_Administracion.py
 
 
-import streamlit as st
-import pandas as pd
-import json
-import io
-import time
-import sys
-import os
-from sqlalchemy import text
-
-# --- TRUCO DE RUTAS (PATH) ---
-# Esto ayuda a Python a encontrar la carpeta 'modules' estando dentro de 'pages'
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
-
-# --- IMPORTACIÓN DEL MOTOR DE BASE DE DATOS (CORREGIDO) ---
-# Tu archivo se llama 'db_manager.py', no 'database.py'
-try:
-    from modules.db_manager import get_engine
-except ImportError:
-    # Intento alternativo por si la ruta relativa falla
-    from db_manager import get_engine
-
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Panel de Administración", page_icon="👑", layout="wide")
-
-def check_password():
-    """Valida usuario/contraseña contra secrets.toml"""
-    if st.session_state.get("password_correct", False):
-        return True
-
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.title("🔐 Acceso Restringido")
-        st.info("Panel de Control SIHCLI-POTER (Nube)")
+# --- FUNCIÓN ROBUSTA DE CARGA GIS (NUEVA) ---
+# Esta función arregla las coordenadas automáticamente
+def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
+    if uploaded_file is None: return
+    
+    status = st.status(f"🚀 Procesando {nombre_tabla}...", expanded=True)
+    try:
+        # 1. Guardar archivo temporal
+        suffix = os.path.splitext(uploaded_file.name)[1].lower()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_path = tmp_file.name
         
-        # Validación de seguridad
-        if "iri" not in st.secrets:
-            st.error("⚠️ Falta configuración [iri] en secrets.toml")
-            return False
+        # 2. Leer archivo (Soporte para Zip/SHP y GeoJSON)
+        gdf = None
+        if suffix == '.zip':
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
+                    zip_ref.extractall(tmp_dir)
+                for root, dirs, files in os.walk(tmp_dir):
+                    for file in files:
+                        if file.endswith(".shp"):
+                            gdf = gpd.read_file(os.path.join(root, file))
+                            break
+        else:
+            gdf = gpd.read_file(tmp_path)
+            
+        if gdf is None:
+            status.error("No se pudo leer el archivo geográfico.")
+            return
 
-        user_input = st.text_input("Usuario")
-        pass_input = st.text_input("Contraseña", type="password")
+        status.write(f"✅ Leído: {len(gdf)} registros. Sist. Coordenadas: {gdf.crs}")
 
-        if st.button("Ingresar"):
-            sec_user = st.secrets["iri"]["username"]
-            sec_pass = st.secrets["iri"]["password"]
+        # 3. Limpieza y Reproyección OBLIGATORIA a WGS84
+        if gdf.crs is None or gdf.crs.to_string() != "EPSG:4326":
+            status.write("🔄 Reproyectando a Latitud/Longitud (WGS84)...")
+            gdf = gdf.to_crs("EPSG:4326")
+        
+        # Normalizar columnas
+        gdf.columns = [c.lower() for c in gdf.columns]
+        
+        # Mapeo de columnas específicas para tus tablas
+        rename_map = {}
+        if 'bocatomas' in nombre_tabla:
+            if 'nombre' in gdf.columns: rename_map['nombre'] = 'nom_bocatoma'
+        elif 'suelos' in nombre_tabla:
+            if 'gridcode' in gdf.columns: rename_map['gridcode'] = 'codigo'
+            if 'simbolo' in gdf.columns: rename_map['simbolo'] = 'codigo' # Caso común
+        elif 'zonas_hidrogeologicas' in nombre_tabla:
+            if 'nombre' in gdf.columns: rename_map['nombre'] = 'nombre_zona'
+            
+        if rename_map:
+            gdf = gdf.rename(columns=rename_map)
 
-            if user_input == sec_user and pass_input == sec_pass:
-                st.session_state.password_correct = True
-                st.rerun()
-            else:
-                st.error("⛔ Acceso Denegado")
-    return False
+        # 4. Subir a PostGIS (Reemplazando tabla)
+        status.write("📤 Subiendo a Base de Datos...")
+        gdf.to_postgis(nombre_tabla, engine, if_exists='replace', index=False)
+        
+        status.update(label="¡Carga Exitosa!", state="complete", expanded=False)
+        st.success(f"Capa **{nombre_tabla}** actualizada ({len(gdf)} regs).")
+        st.balloons()
+        
+    except Exception as e:
+        status.update(label="Error", state="error")
+        st.error(f"Error crítico: {e}")
+    finally:
+        if os.path.exists(tmp_path): os.remove(tmp_path)
 
-if not check_password():
-    st.stop()
-
-# --- 3. INTERFAZ PRINCIPAL ---
+# --- 3. INTERFAZ PRINCIPAL
 st.title("👑 Panel de Administración y Edición de Datos")
 st.markdown("---")
 
-# ----------------------------------------------------------------
-# --- DEFINICIÓN DE PESTAÑAS (CORREGIDO Y ALINEADO) ---
-# Aquí es donde estaba el error de indentación. Ahora está pegado a la izquierda.
-
-tab_est, tab_indices, tab_predios, tab_cuencas, tab_mun, tab_hidro, tab_suelos, tab_sql = st.tabs([
-    "🌧️ Estaciones",
-    "📉 Índices",
-    "🏡 Predios",
-    "🌊 Cuencas",
-    "🏛️ Municipios",
-    "💧 Hidrogeología",
-    "🌱 Suelos",
-    "🛠️ SQL"
+# Definición de Pestañas (AGREGAMOS BOCATOMAS)
+tabs = st.tabs([
+    "📡 Estaciones", "📊 Índices", "🏠 Predios", "🌊 Cuencas", 
+    "🏙️ Municipios", "💧 Bocatomas", "⛰️ Hidrogeología", "🌱 Suelos", "🛠️ SQL"
 ])
+
+engine = get_engine()
 
 # ====================================================================
 # TAB 1: GESTIÓN DE ESTACIONES (EDICIÓN + CREACIÓN + CARGA)
@@ -366,7 +369,6 @@ with tab_indices:
             st.error(f"Error leyendo el archivo: {e}")
 
 
-# ====================================================================
 # ====================================================================
 # TAB 3: GESTIÓN DE PREDIOS (COMPLETO Y CORREGIDO)
 # ====================================================================
@@ -775,122 +777,55 @@ with tab_mun:
             except Exception as e:
                 st.error(f"Error procesando: {e}")
 
-# ====================================================================
-# TAB 6: GESTIÓN HIDROGEOLOGÍA
-# ====================================================================
-with tab_hidro:
-    st.header("💧 Gestión de Zonas Hidrogeológicas")
-    st.info("Sube tu archivo 'Zonas_PotHidrogeologico.geojson'.")
+# TAB 6: BOCATOMAS (¡NUEVO!)
+# ==============================================================================
+with tabs[5]:
+    st.header("💧 Gestión de Bocatomas")
+    st.info("Sube 'Bocatomas_Ant.shp' (preferiblemente en .zip) o GeoJSON.")
+    f_boca = st.file_uploader("Archivo Bocatomas", type=["zip", "geojson", "kml"])
     
-    up_hidro = st.file_uploader("Cargar GeoJSON Hidrogeología", type=["geojson", "json"], key="up_hidro")
-    if up_hidro and st.button("🚀 Cargar Zonas a BD"):
-        try:
-            data = json.load(up_hidro)
-            engine = get_engine()
-            
-            # Limpiar tabla anterior (opcional, para evitar duplicados masivos)
-            with engine.connect() as conn:
-                conn.execute(text("TRUNCATE TABLE zonas_hidrogeologicas RESTART IDENTITY;"))
-                conn.commit()
-
-            rows = []
-            with st.spinner("Procesando geometrías..."):
-                for feature in data['features']:
-                    props = feature.get("properties", {})
-                    geom = json.dumps(feature.get("geometry"))
-                    
-                    # Búsqueda flexible de columnas
-                    nom = props.get('Nombre', props.get('NOMBRE', 'Sin Nombre'))
-                    pot = props.get('Potencial_', props.get('POTENCIAL', 'Desconocido'))
-                    uni = props.get('Unidad_Geo', props.get('UNIDAD', 'Desconocido'))
-
-                    rows.append({
-                        "nombre_zona": nom, "potencial": pot, 
-                        "unidad_geo": uni, "geom": geom
-                    })
-            
-            # Insertar masivo
-            df_new = pd.DataFrame(rows)
-            # Usamos GeoPandas para facilitar la escritura PostGIS si es posible, 
-            # pero aquí haremos INSERT directo con SQL para máxima compatibilidad
-            with engine.connect() as conn:
-                for _, row in df_new.iterrows():
-                    q = text("""
-                        INSERT INTO zonas_hidrogeologicas (nombre_zona, potencial, unidad_geo, geom)
-                        VALUES (:n, :p, :u, ST_SetSRID(ST_GeomFromGeoJSON(:g), 4326))
-                    """)
-                    conn.execute(q, {"n": row['nombre_zona'], "p": row['potencial'], "u": row['unidad_geo'], "g": row['geom']})
-                conn.commit()
-            
-            st.success(f"✅ ¡Éxito! {len(df_new)} zonas hidrogeológicas cargadas.")
-            st.balloons()
-            
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-# ====================================================================
-# TAB 7: GESTIÓN SUELOS
-# ====================================================================
-with tab_suelos:
-    st.header("🌱 Gestión de Suelos (Antioquia)")
-    st.info("Sube tu archivo 'Suelos_Antioquia.geojson'.")
-    
-    up_suelo = st.file_uploader("Cargar GeoJSON Suelos", type=["geojson", "json"], key="up_suelo")
-    if up_suelo and st.button("🚀 Cargar Suelos a BD"):
-        try:
-            data = json.load(up_suelo)
-            engine = get_engine()
-            
-            with engine.connect() as conn:
-                conn.execute(text("TRUNCATE TABLE suelos RESTART IDENTITY;"))
-                conn.commit()
-
-            rows = []
-            with st.spinner("Procesando suelos..."):
-                for feature in data['features']:
-                    props = feature.get("properties", {})
-                    geom = json.dumps(feature.get("geometry"))
-                    
-                    # Adaptar a tus columnas reales del GeoJSON
-                    uni = props.get('Simbolo', props.get('Unidad', 'Sin Dato'))
-                    tex = props.get('Textura', props.get('TEXTURA', 'Sin Dato'))
-                    grup = props.get('Grupo', props.get('GRUPO', 'Sin Dato'))
-
-                    rows.append({
-                        "unidad": uni, "textura": tex, "grupo": grup, "geom": geom
-                    })
-            
-            df_new = pd.DataFrame(rows)
-            with engine.connect() as conn:
-                for _, row in df_new.iterrows():
-                    q = text("""
-                        INSERT INTO suelos (unidad_suelo, textura, grupo_hidro, geom)
-                        VALUES (:u, :t, :gh, ST_SetSRID(ST_GeomFromGeoJSON(:g), 4326))
-                    """)
-                    conn.execute(q, {"u": row['unidad'], "t": row['textura'], "gh": row['grupo'], "g": row['geom']})
-                conn.commit()
-            
-            st.success(f"✅ ¡Éxito! {len(df_new)} unidades de suelo cargadas.")
-            st.balloons()
-
-        except Exception as e:
-            st.error(f"Error: {e}")
+    if st.button("Cargar Bocatomas"):
+        cargar_capa_gis_robusta(f_boca, "bocatomas", engine)
+        
+    st.divider()
+    try:
+        count = pd.read_sql("SELECT count(*) FROM bocatomas", engine).iloc[0,0]
+        st.metric("Bocatomas en BD", count)
+    except: st.warning("Tabla no existe.")
 
 # ==============================================================================
-# TAB 6: CONSOLA SQL (TU CÓDIGO ORIGINAL CONSERVADO)
+# TAB 7: HIDROGEOLOGÍA (MEJORADO CON FUNCIÓN ROBUSTA)
 # ==============================================================================
-with tab_sql:
-    st.warning("⚠️ Consola SQL - Uso Avanzado")
-    q = st.text_area("SQL:")
+with tabs[6]:
+    st.header("⛰️ Gestión Hidrogeológica")
+    f_hidro = st.file_uploader("Archivo Zonas Hidro", type=["geojson", "zip"])
+    
+    if st.button("Cargar Hidrogeología"):
+        cargar_capa_gis_robusta(f_hidro, "zonas_hidrogeologicas", engine)
+
+# ==============================================================================
+# TAB 8: SUELOS (MEJORADO CON FUNCIÓN ROBUSTA)
+# ==============================================================================
+with tabs[7]:
+    st.header("🌱 Gestión de Suelos")
+    f_suelo = st.file_uploader("Archivo Suelos Antioquia", type=["geojson", "zip"])
+    
+    if st.button("Cargar Suelos"):
+        cargar_capa_gis_robusta(f_suelo, "suelos", engine)
+
+# ==============================================================================
+# TAB 9: SQL (CONSERVADO)
+# ==============================================================================
+with tabs[8]:
+    st.header("🛠️ Consola SQL")
+    q = st.text_area("Query:")
     if st.button("Ejecutar"):
-        if q:
-            try:
-                engine = get_engine()
-                with engine.connect() as conn:
-                    if q.lower().strip().startswith("select"): 
-                        st.dataframe(pd.read_sql(text(q), conn))
-                    else: 
-                        res = conn.execute(text(q))
-                        conn.commit()
-                        st.success("Hecho.")
-            except Exception as e: st.error(str(e))
+        try:
+            with engine.connect() as conn:
+                if q.strip().lower().startswith("select"):
+                    st.dataframe(pd.read_sql(text(q), conn))
+                else:
+                    conn.execute(text(q))
+                    conn.commit()
+                    st.success("Ejecutado.")
+        except Exception as e: st.error(str(e))
