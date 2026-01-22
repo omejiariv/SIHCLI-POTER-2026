@@ -13,6 +13,7 @@ from streamlit_folium import st_folium
 from branca.colormap import LinearColormap
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+from folium.plugins import Fullscreen
 
 # Importaciones locales
 from modules import db_manager, hydrogeo_utils, selectors
@@ -159,21 +160,35 @@ if not df_hist.empty:
     c3.metric("Recarga", f"{df_hist['recarga_mm'].mean()*12:,.0f} mm/año")
     c4.metric("Estaciones", len(df_puntos))
 
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Pronóstico", "🗺️ Contexto", "🌈 Mapa Recarga", "📥 Datos"])
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Series y Pronóstico", "🗺️ Mapa Contexto", "🌈 Mapa Recarga", "📥 Descargas"])
 
-# TAB 1: Serie
+# TAB 1: Serie Completa (Corregida)
 with tab1:
     fig = go.Figure()
     if not df_hist.empty:
-        fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia Hist', line=dict(color='gray', width=1)))
-        fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga Hist', line=dict(color='blue', width=2), fill='tozeroy'))
+        # 1. Lluvia Histórica
+        fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia Histórica', line=dict(color='gray', width=1)))
+        # 2. ETR Histórica (RECUPERADA)
+        if 'etr_mm' in df_hist.columns:
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['etr_mm'], name='ETR (Turc)', line=dict(color='green', width=1.5, dash='dash')))
+        # 3. Recarga Histórica
+        fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga Histórica', line=dict(color='blue', width=2), fill='tozeroy'))
     
     df_fut = df_res[df_res['tipo'] == 'Proyección']
     if not df_fut.empty:
+        # 4. Lluvia Pronosticada (RECUPERADA) - Usamos 'yhat' que es la predicción cruda del modelo
+        if 'yhat' in df_fut.columns:
+             fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat'], name='Lluvia Pronosticada', line=dict(color='gray', width=1, dash='dot')))
+
+        # 5. Recarga Futura
         fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Recarga Futura', line=dict(color='cyan', width=2, dash='dot')))
+        
+        # 6. Incertidumbre
         if 'yhat_upper' in df_fut.columns:
             fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_upper'], showlegend=False, line=dict(width=0)))
-            fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(200,200,200,0.3)'))
+            fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(200,200,200,0.2)'))
+            
+    fig.update_layout(height=450, hovermode="x unified", title="Dinámica Hidrológica Completa (Lluvia, ETR, Recarga)")
     st.plotly_chart(fig, use_container_width=True)
 
 # TAB 2: Contexto (Capas + Popups Ricos)
@@ -230,6 +245,7 @@ with tab2:
         ).add_to(m)
         
     folium.LayerControl().add_to(m)
+    Fullscreen().add_to(m)
     st_folium(m, width=1400, height=600, returned_objects=[])
 
 # TAB 3: Interpolación (Suave)
@@ -272,6 +288,7 @@ with tab3:
             st.warning(f"Error trazando líneas: {e}")
             
         m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga (mm/mes)"))
+        Fullscreen().add_to(m_iso)
         st_folium(m_iso, width=1400, height=600, returned_objects=[])
 
 # TAB 4: Descargas
