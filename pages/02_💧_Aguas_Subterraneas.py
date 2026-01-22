@@ -246,108 +246,71 @@ with tab2:
         ).add_to(m)
         
     folium.LayerControl().add_to(m)
-    Fullscreen().add_to(m)
-    st_folium(m, width=1400, height=600, returned_objects=[])
+    Fullscreen().add_to(m) # ✅ Fullscreen asegurado
+    
+    # ✅ CLAVE ÚNICA (key): Forza la recarga del mapa si cambia la zona o las estaciones
+    # Esto soluciona el problema de que el mapa "desaparece" o no actualiza
+    st_folium(m, width=1400, height=600, key=f"map_ctx_{nombre_zona}_{len(ids_finales)}")
 
-# TAB 3: Interpolación (Suave, Sin líneas cruzadas + Etiquetas de Valor)
-# TAB 3: Interpolación (Corregida: Validación anti-crash y Etiquetas)
+
+# TAB 3: Interpolación (CORREGIDA)
 with tab3:
-    if Zi is None: 
-        st.warning("⚠️ Se requieren al menos 4 estaciones para interpolar.")
+    if Zi is None: st.warning("Requiere 4+ estaciones.")
     else:
-        # Configuración de límites y colores
         vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
-        if vmin == vmax: vmax += 0.1
         
-        m_iso = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB dark_matter")
+        # ✅ CAMBIO: Usamos 'CartoDB positron' (Claro) para que el texto sea negro y legible
+        m_iso = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB positron")
         
-        # 1. Capa Raster (Fondo de color)
-        try: 
-            cmap = plt.colormaps['viridis']
-        except: 
-            cmap = cm.get_cmap('viridis')
-            
-        norm_Zi = (Zi - vmin) / (vmax - vmin)
-        rgba = cmap(norm_Zi)
-        rgba[np.isnan(Zi), 3] = 0 # Transparencia en nulos
+        # 1. Raster
+        try: cmap = plt.colormaps['viridis']
+        except: cmap = cm.get_cmap('viridis')
+        rgba = cmap((Zi - vmin) / (vmax - vmin))
+        rgba[np.isnan(Zi), 3] = 0
+        folium.raster_layers.ImageOverlay(image=rgba, bounds=[[grid_coords[1].min(), grid_coords[0].min()], [grid_coords[1].max(), grid_coords[0].max()]], opacity=0.7, origin='lower').add_to(m_iso)
         
-        folium.raster_layers.ImageOverlay(
-            image=rgba, 
-            bounds=[[grid_coords[1].min(), grid_coords[0].min()], [grid_coords[1].max(), grid_coords[0].max()]], 
-            opacity=0.7, 
-            origin='lower'
-        ).add_to(m_iso)
-        
-        # 2. Isolíneas y Etiquetas (VALIDADO)
+        # 2. Isolíneas LIMPIAS
         try:
             fig_c, ax_c = plt.subplots()
-            # Usamos Zi_smooth o Zi según corresponda. (Asegúrate de que 'Zi' es el dato limpio)
             cs = ax_c.contour(Xi, Yi, Zi, levels=12, colors='white', linewidths=0.8)
             plt.close(fig_c)
             
-            # Recorremos los segmentos generados
             for i, collection in enumerate(cs.allsegs):
                 level_val = cs.levels[i]
                 for segment in collection:
-                    # VALIDACIÓN CRÍTICA: Ignorar segmentos vacíos o puntos únicos
-                    if len(segment) < 2: 
-                        continue
-                        
-                    # Convertir coordenadas (X, Y) -> (Lat, Lon)
-                    # Nota: Matplotlib devuelve (x, y), Folium pide [lat, lon]
+                    if len(segment) < 2: continue
                     lat_lon = [[y, x] for x, y in segment]
+                    if not lat_lon: continue
                     
-                    # VALIDACIÓN DOBLE: Si la conversión falló o quedó vacía
-                    if not lat_lon: 
-                        continue
+                    folium.PolyLine(lat_lon, color='white', weight=1, opacity=0.9, tooltip=f"{level_val:.0f} mm").add_to(m_iso)
                     
-                    # Dibujar línea
-                    folium.PolyLine(
-                        lat_lon, 
-                        color='white', 
-                        weight=0.8, 
-                        opacity=0.8, 
-                        tooltip=f"Recarga: {level_val:.0f} mm"
-                    ).add_to(m_iso)
-                    
-                    # Añadir Etiqueta Flotante (Solo en líneas largas para no saturar)
+                    # Etiquetas Flotantes
                     if len(lat_lon) > 15: 
-                        mid_idx = len(lat_lon) // 2
-                        mid_pt = lat_lon[mid_idx]
-                        
+                        mid_pt = lat_lon[len(lat_lon) // 2]
+                        # Estilo mejorado para contraste
                         icon_html = f"""
                         <div style="
-                            font-size: 8pt; 
+                            font-size: 9pt; 
                             font-weight: bold;
-                            color: white; 
-                            background: rgba(0,0,0,0.4); 
+                            color: black; 
+                            background: rgba(255,255,255,0.7); 
                             padding: 1px 4px; 
                             border-radius: 4px;
-                            border: 1px solid rgba(255,255,255,0.3);
+                            border: 1px solid #666;
+                            text-shadow: 0px 0px 2px white;
                         ">{level_val:.0f}</div>
                         """
-                        
-                        folium.map.Marker(
-                            mid_pt,
-                            icon=DivIcon(
-                                icon_size=(30, 15),
-                                icon_anchor=(15, 7),
-                                html=icon_html
-                            )
-                        ).add_to(m_iso)
+                        folium.map.Marker(mid_pt, icon=DivIcon(icon_size=(30, 15), icon_anchor=(15, 7), html=icon_html)).add_to(m_iso)
 
-        except Exception as e: 
-            st.warning(f"Aviso de visualización: {e}")
+        except Exception as e: st.warning(f"Error visual: {e}")
             
-        # Leyenda y Controles
-        m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga Potencial (mm/mes)"))
-        Fullscreen().add_to(m_iso)
+        m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga (mm/mes)"))
+        Fullscreen().add_to(m_iso) # ✅ Fullscreen asegurado
         
-        st_folium(m_iso, width=1400, height=600, returned_objects=[])
+        # ✅ CLAVE ÚNICA (key): Misma estrategia para evitar errores de carga
+        st_folium(m_iso, width=1400, height=600, key=f"map_iso_{nombre_zona}_{len(ids_finales)}_{meses}")
         
-        # Guardar para descarga
         st.session_state['last_contour'] = cs
-
 
 # TAB 4: Descargas
 with tab4:
