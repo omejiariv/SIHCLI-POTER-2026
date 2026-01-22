@@ -97,13 +97,13 @@ if selected_table:
             st.info("Esta tabla no parece tener columna espacial (geom).")
 
         # D. MUESTRA DE DATOS
-        st.markdown("#### 📄 Primeras 5 Filas (Datos Crudos)")
+        st.markdown("#### 📄 Primeras 7 Filas (Datos Crudos)")
         # Evitamos traer la columna geom pesada para la vista previa
         cols_safe = [c for c in cols_df['column_name'] if c != geom_col]
         cols_query = ", ".join([f'"{c}"' for c in cols_safe]) # Comillas para manejar mayúsculas
         
         try:
-            df_preview = pd.read_sql(text(f"SELECT {cols_query} FROM {selected_table} LIMIT 5"), conn)
+            df_preview = pd.read_sql(text(f"SELECT {cols_query} FROM {selected_table} LIMIT 7"), conn)
             st.dataframe(df_preview)
         except Exception as e:
             st.error(f"Error cargando vista previa: {e}")
