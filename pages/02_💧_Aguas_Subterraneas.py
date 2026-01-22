@@ -75,6 +75,13 @@ if gdf_zona is not None:
     WHERE id_estacion_fk IN {ids_sql}
     """
     df_raw = pd.read_sql(q_serie, engine)
+
+    # --- DEBUG TEMPORAL (Borrar después) ---
+    with st.expander("🕵️‍♂️ DEBUG: Inspección de Datos Crudos"):
+        st.write("Dimensiones:", df_raw.shape)
+        st.write("Primeras filas:", df_raw.head())
+        st.write("Tipos de datos:", df_raw.dtypes)
+    # ---------------------------------------
     
     if df_raw.empty:
         st.error("⚠️ Las estaciones encontradas no tienen datos históricos de precipitación.")
