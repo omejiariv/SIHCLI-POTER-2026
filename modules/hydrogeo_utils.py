@@ -45,7 +45,8 @@ def calcular_serie_recarga(df_lluvia, lat, altitud, ki_suelo=None):
     df['recarga_mm'] = df['agua_disponible_mm'] * factor_inf
     df['escorrentia_sup_mm'] = df['agua_disponible_mm'] * (1 - factor_inf)
     
-    # Limpieza final
+    df = df.drop_duplicates(subset=[config.Config.DATE_COL])
+
     return df[[config.Config.DATE_COL, config.Config.PRECIPITATION_COL, 'etr_mm', 'recarga_mm', 'escorrentia_sup_mm']]
 
 def obtener_datos_estaciones_recarga(engine):
@@ -87,7 +88,7 @@ def obtener_datos_estaciones_recarga(engine):
     df_full['recarga_media'] = (df_full['ppt_media'] - df_full['etr_est']) * df_full['ki_final']
     
     # Limpiar negativos (si P < ETR)
-    df_full.loc[df_full['recarga_media'] < 0, 'recarga_media'] = 0
+    df_full['recarga_anual'] = df_full['recarga_mes'] * 12
     
     return df_full
 
