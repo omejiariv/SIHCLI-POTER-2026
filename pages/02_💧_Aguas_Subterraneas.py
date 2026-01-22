@@ -12,6 +12,7 @@ from streamlit_folium import st_folium
 from branca.colormap import LinearColormap
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import geojson
 
 # Importaciones locales
 from modules import db_manager, hydrogeo_utils, selectors
@@ -32,7 +33,6 @@ df_puntos_base = pd.DataFrame()
 # Búsqueda inicial de estaciones
 if gdf_zona is not None:
     minx, miny, maxx, maxy = gdf_zona.total_bounds
-    # Buscamos con un margen pequeño para no perder estaciones de borde
     pad = 0.01
     q_geo = f"""
     SELECT id_estacion, nom_est, latitud, longitud, alt_est 
@@ -130,21 +130,19 @@ tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie & Pronóstico", "🗺️ Mapa Cont
 with tab1:
     fig = go.Figure()
     if not df_hist.empty:
-        # Histórico
         fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia Histórica', line=dict(color='gray', width=1)))
         fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga Histórica', line=dict(color='blue', width=2), fill='tozeroy'))
     
     df_fut = df_res[df_res['tipo'] == 'Proyección']
     if not df_fut.empty:
-        # 1. Lluvia Futura (Pronóstico de Prophet) - Esto explica la banda de incertidumbre
-        # Usamos 'yhat' original que viene de Prophet antes de combinar
+        # Pronóstico de Lluvia (Para explicar la banda de incertidumbre)
         if 'yhat' in df_fut.columns:
              fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat'], name='Pronóstico Lluvia', line=dict(color='gray', width=1, dash='dot')))
 
-        # 2. Recarga Futura
+        # Recarga Futura
         fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Recarga Futura', line=dict(color='cyan', width=2, dash='dot')))
         
-        # 3. Incertidumbre (Generalmente asociada a la lluvia en Prophet)
+        # Incertidumbre (Clima)
         if 'yhat_upper' in df_fut.columns:
             fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_upper'], showlegend=False, line=dict(width=0)))
             fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre (Clima)', fill='tonexty', line=dict(width=0), fillcolor='rgba(200,200,200,0.3)'))
@@ -161,7 +159,7 @@ with tab2:
         bounds = [df_puntos['longitud'].min(), df_puntos['latitud'].min(), df_puntos['longitud'].max(), df_puntos['latitud'].max()]
 
     with st.spinner("Cargando capas geográficas..."):
-        # Llamada segura con la corrección aplicada en hydrogeo_utils
+        # Llamada a hydrogeo_utils corregido
         layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds)
     
     mean_lat = df_puntos['latitud'].mean()
@@ -181,7 +179,7 @@ with tab2:
     folium.LayerControl().add_to(m)
     st_folium(m, width=1400, height=600)
 
-# --- TAB 3: INTERPOLACIÓN (CORREGIDA) ---
+# --- TAB 3: INTERPOLACIÓN (HD + ISOLÍNEAS) ---
 with tab3:
     if len(df_puntos) < 4:
         st.warning(f"ℹ️ Se requieren al menos 4 estaciones para interpolar. (Tienes {len(df_puntos)}).")
@@ -200,39 +198,55 @@ with tab3:
             
             x, y, z = df_mapa['longitud'].values, df_mapa['latitud'].values, df_mapa['z'].values
             
-            # Grid
+            # Grid más denso (250x250) para suavizar
             pad = 0.05
-            xi = np.linspace(x.min()-pad, x.max()+pad, 100)
-            yi = np.linspace(y.min()-pad, y.max()+pad, 100)
+            xi = np.linspace(x.min()-pad, x.max()+pad, 250)
+            yi = np.linspace(y.min()-pad, y.max()+pad, 250)
             Xi, Yi = np.meshgrid(xi, yi)
             
             Zi = griddata((x, y), z, (Xi, Yi), method='linear')
             
-            # Corregir NaNs
             if np.any(np.isnan(Zi)):
                 Zi_n = griddata((x, y), z, (Xi, Yi), method='nearest')
                 mask = np.isnan(Zi)
                 Zi[mask] = Zi_n[mask]
             
-            # Validar rangos para evitar mapa blanco
             vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
-            if vmin == vmax: 
-                vmax += 0.1 # Evitar división por cero en normalización
-                
+            if vmin == vmax: vmax += 0.1
             Zi_norm = (Zi - vmin) / (vmax - vmin)
             
+            # Mapa Base
+            m_iso = folium.Map(location=[mean_lat, mean_lon], zoom_start=11, tiles="CartoDB dark_matter")
+            
+            # 1. Mapa de Calor (Raster)
             try: cmap_mpl = plt.colormaps['viridis']
             except: cmap_mpl = cm.get_cmap('viridis')
-                
             rgba = cmap_mpl(Zi_norm)
             rgba[np.isnan(Zi), 3] = 0
+            folium.raster_layers.ImageOverlay(image=rgba, bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]], opacity=0.7, origin='lower').add_to(m_iso)
             
-            m_iso = folium.Map(location=[mean_lat, mean_lon], zoom_start=11, tiles="CartoDB dark_matter")
-            folium.raster_layers.ImageOverlay(image=rgba, bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]], opacity=0.8, origin='lower').add_to(m_iso)
-            
-            # Leyenda
+            # 2. Isolíneas (Contours) - ¡NUEVO!
+            try:
+                # Calculamos contornos con Matplotlib (sin mostrarlos en pantalla, solo en memoria)
+                fig_c, ax_c = plt.subplots()
+                contour_set = ax_c.contour(Xi, Yi, Zi, levels=10, colors='white', linewidths=0.5)
+                plt.close(fig_c) # Cerramos la figura para que no salga en Streamlit
+                
+                # Convertimos cada línea de contorno a GeoJSON para Folium
+                for i, collection in enumerate(contour_set.collections):
+                    for path in collection.get_paths():
+                        coords = path.vertices
+                        # Invertimos coordenadas porque Folium usa (Lat, Lon) y Matplotlib (X, Y)
+                        lat_lon = [[lat, lon] for lon, lat in coords]
+                        folium.PolyLine(lat_lon, color='white', weight=1, opacity=0.6).add_to(m_iso)
+            except Exception as e:
+                st.warning(f"No se pudieron generar isolíneas: {e}")
+
+            # Leyenda y Puntos
             m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga Potencial (mm/mes)"))
-            
+            for _, r in df_mapa.iterrows():
+                 folium.CircleMarker([r['latitud'], r['longitud']], radius=3, color='white', fill=True, popup=f"{r['z']:.1f} mm").add_to(m_iso)
+
             st_folium(m_iso, width=1400, height=600)
         else:
             st.warning("No hay suficientes datos de lluvia promediada para interpolar.")

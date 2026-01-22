@@ -46,6 +46,7 @@ def calcular_balance_turc(df_lluvia, altitud, ki):
 def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
     try:
         df_work = df_hist.copy()
+        # Detección de columnas
         if 'fecha_mes_año' in df_work.columns:
             df_work = df_work.rename(columns={'fecha_mes_año': 'ds'})
         elif 'fecha' in df_work.columns:
@@ -90,20 +91,16 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
 # 3. CARGA GIS OPTIMIZADA (CORREGIDA)
 # ---------------------------------------------------------
 def cargar_capas_gis_optimizadas(engine, bounds=None):
-    """
-    Carga capas GIS recortadas. CORREGIDO para evitar error de NumPy.
-    """
     layers = {}
     if not engine: return layers
     
     tol = 0.003
     where_clause = ""
     
-    # ✅ CORRECCIÓN CRÍTICA: "is not None"
+    # ✅ CORRECCIÓN CRÍTICA: "is not None" para evitar crash con arrays de NumPy
     if bounds is not None:
         minx, miny, maxx, maxy = bounds
         pad = 0.02
-        # ST_MakeEnvelope crea un rectángulo seguro
         where_clause = f"WHERE ST_Intersects(geom, ST_MakeEnvelope({minx-pad}, {miny-pad}, {maxx+pad}, {maxy+pad}, 4326))"
     
     try:
