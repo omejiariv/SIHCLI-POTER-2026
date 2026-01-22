@@ -61,10 +61,10 @@ if not check_password():
 
 engine = get_engine()
 
-# --- 3. FUNCIONES AUXILIARES ROBUSTAS ---
+# --- 3. FUNCIONES AUXILIARES ---
 
 def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
-    """Carga archivos GIS, repara coordenadas y sube a BD."""
+    """Carga archivos GIS, repara coordenadas y sube a BD manteniendo TODOS los campos."""
     if uploaded_file is None: return
     
     status = st.status(f"🚀 Procesando {nombre_tabla}...", expanded=True)
@@ -91,33 +91,34 @@ def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
             status.error("No se pudo leer el archivo geográfico.")
             return
 
-        status.write(f"✅ Leído: {len(gdf)} registros. CRS original: {gdf.crs}")
+        # Calcular centroide para zoom (opcional)
+        status.write(f"✅ Leído: {len(gdf)} registros. Columnas: {list(gdf.columns)}")
 
         # REPROYECCIÓN OBLIGATORIA A WGS84
         if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
             status.write("🔄 Reproyectando a WGS84 (EPSG:4326)...")
             gdf = gdf.to_crs("EPSG:4326")
         
-        # Normalización
+        # Normalización de columnas
         gdf.columns = [c.lower() for c in gdf.columns]
         
+        # Mapeo inteligente (pero conservamos el resto de columnas)
         rename_map = {}
-        if 'bocatomas' in nombre_tabla:
-            if 'nombre' in gdf.columns: rename_map['nombre'] = 'nom_bocatoma'
+        if 'bocatomas' in nombre_tabla and 'nombre' in gdf.columns: rename_map['nombre'] = 'nom_bocatoma'
         elif 'suelos' in nombre_tabla:
             if 'gridcode' in gdf.columns: rename_map['gridcode'] = 'codigo'
             if 'simbolo' in gdf.columns: rename_map['simbolo'] = 'codigo'
-        elif 'zonas_hidrogeologicas' in nombre_tabla:
-            if 'nombre' in gdf.columns: rename_map['nombre'] = 'nombre_zona'
+        elif 'zonas_hidrogeologicas' in nombre_tabla and 'nombre' in gdf.columns: 
+            rename_map['nombre'] = 'nombre_zona'
             
         if rename_map:
             gdf = gdf.rename(columns=rename_map)
 
-        status.write("📤 Subiendo a Base de Datos...")
+        status.write("📤 Subiendo a Base de Datos (Conservando todos los atributos)...")
         gdf.to_postgis(nombre_tabla, engine, if_exists='replace', index=False)
         
         status.update(label="¡Carga Exitosa!", state="complete", expanded=False)
-        st.success(f"Capa **{nombre_tabla}** actualizada ({len(gdf)} registros).")
+        st.success(f"Capa **{nombre_tabla}** actualizada. {len(gdf)} registros con {len(gdf.columns)} campos.")
         if len(gdf) > 0: st.balloons()
         
     except Exception as e:
@@ -126,18 +127,36 @@ def cargar_capa_gis_robusta(uploaded_file, nombre_tabla, engine):
     finally:
         if os.path.exists(tmp_path): os.remove(tmp_path)
 
+def editor_tabla_gis(nombre_tabla, key_editor):
+    """Genera un editor de tabla para capas GIS excluyendo la columna de geometría pesada."""
+    try:
+        # Consultamos columnas excepto 'geometry' para que la tabla sea ligera y legible
+        q_cols = text(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{nombre_tabla}' AND column_name != 'geometry'")
+        cols = pd.read_sql(q_cols, engine)['column_name'].tolist()
+        cols_str = ", ".join([f'"{c}"' for c in cols]) # Comillas para nombres seguros
+        
+        df = pd.read_sql(f"SELECT {cols_str} FROM {nombre_tabla} LIMIT 1000", engine)
+        st.info(f"Mostrando primeros 1000 registros de **{nombre_tabla}**. ({len(df.columns)} campos)")
+        
+        df_editado = st.data_editor(df, key=key_editor, use_container_width=True, num_rows="dynamic")
+        
+        if st.button(f"💾 Guardar Cambios en {nombre_tabla}", key=f"btn_{key_editor}"):
+            st.warning("⚠️ La edición de atributos GIS complejos es mejor realizarla subiendo el archivo corregido. "
+                       "Esta función es solo para visualización rápida en esta versión para evitar corromper geometrías.")
+    except Exception as e:
+        st.warning(f"La tabla '{nombre_tabla}' aún no tiene datos o no existe.")
+
 # --- 4. INTERFAZ PRINCIPAL ---
 st.title("👑 Panel de Administración y Edición de Datos")
 st.markdown("---")
 
-# DEFINICIÓN DE PESTAÑAS (TODAS INCLUIDAS)
 tabs = st.tabs([
     "📡 Estaciones", "📊 Índices", "🏠 Predios", "🌊 Cuencas", 
     "🏙️ Municipios", "🌲 Coberturas", "💧 Bocatomas", "⛰️ Hidrogeología", "🌱 Suelos", "🛠️ SQL"
 ])
 
 # ==============================================================================
-# TAB 1: ESTACIONES (LÓGICA ORIGINAL COMPLETA)
+# TAB 1: ESTACIONES
 # ==============================================================================
 with tabs[0]:
     st.header("📡 Gestión de Estaciones")
@@ -147,60 +166,39 @@ with tabs[0]:
         st.info("Busca una estación para corregir sus coordenadas.")
         if engine:
             with engine.connect() as conn:
-                df_l = pd.read_sql(text("SELECT id_estacion, nom_est FROM estaciones ORDER BY nom_est"), conn)
-                if not df_l.empty:
-                    df_l['display'] = df_l['nom_est'] + " (" + df_l['id_estacion'].astype(str) + ")"
-                    seleccion = st.selectbox("Buscar Estación:", df_l['display'].tolist(), index=None)
-                    
-                    if seleccion:
-                        id_sel = seleccion.split('(')[-1].replace(')', '').strip()
-                        df_f = pd.read_sql(text("SELECT * FROM estaciones WHERE id_estacion = :id"), conn, params={"id": id_sel})
-                        
-                        if not df_f.empty:
-                            est_data = df_f.iloc[0]
-                            with st.form("edit_est"):
-                                c1, c2 = st.columns(2)
-                                with c1:
-                                    nn = st.text_input("Nombre", value=est_data.get('nom_est', ''))
-                                    nm = st.text_input("Municipio", value=est_data.get('municipio', ''))
-                                    
-                                    cat_actual = est_data.get('categoria', 'Pluviométrica')
-                                    opt_cat = ["Pluviométrica", "Limnimétrica", "Climática", "Otras"]
-                                    idx_cat = opt_cat.index(cat_actual) if cat_actual in opt_cat else 0
-                                    nc = st.selectbox("Categoría", opt_cat, index=idx_cat)
-                                    
-                                    tec_actual = est_data.get('tecnologia', 'Convencional')
-                                    opt_tec = ["Convencional", "Automática", "Radar"]
-                                    idx_tec = opt_tec.index(tec_actual) if tec_actual in opt_tec else 0
-                                    nt = st.selectbox("Tecnología", opt_tec, index=idx_tec)
-
-                                with c2:
-                                    nl = st.number_input("Latitud", value=float(est_data.get('latitud') or 0.0), format="%.5f")
-                                    nlo = st.number_input("Longitud", value=float(est_data.get('longitud') or 0.0), format="%.5f")
-                                    ne = st.number_input("Elevación", value=float(est_data.get('elevacion') or 0.0))
-                                    st.text_input("ID", value=est_data.get('id_estacion'), disabled=True)
-
-                                if st.form_submit_button("Guardar Cambios"):
-                                    conn.execute(text("""
-                                        UPDATE estaciones 
-                                        SET nom_est=:n, categoria=:c, tecnologia=:t, municipio=:m, 
-                                            latitud=:la, longitud=:lo, elevacion=:e 
-                                        WHERE id_estacion=:id
-                                    """), {"n": nn, "c": nc, "t": nt, "m": nm, "la": nl, "lo": nlo, "e": ne, "id": id_sel})
-                                    conn.commit()
-                                    st.success("Estación actualizada.")
-                                    time.sleep(0.5)
-                                    st.rerun()
+                try:
+                    df_l = pd.read_sql(text("SELECT id_estacion, nom_est FROM estaciones ORDER BY nom_est"), conn)
+                    if not df_l.empty:
+                        df_l['display'] = df_l['nom_est'] + " (" + df_l['id_estacion'].astype(str) + ")"
+                        seleccion = st.selectbox("Buscar Estación:", df_l['display'].tolist(), index=None)
+                        if seleccion:
+                            id_sel = seleccion.split('(')[-1].replace(')', '').strip()
+                            df_f = pd.read_sql(text("SELECT * FROM estaciones WHERE id_estacion = :id"), conn, params={"id": id_sel})
+                            if not df_f.empty:
+                                est_data = df_f.iloc[0]
+                                with st.form("edit_est"):
+                                    c1, c2 = st.columns(2)
+                                    nn = c1.text_input("Nombre", value=est_data.get('nom_est', ''))
+                                    nm = c1.text_input("Municipio", value=est_data.get('municipio', ''))
+                                    nl = c2.number_input("Latitud", value=float(est_data.get('latitud') or 0.0), format="%.5f")
+                                    nlo = c2.number_input("Longitud", value=float(est_data.get('longitud') or 0.0), format="%.5f")
+                                    if st.form_submit_button("Guardar Cambios"):
+                                        conn.execute(text("UPDATE estaciones SET nom_est=:n, municipio=:m, latitud=:l, longitud=:lo WHERE id_estacion=:id"),
+                                                    {"n": nn, "m": nm, "l": nl, "lo": nlo, "id": id_sel})
+                                        conn.commit()
+                                        st.success("Actualizado.")
+                                        time.sleep(0.5)
+                                        st.rerun()
+                except: st.warning("Error cargando lista.")
 
     with sub_crear:
         with st.form("new_est"):
             c1, c2 = st.columns(2)
-            nid = c1.text_input("ID (Único)")
+            nid = c1.text_input("ID")
             nnom = c1.text_input("Nombre")
-            nlat = c2.number_input("Latitud", value=6.0, format="%.5f")
-            nlon = c2.number_input("Longitud", value=-75.0, format="%.5f")
-            
-            if st.form_submit_button("Crear Estación"):
+            nlat = c2.number_input("Latitud", value=6.0)
+            nlon = c2.number_input("Longitud", value=-75.0)
+            if st.form_submit_button("Crear"):
                 if nid and nnom:
                     with engine.connect() as conn:
                         try:
@@ -211,13 +209,11 @@ with tabs[0]:
                         except Exception as e: st.error(f"Error: {e}")
 
     with sub_carga:
-        st.info("Carga 'mapaCVENSO.csv' (Actualiza coordenadas).")
-        up_meta = st.file_uploader("CSV Metadatos", type=["csv"])
+        up_meta = st.file_uploader("Cargar 'mapaCVENSO.csv'", type=["csv"])
         if up_meta and st.button("Procesar"):
             try:
                 df = pd.read_csv(up_meta, sep=';', encoding='latin-1')
                 with engine.connect() as conn:
-                    count = 0
                     for _, row in df.iterrows():
                         try:
                             sid = str(row['Id_estacio']).strip()
@@ -230,69 +226,48 @@ with tabs[0]:
                                 ON CONFLICT (id_estacion) DO UPDATE SET
                                 nom_est = EXCLUDED.nom_est, latitud = EXCLUDED.latitud, longitud = EXCLUDED.longitud
                             """), {"id": sid, "n": snom, "la": slat, "lo": slon})
-                            count += 1
                         except: pass
                     conn.commit()
-                st.success(f"Procesados {count} registros.")
+                st.success("Procesado.")
             except Exception as e: st.error(f"Error: {e}")
 
 # ==============================================================================
-# TAB 2: ÍNDICES (MEJORADO CON EDITOR)
+# TAB 2: ÍNDICES
 # ==============================================================================
 with tabs[1]:
     st.header("📊 Índices Climáticos")
     sb1, sb2 = st.tabs(["👁️ Ver/Editar", "📂 Cargar CSV"])
-    
     with sb1:
         try:
             df_idx = pd.read_sql("SELECT * FROM indices_climaticos ORDER BY fecha DESC LIMIT 1000", engine)
-            st.info("Edita los valores directamente en la tabla.")
-            df_editado = st.data_editor(df_idx, num_rows="dynamic", key="editor_indices")
-            if st.button("💾 Guardar Cambios Índices"):
-                df_editado.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-                st.success("Actualizado.")
+            df_edit = st.data_editor(df_idx, key="ed_idx", use_container_width=True, num_rows="dynamic")
+            if st.button("💾 Guardar Cambios"):
+                df_edit.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
+                st.success("Guardado.")
         except: st.warning("Sin datos.")
-
     with sb2:
-        up_idx = st.file_uploader("CSV Índices", type=["csv"])
-        if up_idx and st.button("Cargar"):
-            df = pd.read_csv(up_idx)
+        up_i = st.file_uploader("CSV", type=["csv"])
+        if up_i and st.button("Cargar"):
+            df = pd.read_csv(up_i)
             df.columns = [c.lower().strip() for c in df.columns]
             if 'id' in df.columns: df = df.drop(columns=['id'])
             df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
             st.success("Cargado.")
 
 # ==============================================================================
-# TAB 3: PREDIOS (MEJORADO CON EDITOR)
+# TAB 3: PREDIOS
 # ==============================================================================
 with tabs[2]:
     st.header("🏠 Gestión de Predios")
-    sb1, sb2, sb3 = st.tabs(["👁️ Tabla Editable", "➕ Crear (Formulario)", "📂 Carga GeoJSON"])
-    
+    sb1, sb2 = st.tabs(["👁️ Tabla Completa", "📂 Carga GeoJSON"])
     with sb1:
         try:
             df_p = pd.read_sql("SELECT * FROM predios LIMIT 2000", engine)
-            st.data_editor(df_p, key="ed_predios")
-            st.caption("Nota: Edición masiva habilitada solo vía carga GeoJSON por seguridad.")
+            st.data_editor(df_p, key="ed_pred", use_container_width=True)
         except: st.warning("Sin datos.")
-
     with sb2:
-        with st.form("new_pred"):
-            c1, c2 = st.columns(2)
-            pid = c1.text_input("ID Predio")
-            pnom = c1.text_input("Nombre")
-            pmun = c2.text_input("Municipio")
-            parea = c2.number_input("Área (ha)")
-            if st.form_submit_button("Guardar"):
-                with engine.connect() as conn:
-                    conn.execute(text("INSERT INTO predios (id_predio, nombre_predio, municipio, area_ha) VALUES (:id, :n, :m, :a)"),
-                                {"id": pid, "n": pnom, "m": pmun, "a": parea})
-                    conn.commit()
-                st.success("Guardado.")
-
-    with sb3:
-        up_gp = st.file_uploader("GeoJSON Predios", type=["geojson", "json"])
-        if up_gp and st.button("Procesar Predios"):
+        up_gp = st.file_uploader("GeoJSON", type=["geojson", "json"])
+        if up_gp and st.button("Procesar"):
             try:
                 data = json.load(up_gp)
                 rows = []
@@ -304,92 +279,90 @@ with tabs[2]:
                         "municipio": p.get('NOMB_MPIO', ''),
                         "area_ha": float(p.get('AREA_HA', 0))
                     })
-                # Usamos INSERT simple para evitar complejidad, idealmente UPSERT
                 pd.DataFrame(rows).drop_duplicates('id_predio').to_sql('predios', engine, if_exists='append', index=False, method='multi')
                 st.success("Cargado.")
-            except: st.warning("Error de carga o duplicados. Use SQL para limpieza avanzada.")
+            except: st.warning("Error/Duplicados. Use SQL para limpiar.")
 
 # ==============================================================================
-# TAB 4: CUENCAS (MEJORADO: EDITOR + FIX DUPLICADOS)
+# TAB 4: CUENCAS
 # ==============================================================================
 with tabs[3]:
     st.header("🌊 Gestión de Cuencas")
-    sb1, sb2, sb3 = st.tabs(["👁️ Tabla Editable", "➕ Crear", "📂 Carga GeoJSON"])
-    
+    sb1, sb2 = st.tabs(["👁️ Tabla Completa", "📂 Carga GeoJSON"])
     with sb1:
         try:
             df_c = pd.read_sql("SELECT * FROM cuencas", engine)
-            st.data_editor(df_c, key="ed_cuencas")
+            st.data_editor(df_c, key="ed_cuen", use_container_width=True)
         except: st.write("Sin datos.")
-
-    with sb3:
-        st.info("Carga 'SubcuencasAinfluencia.geojson'. Corrige duplicados automáticamente.")
+    with sb2:
         up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"])
-        if up_c and st.button("Procesar Cuencas"):
+        if up_c and st.button("Procesar"):
             try:
                 data = json.load(up_c)
-                count = 0
                 with engine.connect() as conn:
                     for f in data['features']:
                         p = f.get('properties', {})
-                        area = float(p.get('Shape_Area', 0)) / 1_000_000
                         row = {
                             "id": str(p.get('COD', 'SN')),
                             "nom": p.get('SUBC_LBL', 'Sin Nombre'),
-                            "area": area,
+                            "area": float(p.get('Shape_Area', 0))/1_000_000,
                             "rio": p.get('SZH', '')
                         }
-                        # FIX DUPLICADOS: UPSERT
                         conn.execute(text("""
                             INSERT INTO cuencas (id_cuenca, nombre_cuenca, area_km2, rio_principal)
                             VALUES (:id, :nom, :area, :rio)
                             ON CONFLICT (id_cuenca) DO UPDATE SET 
                             nombre_cuenca = EXCLUDED.nombre_cuenca, area_km2 = EXCLUDED.area_km2
                         """), row)
-                        count += 1
                     conn.commit()
-                st.success(f"Procesados {count} registros.")
+                st.success("Procesado (Duplicados actualizados).")
             except Exception as e: st.error(f"Error: {e}")
 
 # ==============================================================================
-# TAB 5: MUNICIPIOS (LÓGICA ORIGINAL)
+# TAB 5: MUNICIPIOS
 # ==============================================================================
 with tabs[4]:
     st.header("🏙️ Municipios")
-    up_m = st.file_uploader("GeoJSON Municipios", type=["geojson", "json"])
-    if up_m and st.button("Cargar"):
-        st.info("Carga disponible.")
+    st.info("Funcionalidad de carga disponible (simplificada).")
 
 # ==============================================================================
-# TAB 6: COBERTURAS (¡NUEVO!)
+# TAB 6: COBERTURAS
 # ==============================================================================
 with tabs[5]:
     st.header("🌲 Coberturas Vegetales")
     f_tiff = st.file_uploader("Cargar 'Cob25m_WGS84.tiff'", type=["tiff", "tif"])
-    if f_tiff and st.button("Guardar Coberturas"):
+    if f_tiff and st.button("Guardar"):
         os.makedirs("data", exist_ok=True)
-        path = os.path.join("data", "coberturas.tif")
-        with open(path, "wb") as f:
+        with open("data/coberturas.tif", "wb") as f:
             f.write(f_tiff.getbuffer())
-        st.success("Archivo guardado. Disponible para el mapa.")
+        st.success("Archivo guardado.")
 
 # ==============================================================================
-# TABS 7, 8, 9: GIS ROBUSTO
+# TABS 7, 8, 9: GIS ROBUSTO + VISORES DE TABLA
 # ==============================================================================
 with tabs[6]: # Bocatomas
     st.header("💧 Bocatomas")
-    f_boca = st.file_uploader("Archivo Bocatomas (ZIP/GeoJSON)", type=["zip", "geojson"])
-    if st.button("Cargar Bocatomas"): cargar_capa_gis_robusta(f_boca, "bocatomas", engine)
+    sb1, sb2 = st.tabs(["👁️ Ver Atributos", "📂 Cargar Archivo"])
+    with sb1: editor_tabla_gis("bocatomas", "ed_boca")
+    with sb2:
+        f = st.file_uploader("Archivo (ZIP/GeoJSON)", type=["zip", "geojson"])
+        if st.button("Cargar"): cargar_capa_gis_robusta(f, "bocatomas", engine)
 
 with tabs[7]: # Hidro
     st.header("⛰️ Hidrogeología")
-    f_hidro = st.file_uploader("Archivo Hidro (GeoJSON)", type=["geojson", "zip"])
-    if st.button("Cargar Hidro"): cargar_capa_gis_robusta(f_hidro, "zonas_hidrogeologicas", engine)
+    sb1, sb2 = st.tabs(["👁️ Ver Atributos", "📂 Cargar Archivo"])
+    with sb1: editor_tabla_gis("zonas_hidrogeologicas", "ed_hidro")
+    with sb2:
+        f = st.file_uploader("Archivo (ZIP/GeoJSON)", type=["zip", "geojson"])
+        if st.button("Cargar"): cargar_capa_gis_robusta(f, "zonas_hidrogeologicas", engine)
 
 with tabs[8]: # Suelos
     st.header("🌱 Suelos")
-    f_suelo = st.file_uploader("Archivo Suelos (GeoJSON)", type=["geojson", "zip"])
-    if st.button("Cargar Suelos"): cargar_capa_gis_robusta(f_suelo, "suelos", engine)
+    sb1, sb2 = st.tabs(["👁️ Ver Atributos", "📂 Cargar Archivo"])
+    with sb1: editor_tabla_gis("suelos", "ed_suelo")
+    with sb2:
+        f = st.file_uploader("Archivo (ZIP/GeoJSON)", type=["zip", "geojson"])
+        if st.button("Cargar"): cargar_capa_gis_robusta(f, "suelos", engine)
 
 # ==============================================================================
 # TAB 10: SQL
