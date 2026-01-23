@@ -304,34 +304,44 @@ if gdf_zona is not None:
             folium.GeoJson(layers['suelos'], name="Suelos", style_function=lambda x: {'color':'orange', 'weight':0.5, 'fillOpacity':0.2},
                            tooltip=tooltip_ok(layers['suelos'], dic_suelos)).add_to(m)
         if 'hidro' in layers:
-            # 1. Función Semáforo para el Potencial
+            # --- FUNCIÓN SEMÁFORO (CORREGIDA: potencial_) ---
             def get_color_hidro(feature):
-                # Normalizamos el texto (minusculas y sin espacios extra)
-                # Intenta leer 'potencial', si no existe, devuelve vacío
-                pot = str(feature['properties'].get('potencial', '')).lower().strip()
+                props = feature.get('properties', {})
                 
-                # Escala de Colores (Semáforo)
-                if 'muy alto' in pot: return '#1E8449'  # Verde Oscuro (Excelente)
-                if 'alto' in pot:     return '#2ECC71'  # Verde Esmeralda (Bueno)
-                if 'medio' in pot:    return '#F1C40F'  # Amarillo (Regular)
-                if 'muy bajo' in pot: return '#C0392B'  # Rojo Oscuro (Crítico)
-                if 'bajo' in pot:     return '#E67E22'  # Naranja (Escaso)
+                # AQUI ESTABA EL DETALLE: Buscamos 'potencial_' (con guion bajo)
+                val = props.get('potencial_') or props.get('potencial') or ''
                 
-                return '#85C1E9' # Azul claro por defecto (si no clasifica)
+                # Normalizar texto (minusculas)
+                txt = str(val).lower().strip()
+                
+                # Escala de Colores (Semáforo Hidrogeológico)
+                if 'muy alto' in txt: return '#006400'  # 🟢 Verde Oscuro
+                if 'alto' in txt:     return '#32CD32'  # 🟢 Verde Lima
+                if 'medio' in txt:    return '#F1C40F'  # 🟡 Amarillo
+                if 'muy bajo' in txt: return '#8B0000'  # 🔴 Rojo Oscuro
+                if 'bajo' in txt:     return '#E67E22'  # 🟠 Naranja
+                
+                return '#85C1E9' # Azul claro (si no tiene dato)
 
-            dic_hidro = {'potencial':'Potencial:', 'unidad':'Unidad:', 'sigla':'Sigla:', 'cod':'Cod:', 'area':'Area:'}
+            # Diccionario para el tooltip (Ajustado también)
+            dic_hidro = {
+                'potencial_': 'Potencial:', # <--- Ajustado
+                'unidad': 'Unidad:', 
+                'sigla': 'Sigla:'
+            }
             
             folium.GeoJson(
                 layers['hidro'], 
                 name="Hidrogeología (Potencial)", 
                 style_function=lambda feature: {
                     'fillColor': get_color_hidro(feature),
-                    'color': 'black',        # Borde negro fino para distinguir unidades
+                    'color': '#2c3e50',      
                     'weight': 0.5,
-                    'fillOpacity': 0.6       # Opacidad media para ver el mapa base
+                    'fillOpacity': 0.6       
                 },
                 tooltip=tooltip_ok(layers['hidro'], dic_hidro)
             ).add_to(m)
+
 
         if 'bocatomas' in layers:
             # Diccionario exacto basado en tus tablas
