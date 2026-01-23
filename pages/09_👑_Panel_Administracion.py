@@ -628,26 +628,50 @@ with tabs[10]: # Índice 10 porque es la pestaña número 11 (0-10)
 # ==============================================================================
 # TAB 12: Precipitación MENSUAL
 # ==============================================================================
+
 with tabs[11]:
-    st.header("🌧️ Gestión de Precipitaciones (Archivo Maestro)")
-    st.info("Sube el archivo CSV con formato matricial (Cód Estación en filas, Fechas en columnas).")
+    st.header("🌧️ Archivo Maestro de Lluvia")
+    st.info("Carga el archivo `DatosPptnmes_ENSO.csv`. Se omitirán las celdas vacías (no se rellenan con ceros).")
     
-    up_rain = st.file_uploader("Cargar DatosPptnmes_ENSO.csv", type=["csv"])
-    if up_rain and st.button("Migrar a Base de Datos"):
+    sb1, sb2 = st.tabs(["👁️ Ver BD", "🚀 Migrar CSV"])
+    
+    with sb1:
         try:
-            df = pd.read_csv(up_rain)
-            # Detección simple de formato ancho
-            id_col = df.columns[0]
-            fechas = df.columns[1:]
-            
-            # Transformación (Melt)
-            df_long = df.melt(id_vars=[id_col], value_vars=fechas, var_name='fecha', value_name='valor')
-            df_long = df_long.rename(columns={id_col: 'id_estacion'})
-            df_long['fecha'] = pd.to_datetime(df_long['fecha'], errors='coerce')
-            df_long = df_long.dropna(subset=['fecha', 'valor'])
-            
-            # Subida por lotes
-            df_long.to_sql('precipitacion', engine, if_exists='replace', index=False, chunksize=5000)
-            st.success(f"✅ Migración exitosa: {len(df_long)} registros cargados.")
-        except Exception as e:
-            st.error(f"Error en migración: {e}")
+            df_bd = pd.read_sql("SELECT * FROM precipitacion ORDER BY fecha DESC LIMIT 100", engine)
+            st.dataframe(df_bd)
+        except: st.warning("No se pudo leer la tabla 'precipitacion'.")
+
+    with sb2:
+        up_rain = st.file_uploader("CSV Maestro", type=["csv"])
+        if up_rain and st.button("Migrar a BD"):
+            try:
+                df = pd.read_csv(up_rain)
+                # Detección formato ancho (Estaciones en columnas o filas)
+                # Asumimos formato matriz: Col 1 = Codigo, Cols 2..N = Fechas
+                id_col = df.columns[0]
+                fechas = df.columns[1:]
+                
+                status = st.status("Transformando...", expanded=True)
+                
+                # Melt: De Ancho a Largo
+                df_long = df.melt(id_vars=[id_col], value_vars=fechas, var_name='fecha', value_name='valor')
+                df_long = df_long.rename(columns={id_col: 'id_estacion'})
+                
+                # Conversión
+                df_long['fecha'] = pd.to_datetime(df_long['fecha'], errors='coerce')
+                df_long['valor'] = pd.to_numeric(df_long['valor'], errors='coerce')
+                
+                # --- REGLA DE ORO: OMITIR VACÍOS ---
+                # Eliminamos filas donde la fecha o el valor sean NaT/NaN.
+                # NO llenamos con cero.
+                df_final = df_long.dropna(subset=['fecha', 'valor'])
+                
+                status.write(f"Registros válidos: {len(df_final)}")
+                status.write("Subiendo a BD...")
+                
+                df_final.to_sql('precipitacion', engine, if_exists='replace', index=False, chunksize=5000)
+                
+                status.update(label="¡Migración Completa!", state="complete")
+                st.success("Archivo migrado correctamente respetando vacíos.")
+            except Exception as e:
+                st.error(f"Error: {e}")
