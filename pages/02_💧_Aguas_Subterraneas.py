@@ -192,10 +192,15 @@ with tab1:
     fig.update_layout(height=450, hovermode="x unified", title="Dinámica Hidrológica Completa (Lluvia, ETR, Recarga)")
     st.plotly_chart(fig, use_container_width=True)
 
-# TAB 2: Contexto (Capas + Popups Ricos - VERSIÓN MAESTRA)
+
+# TAB 2: Contexto (Capas + Tooltips Personalizados + Fix Render)
 with tab2:
-    # 1. Definir caja geográfica (bounds) basada en estaciones
-    # Agregamos un pequeño margen (pad) para que no quede muy apretado
+    # Botón de auxilio para el "Efecto Fantasma"
+    col_refresh, col_txt = st.columns([1, 5])
+    with col_refresh:
+        refresh_map = st.button("🔄 Recargar Mapa", help="Si el mapa aparece gris o vacío, pulsa aquí.")
+    
+    # 1. Definir bounds
     pad = 0.05
     bounds = [
         df_puntos['longitud'].min() - pad,
@@ -204,49 +209,87 @@ with tab2:
         df_puntos['latitud'].max() + pad
     ]
     
-    # 2. Cargar capas usando el motor robusto (Compatible con lo que arreglamos hoy)
     layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds)
-    
-    # 3. Mapa base
     m = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB positron")
     
-    # 4. Capas GIS (Si existen en la BD)
-    if 'suelos' in layers: 
+    # --- CAPAS GIS CON TOOLTIPS ESPECÍFICOS ---
+    
+    # A. SUELOS: ucs_f, paisaje, clima, litologia, caracteri, componente
+    if 'suelos' in layers:
+        # Intentamos buscar columnas que coincidan (a veces postgres las corta)
+        cols_suelo = layers['suelos'].columns
+        fields_s = []
+        aliases_s = []
+        
+        # Mapeo de deseos vs realidad
+        map_suelos = {
+            'ucs_f': 'UCS:', 
+            'paisaje': 'Paisaje:', 
+            'clima': 'Clima:', 
+            'litologia': 'Litología:', 
+            'caracteri': 'Caract:', # A veces se corta
+            'caracteristicas': 'Caract:',
+            'componente': 'Componente:'
+        }
+        
+        for col_db, alias in map_suelos.items():
+            if col_db in cols_suelo:
+                fields_s.append(col_db)
+                aliases_s.append(alias)
+        
         folium.GeoJson(
             layers['suelos'], 
             name="Suelos", 
-            style_function=lambda x: {'color': 'green', 'weight': 0.5, 'fillOpacity': 0.1},
-            tooltip=folium.GeoJsonTooltip(fields=['info'], aliases=['Suelo:'])
+            style_function=lambda x: {'color': 'orange', 'weight': 0.5, 'fillOpacity': 0.15},
+            tooltip=folium.GeoJsonTooltip(fields=fields_s, aliases=aliases_s, localize=True) if fields_s else None
         ).add_to(m)
         
-    if 'hidro' in layers: 
+    # B. HIDROGEOLOGÍA: potencial_, sigla, unidad_geo
+    if 'hidro' in layers:
+        cols_hidro = layers['hidro'].columns
+        fields_h = []
+        aliases_h = []
+        
+        map_hidro = {
+            'potencial_': 'Potencial:',
+            'potencial': 'Potencial:', # Fallback
+            'sigla': 'Sigla:',
+            'unidad_geo': 'Unidad Geo:'
+        }
+        
+        for col_db, alias in map_hidro.items():
+            if col_db in cols_hidro:
+                fields_h.append(col_db)
+                aliases_h.append(alias)
+
         folium.GeoJson(
             layers['hidro'], 
             name="Hidrogeología", 
-            style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.1},
-            tooltip=folium.GeoJsonTooltip(fields=['info'], aliases=['Potencial:'])
+            style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.15},
+            tooltip=folium.GeoJsonTooltip(fields=fields_h, aliases=aliases_h, localize=True) if fields_h else None
         ).add_to(m)
         
-    if 'bocatomas' in layers: 
+    # C. BOCATOMAS
+    if 'bocatomas' in layers:
+        # Muestra el nombre si existe
+        cols_boca = layers['bocatomas'].columns
+        field_b = ['nom_bocatoma'] if 'nom_bocatoma' in cols_boca else (['nombre_acu'] if 'nombre_acu' in cols_boca else None)
+        
         folium.GeoJson(
             layers['bocatomas'], 
             name="Bocatomas", 
             marker=folium.CircleMarker(radius=3, color='red', fill_color='red'),
-            tooltip=folium.GeoJsonTooltip(fields=['info'], aliases=['Bocatoma:'])
+            tooltip=folium.GeoJsonTooltip(fields=field_b, aliases=['Nombre:']) if field_b else None
         ).add_to(m)
     
-    # 5. Estaciones con POPUP ENRIQUECIDO (Tu lógica original recuperada)
-    # Usamos df_mapa_stats si existe (tiene promedios calculados), sino df_puntos crudo
+    # 5. Estaciones (Tu código de popup rico se mantiene intacto)
     df_display = df_mapa_stats if df_mapa_stats is not None else df_puntos
-    
     for _, r in df_display.iterrows():
-        # Lógica de presentación de datos
         p_val = f"{r['p_media']*12:,.0f}" if 'p_media' in r else "N/A"
         rec_val = f"{r['recarga_calc']*12:,.0f}" if 'recarga_calc' in r else "N/A"
         mun = r['municipio'] if 'municipio' in r else "N/D"
         alt = f"{r['alt_est']:.0f}"
         
-        # HTML Estilizado
         html = f"""
         <div style="font-family:sans-serif; width:160px; font-size:12px;">
             <b style="font-size:13px;">{r['nom_est']}</b><br>
@@ -257,10 +300,8 @@ with tab2:
             <span style="color:#0000AA;">💧 Recarga:</span> <b style="color:#0000AA; font-size:13px;">{rec_val}</b> mm/año
         </div>
         """
-        
         iframe = folium.IFrame(html, width=180, height=150)
         popup = folium.Popup(iframe, max_width=180)
-        
         folium.Marker(
             [r['latitud'], r['longitud']], 
             popup=popup, 
@@ -269,16 +310,14 @@ with tab2:
         ).add_to(m)
         
     folium.LayerControl().add_to(m)
-    Fullscreen().add_to(m) # ✅ Fullscreen asegurado
+    Fullscreen().add_to(m) 
     
-    # ✅ CLAVE ÚNICA (key): Evita que el mapa desaparezca al cambiar filtros
-    # Esto obliga a Streamlit a redibujar el mapa cada vez que cambias de municipio/cuenca.
-    st_folium(
-        m, 
-        width=1400, 
-        height=600, 
-        key=f"ctx_map_{seleccion}_{len(df_puntos)}" 
-    )
+    # KEY DINÁMICA + REFRESH: Esto fuerza el redibujado si se pulsa el botón
+    key_final = f"ctx_map_{seleccion}_{len(df_puntos)}"
+    if refresh_map:
+        key_final += "_refresh" # Cambia la key -> Fuerza repintado
+        
+    st_folium(m, width=1400, height=600, key=key_final)
 
 
 # TAB 3: Mapa de Recarga Interpolada (CORREGIDO Y LIMPIO)
