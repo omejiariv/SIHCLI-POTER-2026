@@ -272,26 +272,46 @@ with tab2:
     Fullscreen().add_to(m) # ✅ Fullscreen asegurado
     
     # ✅ CLAVE ÚNICA (key): Evita que el mapa desaparezca al cambiar filtros
-    st_folium(m, width=1400, height=600, key=f"map_ctx_{nombre_zona}_{len(ids_finales)}")
+    # Esto obliga a Streamlit a redibujar el mapa cada vez que cambias de municipio/cuenca.
+    st_folium(
+        m, 
+        width=1400, 
+        height=600, 
+        # La key dinámica es vital:
+        key=f"ctx_map_{seleccion}_{radio_buffer}_{len(df_puntos)}" 
+    )
 
-# TAB 3: Interpolación (CORREGIDA)
+# TAB 3: Mapa de Recarga Interpolada (CORREGIDO Y LIMPIO)
 with tab3:
-    if Zi is None: st.warning("Requiere 4+ estaciones.")
+    # Verificamos si hay datos de interpolación (Zi)
+    if Zi is None: 
+        st.warning("⚠️ No hay suficientes estaciones (mínimo 4) para interpolar la recarga.")
     else:
-        vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
-        
-        # ✅ CAMBIO: Usamos 'CartoDB positron' (Claro) para que el texto sea negro y legible
-        m_iso = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB positron")
-        
-        # 1. Raster
-        try: cmap = plt.colormaps['viridis']
-        except: cmap = cm.get_cmap('viridis')
-        rgba = cmap((Zi - vmin) / (vmax - vmin))
-        rgba[np.isnan(Zi), 3] = 0
-        folium.raster_layers.ImageOverlay(image=rgba, bounds=[[grid_coords[1].min(), grid_coords[0].min()], [grid_coords[1].max(), grid_coords[0].max()]], opacity=0.7, origin='lower').add_to(m_iso)
-        
-        # 2. Isolíneas LIMPIAS
         try:
+            vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
+            
+            # 1. Crear Mapa Base (Usamos 'm_iso' consistentemente)
+            m_iso = folium.Map(
+                location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], 
+                zoom_start=11, 
+                tiles="CartoDB positron"
+            )
+            
+            # 2. Capa Raster (Colores)
+            try: cmap = plt.colormaps['viridis']
+            except: cmap = cm.get_cmap('viridis')
+            
+            rgba = cmap((Zi - vmin) / (vmax - vmin))
+            rgba[np.isnan(Zi), 3] = 0 # Transparencia en nulos
+            
+            folium.raster_layers.ImageOverlay(
+                image=rgba, 
+                bounds=[[grid_coords[1].min(), grid_coords[0].min()], [grid_coords[1].max(), grid_coords[0].max()]], 
+                opacity=0.6, 
+                origin='lower'
+            ).add_to(m_iso)
+            
+            # 3. Capa Isolíneas (Líneas Blancas)
             fig_c, ax_c = plt.subplots()
             cs = ax_c.contour(Xi, Yi, Zi, levels=12, colors='white', linewidths=0.8)
             plt.close(fig_c)
@@ -301,37 +321,39 @@ with tab3:
                 for segment in collection:
                     if len(segment) < 2: continue
                     lat_lon = [[y, x] for x, y in segment]
-                    if not lat_lon: continue
                     
-                    folium.PolyLine(lat_lon, color='white', weight=1, opacity=0.9, tooltip=f"{level_val:.0f} mm").add_to(m_iso)
+                    # Línea
+                    folium.PolyLine(
+                        lat_lon, color='white', weight=1, opacity=0.9, 
+                        tooltip=f"{level_val:.0f} mm"
+                    ).add_to(m_iso)
                     
-                    # Etiquetas Flotantes
-                    if len(lat_lon) > 15: 
+                    # Etiqueta (Solo si la línea es larga para no saturar)
+                    if len(lat_lon) > 20: 
                         mid_pt = lat_lon[len(lat_lon) // 2]
-                        # Estilo mejorado para contraste
                         icon_html = f"""
-                        <div style="
-                            font-size: 9pt; 
-                            font-weight: bold;
-                            color: black; 
-                            background: rgba(255,255,255,0.7); 
-                            padding: 1px 4px; 
-                            border-radius: 4px;
-                            border: 1px solid #666;
-                            text-shadow: 0px 0px 2px white;
-                        ">{level_val:.0f}</div>
-                        """
-                        folium.map.Marker(mid_pt, icon=DivIcon(icon_size=(30, 15), icon_anchor=(15, 7), html=icon_html)).add_to(m_iso)
+                        <div style="font-size:8pt; font-weight:bold; color:#333; 
+                        background:rgba(255,255,255,0.8); padding:0 3px; border-radius:3px;">
+                        {level_val:.0f}</div>"""
+                        folium.map.Marker(
+                            mid_pt, 
+                            icon=DivIcon(icon_size=(20,10), icon_anchor=(10,5), html=icon_html)
+                        ).add_to(m_iso)
 
-        except Exception as e: st.warning(f"Error visual: {e}")
+            # 4. Leyenda y Fullscreen
+            m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga (mm/mes)"))
+            Fullscreen().add_to(m_iso)
+
+            # 5. RENDERIZADO (Con la corrección de nombre m_iso y key dinámica)
+            st_folium(
+                m_iso,  # <--- CORREGIDO: Antes decía m_recarga
+                width=1400, 
+                height=600, 
+                key=f"rcg_map_{seleccion}_{radio_buffer}_{len(df_mapa_stats)}"
+            )
             
-        m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga (mm/mes)"))
-        Fullscreen().add_to(m_iso) # ✅ Fullscreen asegurado
-        
-        # ✅ CLAVE ÚNICA (key): Misma estrategia para evitar errores de carga
-        st_folium(m_iso, width=1400, height=600, key=f"map_iso_{nombre_zona}_{len(ids_finales)}_{meses}")
-        
-        st.session_state['last_contour'] = cs
+        except Exception as e:
+            st.error(f"Error generando el mapa de interpolación: {e}")
 
 # TAB 4: Descargas
 with tab4:
