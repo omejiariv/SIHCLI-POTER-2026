@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
 from modules import db_manager, hydrogeo_utils, selectors
+from modules import land_cover
 
 st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
 
@@ -25,17 +26,73 @@ if st.sidebar.button("🧹 Limpiar Memoria y Recargar"):
 ids_estaciones, nombre_zona, altitud_ref, gdf_zona = selectors.render_selector_espacial()
 engine = db_manager.get_engine()
 
+# --- 2. PARÁMETROS HIDROLÓGICOS (5 GRUPOS) ---
 st.sidebar.divider()
 st.sidebar.header("🎛️ Parámetros")
-col_s1, col_s2 = st.sidebar.columns(2)
-pct_bosque = col_s1.number_input("% Bosque", 0, 100, 50)
-pct_cultivo = col_s2.number_input("% Agrícola", 0, 100, 30)
-pct_urbano = max(0, 100 - (pct_bosque + pct_cultivo))
-st.sidebar.metric("% Urbano/Otro", f"{pct_urbano}%")
-ki_ponderado = ((pct_bosque * 0.50) + (pct_cultivo * 0.30) + (pct_urbano * 0.10)) / 100.0
-st.sidebar.metric("Coef. Infiltración (Ki)", f"{ki_ponderado:.2f}")
+
+# ⚠️ Asegúrate de que este archivo exista en tu carpeta data/
+RUTA_RASTER = "data/mapaCVENSO.tif" 
+
+modo_params = st.sidebar.radio(
+    "Fuente de Parámetros:", 
+    ["Automático (Satélite)", "Manual (Simulación)"],
+    help="Automático: Calcula desde el mapa de coberturas.\nManual: Ajusta valores para escenarios."
+)
+
+# Valores por defecto para evitar errores si no hay cálculo
+pct_bosque, pct_agricola, pct_pecuario, pct_agua, pct_urbano = 40.0, 20.0, 30.0, 5.0, 5.0
+
+if modo_params == "Automático (Satélite)" and gdf_zona is not None:
+    with st.sidebar.status("🛰️ Analizando coberturas..."):
+        # Llamamos al módulo land_cover para procesar el raster
+        stats_raw = land_cover.calcular_estadisticas_zona(gdf_zona, RUTA_RASTER)
+        # Agrupamos los resultados en tus 5 categorías
+        p_bosque, p_agricola, p_pecuario, p_agua, p_urbano = land_cover.agrupar_coberturas_turc(stats_raw)
+    
+    if not stats_raw:
+        st.sidebar.warning("⚠️ No se encontró el archivo raster en data/. Usando valores por defecto.")
+    else:
+        st.sidebar.success("✅ Datos extraídos")
+        pct_bosque, pct_agricola, pct_pecuario, pct_agua, pct_urbano = p_bosque, p_agricola, p_pecuario, p_agua, p_urbano
+        
+        # Inputs visuales (deshabilitados porque son datos reales)
+        st.sidebar.number_input("% Bosque", value=float(pct_bosque), disabled=True, format="%.1f")
+        st.sidebar.number_input("% Agrícola", value=float(pct_agricola), disabled=True, format="%.1f")
+        st.sidebar.number_input("% Pecuario", value=float(pct_pecuario), disabled=True, format="%.1f")
+        st.sidebar.number_input("% Agua/Humedal", value=float(pct_agua), disabled=True, format="%.1f")
+        st.sidebar.metric("% Urbano / Otro", f"{pct_urbano:.1f}%")
+        
+        st.sidebar.caption("Distribución Real:")
+        st.sidebar.progress(int(pct_bosque), text=f"Bosque {pct_bosque:.0f}%")
+        st.sidebar.progress(int(pct_pecuario), text=f"Pecuario {pct_pecuario:.0f}%")
+
+else:
+    # Modo Manual: Tú controlas los sliders
+    st.sidebar.info("Modo Simulación: Ajusta los valores.")
+    pct_bosque = st.sidebar.number_input("% Bosque", 0, 100, 40)
+    pct_agricola = st.sidebar.number_input("% Agrícola", 0, 100, 20)
+    pct_pecuario = st.sidebar.number_input("% Pecuario", 0, 100, 30)
+    pct_agua = st.sidebar.number_input("% Agua/Humedal", 0, 100, 5)
+    
+    pct_urbano = max(0, 100 - (pct_bosque + pct_agricola + pct_pecuario + pct_agua))
+    st.sidebar.metric("% Urbano / Otro", f"{pct_urbano}%")
+
+# --- CÁLCULO DEL KI (5 GRUPOS) ---
+# Coeficientes: Bosque: 0.50 | Agrícola: 0.30 | Pecuario: 0.30 | Agua: 1.00 | Urbano: 0.10
+ki_ponderado = (
+    (pct_bosque * 0.50) + 
+    (pct_agricola * 0.30) + 
+    (pct_pecuario * 0.30) + 
+    (pct_agua * 1.00) +
+    (pct_urbano * 0.10)
+) / 100.0
+
+st.sidebar.metric("Coef. Infiltración (Ki)", f"{ki_ponderado:.2f}", delta_color="normal")
+
+st.sidebar.divider()
 meses_futuros = st.sidebar.slider("Horizonte", 12, 60, 24)
 ruido = st.sidebar.slider("Incertidumbre", 0.0, 1.0, 0.1)
+
 
 # Inicializar variables de sesión para descargas
 if 'raster_data' not in st.session_state: st.session_state.raster_data = None

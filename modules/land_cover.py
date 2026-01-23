@@ -386,3 +386,64 @@ def get_infiltration_suggestion(stats):
     reason = f"Predomina {top_cover} ({stats[top_cover]:.1f}%)"
     
     return final_coef, reason
+
+
+# --- FUNCIONES PARA INTEGRACIÓN CON HIDROLOGÍA (TURC) ---
+
+def agrupar_coberturas_turc(stats_dict):
+    """
+    Agrupa las clases en 5 categorías: Bosque, Agrícola, Pecuario, Agua, Urbano.
+    """
+    if not stats_dict: return 40.0, 20.0, 20.0, 5.0, 15.0 # Default
+
+    # 1. GRUPO URBANO / OTROS (Impermeable o muy baja infiltración)
+    # IDs: 1, 2, 3, 4
+    grupo_urbano = [
+        "Zonas Urbanas", "Zonas industriales", 
+        "Zonas degradadas", "Zonas Verdes artificializadas"
+    ]
+
+    # 2. GRUPO AGRÍCOLA (Cultivos)
+    # IDs: 5, 6, 8
+    grupo_agricola = [
+        "Cultivos transitorios", "Cultivos permanentes", 
+        "Areas Agrícolas Heterogéneas"
+    ]
+
+    # 3. GRUPO PECUARIO (Pastos y vegetación baja/abierta)
+    # IDs: 7, 10, 11
+    grupo_pecuario = [
+        "Pastos", "Vegetación Herbácea", 
+        "Areas abiertas sin o con poca cobertura"
+    ]
+
+    # 4. GRUPO BOSQUE (Conservación)
+    # IDs: 9 (Solo Bosque denso)
+    grupo_bosque = ["Bosque"]
+
+    # 5. GRUPO AGUA (Humedales y Cuerpos de agua)
+    # IDs: 12, 13
+    grupo_agua = ["Humedales", "Agua"]
+
+    # Sumatorias
+    sum_bosque = 0
+    sum_agricola = 0
+    sum_pecuario = 0
+    sum_agua = 0
+
+    for nombre, pct in stats_dict.items():
+        # Búsqueda flexible por nombre
+        if any(g in nombre for g in grupo_bosque):
+            sum_bosque += pct
+        elif any(g in nombre for g in grupo_agricola):
+            sum_agricola += pct
+        elif any(g in nombre for g in grupo_pecuario):
+            sum_pecuario += pct
+        elif any(g in nombre for g in grupo_agua):
+            sum_agua += pct
+            
+    # El resto se asigna a Urbano (o calculamos directo si preferimos)
+    # Usamos el residual para asegurar que sume 100%
+    sum_urbano = max(0, 100 - (sum_bosque + sum_agricola + sum_pecuario + sum_agua))
+    
+    return sum_bosque, sum_agricola, sum_pecuario, sum_agua, sum_urbano
