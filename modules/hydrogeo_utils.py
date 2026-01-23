@@ -89,72 +89,98 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
         return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
 
 # ---------------------------------------------------------
-# 3. CARGA GIS OPTIMIZADA Y ROBUSTA
+# 3. CARGA GIS INTELIGENTE (ADAPTABLE A CUALQUIER COLUMNA)
 # ---------------------------------------------------------
 def cargar_capas_gis_optimizadas(_engine, bounds=None):
     layers = {}
     if not _engine: return layers
     
-    # Configuración: Tabla BD -> Campo informativo
-    # Ajustado a los nombres del Panel de Administración
-    config_capas = {
-        'suelos': {'tabla': 'suelos', 'col_info': 'codigo', 'geom': 'geometry'},
-        'hidro': {'tabla': 'zonas_hidrogeologicas', 'col_info': 'potencial', 'geom': 'geometry'},
-        'bocatomas': {'tabla': 'bocatomas', 'col_info': 'nom_bocatoma', 'geom': 'geometry'}
+    # CONFIGURACIÓN: Lista de posibles nombres de columna para cada capa
+    # El sistema buscará en orden. Si no encuentra ninguna, usará la primera que sea texto.
+    config = {
+        'suelos': {
+            'tabla': 'suelos', 
+            'candidatos': ['ucs', 'ucs_f', 'unidad', 'codigo', 'label', 'simbolo', 'gridcode']
+        },
+        'hidro': {
+            'tabla': 'zonas_hidrogeologicas', 
+            'candidatos': ['potencial', 'potencial_', 'unidad_geo', 'nombre_zona', 'label']
+        },
+        'bocatomas': {
+            'tabla': 'bocatomas', 
+            'candidatos': ['nombre_acu', 'nom_bocatoma', 'nombre', 'bocatoma', 'fuente_aba', 'municipio']
+        }
     }
     
-    tol = 0.002 # Simplificación para velocidad
+    tol = 0.002 # Tolerancia para simplificar geometría (mejora velocidad)
 
     with _engine.connect() as conn:
-        for key, cfg in config_capas.items():
+        for key, cfg in config.items():
             try:
-                # 1. Verificar si la tabla existe
-                if not _engine.dialect.has_table(conn, cfg['tabla']):
+                tabla = cfg['tabla']
+                
+                # A. Verificar si la tabla existe
+                if not _engine.dialect.has_table(conn, tabla):
                     continue
 
-                # 2. Detectar columna geométrica real (geom vs geometry)
-                q_col = text(f"""
-                    SELECT column_name FROM information_schema.columns 
-                    WHERE table_name = '{cfg['tabla']}' AND udt_name = 'geometry' LIMIT 1
-                """)
-                res_col = pd.read_sql(q_col, conn)
-                col_geom = 'geometry' # Default
-                if not res_col.empty:
-                    col_geom = res_col.iloc[0]['column_name']
+                # B. Obtener columnas reales de la tabla
+                q_cols = text(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{tabla}'")
+                cols_reales = pd.read_sql(q_cols, conn)['column_name'].tolist()
+                
+                # C. Detectar columna de geometría
+                col_geom = 'geometry' if 'geometry' in cols_reales else ('geom' if 'geom' in cols_reales else None)
+                if not col_geom: continue # Sin geometría no hay mapa
 
-                # 3. Query con Transformación WGS84
-                # Seleccionamos info y GeoJSON simplificado
+                # D. Detectar la mejor columna de información (El Match Inteligente)
+                col_info = None
+                # 1. Buscamos en la lista de candidatos
+                for cand in cfg['candidatos']:
+                    if cand in cols_reales:
+                        col_info = cand
+                        break
+                
+                # 2. Si falló, buscamos cualquier columna que parezca texto
+                if not col_info:
+                    for c in cols_reales:
+                        if c not in ['id', 'gid', 'objectid', col_geom]:
+                            col_info = c
+                            break
+                
+                # Si aún nada, usamos un string fijo
+                sql_info = f'"{col_info}"' if col_info else "'Sin Info'"
+
+                # E. Construir Query
+                # ST_Transform(..., 4326) asegura WGS84
                 base_q = f"""
-                    SELECT {cfg['col_info']} as info, 
+                    SELECT {sql_info} as info, 
                     ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Transform({col_geom}, 4326), {tol})) as gj 
-                    FROM {cfg['tabla']}
+                    FROM {tabla}
                 """
                 
-                # 4. Filtro Espacial (Si tenemos bounds del usuario)
-                final_q = base_q + " LIMIT 800" # Límite seguridad
-                
+                # F. Filtro Espacial (Opcional pero recomendado)
+                final_q = base_q + " LIMIT 1000"
                 if bounds is not None:
                     try:
                         minx, miny, maxx, maxy = bounds
-                        # Envelope en 4326 transformado al SRID de la tabla
                         envelope = f"ST_Transform(ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326), ST_SRID({col_geom}))"
-                        final_q = f"{base_q} WHERE ST_Intersects({col_geom}, {envelope}) LIMIT 800"
-                    except: pass 
+                        final_q = f"{base_q} WHERE ST_Intersects({col_geom}, {envelope}) LIMIT 1000"
+                    except: pass
 
-                # 5. Ejecutar
+                # G. Ejecutar y Plan B
                 df = pd.read_sql(text(final_q), conn)
                 
-                # Plan B: Si filtro espacial falla (vacío), traer muestra general
                 if df.empty and bounds is not None:
-                    fallback_q = base_q + " LIMIT 100"
-                    df = pd.read_sql(text(fallback_q), conn)
+                    # Si el filtro espacial falló (ej. coordenadas no coinciden), intentar carga sin filtro
+                    print(f"⚠️ Filtro vacío para {key}, intentando carga general...")
+                    df = pd.read_sql(text(base_q + " LIMIT 100"), conn)
 
                 if not df.empty:
                     df['geometry'] = df['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers[key] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
+                    print(f"✅ Capa {key} cargada usando columna: {col_info}")
                     
             except Exception as e:
-                print(f"Aviso capa {key}: {e}")
+                print(f"Error cargando capa {key}: {e}")
 
     return layers
 
