@@ -296,9 +296,119 @@ if gdf_zona is not None:
                  fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(0,210,211,0.1)'))
             
             fig.update_layout(height=500, hovermode="x unified", title="Balance Hídrico Completo y Proyección", template="plotly_white")
-            st.plotly_chart(fig, use_container_width=True)
+            
+            # --- CONFIGURACIÓN DE DESCARGA DE IMAGEN ---
+            config_plotly = {
+                'toImageButtonOptions': {
+                    'format': 'png', # o 'svg', 'jpeg', 'webp'
+                    'filename': f'Balance_Hidrico_{nombre_zona.replace(" ", "_")}',
+                    'height': 600,
+                    'width': 1200,
+                    'scale': 2 # Mayor resolución (x2)
+                },
+                'displayModeBar': True, # Asegura que se vea la barra de herramientas
+                # Opcional: quitar botones que no uses
+                # 'modeBarButtonsToRemove': ['zoom', 'pan', 'select', 'lasso2d'] 
+            }
+            
+            # Renderizar con configuración
+            st.plotly_chart(fig, use_container_width=True, config=config_plotly)
+
+
+    # --- TAB 1: GRÁFICO COMPLETO ---
+    with tab1:
+        if not df_res.empty:
+            df_hist = df_res[df_res['tipo'] == 'Histórico']
+            df_fut = df_res[df_res['tipo'] == 'Proyección']
+            
+            fig = go.Figure()
+            
+            # 1. Variables Históricas
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia Hist.', line=dict(color='#95a5a6', width=1)))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['etr_mm'], name='ETR Hist.', line=dict(color='#e67e22', width=1.5)))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['escorrentia_mm'], name='Escorrentía Hist.', line=dict(color='#27ae60', width=1.5)))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga Hist.', line=dict(color='#2980b9', width=2), fill='tozeroy'))
+            
+            # 2. Proyecciones
+            fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['p_final'], name='Lluvia Proy.', line=dict(color='#95a5a6', width=1, dash='dot')))
+            fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Recarga Proy.', line=dict(color='#00d2d3', width=2, dash='dot')))
+            
+            # 3. Incertidumbre
+            if 'yhat_upper' in df_fut.columns:
+                 fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_upper'], showlegend=False, line=dict(width=0)))
+                 fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(0,210,211,0.1)'))
+            
+            fig.update_layout(height=500, hovermode="x unified", title="Balance Hídrico Completo y Proyección", template="plotly_white")
+            
+            # Configuración de descarga (Cámara de fotos)
+            config_plotly = {
+                'toImageButtonOptions': {
+                    'format': 'png',
+                    'filename': f'Balance_{nombre_zona.replace(" ", "_")}',
+                    'height': 600, 'width': 1200, 'scale': 2
+                },
+                'displayModeBar': True
+            }
+            
+            # Renderizar Gráfica
+            st.plotly_chart(fig, use_container_width=True, config=config_plotly)
+
+            # --- AQUÍ INICIA EL BLOQUE DE LA TABLA (PEGAR DESDE AQUÍ) ---
+            st.divider()
+            st.subheader("📋 Datos Detallados del Balance Hídrico")
+            
+            # 1. Preparar Datos
+            df_tabla = df_res.copy()
+            
+            # Formatear Fecha
+            meses_es = {1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun", 7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"}
+            df_tabla['Mes Año'] = df_tabla['fecha'].dt.month.map(meses_es) + " " + df_tabla['fecha'].dt.year.astype(str)
+            
+            # Columnas
+            cols_tabla = ['Mes Año', 'p_final', 'etr_mm', 'infiltracion_mm', 'recarga_mm', 'escorrentia_mm', 'tipo']
+            # Asegúrate de que las columnas existan (por si acaso el Prophet no devolvió alguna)
+            cols_existentes = [c for c in cols_tabla if c in df_tabla.columns]
+            df_tabla = df_tabla[cols_existentes]
+            
+            # Renombrar para visualización bonita
+            mapa_nombres = {
+                'p_final': 'Lluvia', 'etr_mm': 'ETR', 
+                'infiltracion_mm': 'Infiltración', 
+                'recarga_mm': 'Recarga', 'escorrentia_mm': 'Escorrentía',
+                'tipo': 'Tipo'
+            }
+            df_tabla = df_tabla.rename(columns=mapa_nombres)
+            
+            # 2. Configuración de Barras (ColumnConfig)
+            # Calculamos el máximo para escalar las barras
+            cols_num = ['Lluvia', 'ETR', 'Infiltración', 'Recarga', 'Escorrentía']
+            cols_num_validas = [c for c in cols_num if c in df_tabla.columns]
+            
+            if cols_num_validas:
+                max_val = df_tabla[cols_num_validas].max().max()
+            else:
+                max_val = 100
+
+            cfg_barras = {}
+            for col in cols_num_validas:
+                cfg_barras[col] = st.column_config.ProgressColumn(
+                    f"{col} (mm)", format="%.0f", min_value=0, max_value=max_val
+                )
+            
+            cfg_barras["Mes Año"] = st.column_config.TextColumn("Fecha", width="medium", frozen=True)
+
+            st.dataframe(
+                df_tabla,
+                column_config=cfg_barras,
+                hide_index=True,
+                use_container_width=True,
+                height=400
+            )
+            # --- FIN DEL BLOQUE DE LA TABLA ---
+
         else:
             st.warning("⚠️ Sin datos históricos suficientes para graficar.")
+
 
     # --- TAB 2: CONTEXTO (TOOLTIPS RICOS) ---
     with tab2:
