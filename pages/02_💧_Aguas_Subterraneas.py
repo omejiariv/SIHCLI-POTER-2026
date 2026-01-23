@@ -17,10 +17,22 @@ import matplotlib.cm as cm
 from modules import db_manager, hydrogeo_utils, selectors
 from modules import land_cover
 
+st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
+
+if st.sidebar.button("🧹 Limpiar Memoria y Recargar"):
+    st.cache_data.clear()
+    st.rerun()
+
+# --- 1. SELECTOR ESPACIAL (ESTO DEBE IR PRIMERO) ---
+# Al llamar esto aquí, definimos gdf_zona ANTES de usarlo en los parámetros
+ids_estaciones, nombre_zona, altitud_ref, gdf_zona = selectors.render_selector_espacial()
+engine = db_manager.get_engine()
+
 # --- 2. PARÁMETROS ECO-HIDROLÓGICOS ---
 st.sidebar.divider()
 st.sidebar.header("🎛️ Parámetros del Modelo")
 
+# RUTA AL RASTER (Asegúrate que existe en data/)
 RUTA_RASTER = "data/mapaCVENSO.tif" 
 
 modo_params = st.sidebar.radio(
@@ -29,8 +41,10 @@ modo_params = st.sidebar.radio(
     horizontal=True
 )
 
+# Valores iniciales
 pct_bosque, pct_agricola, pct_pecuario, pct_agua, pct_urbano = 40.0, 20.0, 30.0, 5.0, 5.0
 
+# Lógica condicional segura (Ahora gdf_zona sí existe)
 if modo_params == "Automático (Satélite)" and gdf_zona is not None:
     with st.sidebar.status("🛰️ Analizando territorio..."):
         stats_raw = land_cover.calcular_estadisticas_zona(gdf_zona, RUTA_RASTER)
@@ -42,7 +56,6 @@ if modo_params == "Automático (Satélite)" and gdf_zona is not None:
         st.sidebar.success("✅ Datos extraídos")
         pct_bosque, pct_agricola, pct_pecuario, pct_agua, pct_urbano = p_bosque, p_agricola, p_pecuario, p_agua, p_urbano
         
-        # Visualización compacta
         st.sidebar.progress(int(pct_bosque), text=f"Bosque: {pct_bosque:.0f}%")
         st.sidebar.progress(int(pct_pecuario + pct_agricola), text=f"Agropecuario: {(pct_pecuario+pct_agricola):.0f}%")
         st.sidebar.caption(f"Urbano: {pct_urbano:.1f}% | Agua: {pct_agua:.1f}%")
@@ -54,57 +67,45 @@ else:
     pct_urbano = max(0, 100 - (pct_bosque + pct_agricola + pct_pecuario + pct_agua))
     st.sidebar.metric("% Urbano / Otro", f"{pct_urbano}%")
 
-# --- NUEVO: FACTOR SUELO (Textura) ---
-st.sidebar.subheader("🪨 Factor Suelo (Litología)")
-help_suelo = "Modifica la capacidad de infiltración según la porosidad."
+# --- A. FACTOR SUELO (Textura -> Ki Superficial) ---
+st.sidebar.subheader("🌱 Suelo (Infiltración)")
 tipo_suelo = st.sidebar.select_slider(
     "Textura Dominante:",
-    options=["Arcilloso (Impermeable)", "Franco-Arcilloso", "Franco (Medio)", "Franco-Arenoso", "Arenoso (Permeable)"],
-    value="Franco (Medio)",
-    help=help_suelo
+    options=["Arcilloso (Baja)", "Franco-Arcilloso", "Franco (Media)", "Franco-Arenoso", "Arenoso (Alta)"],
+    value="Franco (Media)"
 )
-
-# Factores de corrección por suelo (Multiplicadores del Ki)
-# Arena infiltra más (x1.3), Arcilla infiltra menos (x0.6)
-mapa_factores_suelo = {
-    "Arcilloso (Impermeable)": 0.6,
-    "Franco-Arcilloso": 0.8,
-    "Franco (Medio)": 1.0,
-    "Franco-Arenoso": 1.2,
-    "Arenoso (Permeable)": 1.35
-}
+mapa_factores_suelo = {"Arcilloso (Baja)": 0.6, "Franco-Arcilloso": 0.8, "Franco (Media)": 1.0, "Franco-Arenoso": 1.2, "Arenoso (Alta)": 1.35}
 factor_suelo = mapa_factores_suelo[tipo_suelo]
 
-# --- CÁLCULOS DEL MOTOR ---
+# --- B. FACTOR GEOLÓGICO (Roca -> Recarga Real) ---
+st.sidebar.subheader("🪨 Geología (Recarga)")
+tipo_geo = st.sidebar.select_slider(
+    "Permeabilidad del Acuífero:",
+    options=["Muy Baja (Granitos/Arcillolitas)", "Baja", "Media (Sedimentarias)", "Alta", "Muy Alta (Aluvial/Kárstico)"],
+    value="Media (Sedimentarias)",
+    help="Define qué porcentaje de la infiltración realmente llega al acuífero (Kg)."
+)
+mapa_kg = {
+    "Muy Baja (Granitos/Arcillolitas)": 0.3, # Mucho interflujo, poca recarga profunda
+    "Baja": 0.5,
+    "Media (Sedimentarias)": 0.7,
+    "Alta": 0.85,
+    "Muy Alta (Aluvial/Kárstico)": 0.95
+}
+kg_factor = mapa_kg[tipo_geo]
 
-# 1. Kc Ponderado (Para ETR)
-# Bosque transpira (1.0), Urbano transpira poco (0.5), Agua evapora libre (1.05)
-kc_ponderado = (
-    (pct_bosque * 1.0) + 
-    (pct_agricola * 0.85) + 
-    (pct_pecuario * 0.80) + 
-    (pct_agua * 1.05) + 
-    (pct_urbano * 0.40)
-) / 100.0
+# --- CÁLCULOS ---
+# 1. Kc (ETR)
+kc_ponderado = ((pct_bosque * 1.0) + (pct_agricola * 0.85) + (pct_pecuario * 0.80) + (pct_agua * 1.05) + (pct_urbano * 0.40)) / 100.0
 
-# 2. Ki Base (Por Cobertura)
-ki_cobertura = (
-    (pct_bosque * 0.50) + 
-    (pct_agricola * 0.30) + 
-    (pct_pecuario * 0.30) + 
-    (pct_agua * 0.90) + # Infiltración directa/Almacenamiento
-    (pct_urbano * 0.05)
-) / 100.0
+# 2. Ki Superficial (Suelo + Cobertura)
+ki_cobertura = ((pct_bosque * 0.50) + (pct_agricola * 0.30) + (pct_pecuario * 0.30) + (pct_agua * 0.90) + (pct_urbano * 0.05)) / 100.0
+ki_final = max(0.01, min(0.95, ki_cobertura * factor_suelo))
 
-# 3. Ki Final (Ajustado por Suelo)
-ki_final = ki_cobertura * factor_suelo
-# Limitamos matemáticamente entre 0.01 y 0.95
-ki_final = max(0.01, min(0.95, ki_final))
-
-# --- MOSTRAR RESULTADOS DEL MODELO EN SIDEBAR ---
-c_k1, c_k2 = st.sidebar.columns(2)
-c_k1.metric("Kc (Veg)", f"{kc_ponderado:.2f}", help="Coeficiente de Cultivo Ponderado (Afecta ETR)")
-c_k2.metric("Ki (Final)", f"{ki_final:.2f}", delta=f"x{factor_suelo}", help="Coeficiente de Infiltración final (Afecta Recarga)")
+# Métricas Sidebar
+c1, c2 = st.sidebar.columns(2)
+c1.metric("Infiltración", f"{(ki_final*100):.0f}%", help="% de Excedente que entra al suelo")
+c2.metric("Recarga Real", f"{(kg_factor*100):.0f}%", help="% de Infiltración que llega al acuífero (Kg)")
 
 st.sidebar.divider()
 meses_futuros = st.sidebar.slider("Horizonte", 12, 60, 24)
@@ -178,11 +179,10 @@ if gdf_zona is not None:
         except: continue
 
     df_res = pd.DataFrame()
-# En la parte donde llamas a hydrogeo_utils.ejecutar_pronostico_prophet:
     if not df_raw.empty:
         alt_calc = altitud_ref if altitud_ref else df_puntos['alt_est'].mean()
-        # PASAMOS LOS NUEVOS PARÁMETROS ki_final y kc_ponderado
-        df_res = hydrogeo_utils.ejecutar_pronostico_prophet(df_raw, meses_futuros, alt_calc, ki_final, ruido, kc=kc_ponderado)
+        # PASAMOS KG
+        df_res = hydrogeo_utils.ejecutar_pronostico_prophet(df_raw, meses_futuros, alt_calc, ki_final, ruido, kg=kg_factor, kc=kc_ponderado)
 
     st.markdown(f"### 📍 {nombre_zona}")
     
@@ -197,14 +197,14 @@ if gdf_zona is not None:
             etr_med = df_hist['etr_mm'].mean()*12
             rec_med = df_hist['recarga_mm'].mean()*12
             esc_med = df_hist['escorrentia_mm'].mean()*12
+            inf_med = df_hist['infiltracion_mm'].mean()*12
             
-            c1.metric("Lluvia Media", f"{p_med:,.0f} mm")
-            c2.metric("ETR (Veg)", f"{etr_med:,.0f} mm")
-            c3.metric("Escorrentía", f"{esc_med:,.0f} mm")
-            c4.metric("Recarga", f"{rec_med:,.0f} mm")
-            c5.metric("Coef. Inf (Ki)", f"{ki_final:.2f}")
+            c1.metric("Lluvia", f"{p_med:,.0f} mm")
+            c2.metric("ETR", f"{etr_med:,.0f} mm")
+            c3.metric("Infiltración", f"{inf_med:,.0f} mm", delta="Suelo")
+            c4.metric("Recarga Real", f"{rec_med:,.0f} mm", delta="Acuífero")
+            c5.metric("Escorrentía", f"{esc_med:,.0f} mm")
             c6.metric("Estaciones", len(df_puntos))
-
     tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "🌈 Mapa Recarga", "📥 Descargas"])
 
     # --- TAB 1: GRÁFICO COMPLETO ---

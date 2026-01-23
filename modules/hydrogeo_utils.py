@@ -15,12 +15,13 @@ import streamlit as st
 # ==============================================================================
 # 1. MODELO TURC Y PROPHET
 # ==============================================================================
-# --- EN modules/hydrogeo_utils.py ---
 
-def calcular_balance_turc(df_lluvia, altitud, ki, kc=1.0):
+def calcular_balance_turc(df_lluvia, altitud, ki, kg=0.8, kc=1.0):
     """
-    Calcula Turc mensual. 
-    kc: Coeficiente de cultivo/cobertura (1.0 = Bosque/Referencia, <1.0 = Poca vegetación).
+    Calcula Balance Eco-Hidrológico Avanzado.
+    ki: Coef. Infiltración Superficial (Suelo + Cobertura).
+    kg: Factor Geológico (Permeabilidad del Acuífero: cuánto de lo infiltrado baja).
+    kc: Factor de Cultivo (Ajuste de ETR).
     """
     df = df_lluvia.copy()
     col_fecha = next((c for c in ['fecha', 'fecha_mes_año', 'ds'] if c in df.columns), None)
@@ -31,37 +32,46 @@ def calcular_balance_turc(df_lluvia, altitud, ki, kc=1.0):
     df_monthly = df.set_index('ds').resample('MS')[col_p].mean().reset_index()
     df_monthly.columns = ['fecha', 'p_mes']
 
+    # 1. ETR (Turc Modificado por Cobertura)
     temp = np.maximum(5, 30 - (0.0065 * float(altitud)))
     I_t = 300 + 25*temp + 0.05*(temp**3)
     if I_t == 0: I_t = 0.001
-
     denom = np.sqrt(0.9 + (df_monthly['p_mes'] / (I_t/12))**2)
     
-    # ETR Base (Climática)
-    etr_climatica = np.where(denom > 0, df_monthly['p_mes'] / denom, np.nan)
+    etr_clim = np.where(denom > 0, df_monthly['p_mes'] / denom, np.nan)
+    df_monthly['etr_mm'] = np.minimum(etr_clim * kc, df_monthly['p_mes'])
     
-    # ETR Real Ajustada por Cobertura (kc)
-    # Si hay bosque (kc=1), transpira al máximo. Si es urbano (kc bajo), transpira menos.
-    # El límite físico siempre es la precipitación.
-    df_monthly['etr_mm'] = np.minimum(etr_climatica * kc, df_monthly['p_mes'])
-    
+    # 2. Excedente (Agua disponible para escurrir o infiltrar)
     df_monthly['excedente'] = (df_monthly['p_mes'] - df_monthly['etr_mm']).clip(lower=0)
-    df_monthly['recarga_mm'] = df_monthly['excedente'] * ki
-    df_monthly['escorrentia_mm'] = df_monthly['excedente'] * (1 - ki)
     
+    # 3. Separación de Flujos (El corazón del modelo)
+    # A. Infiltración (Lo que entra al suelo)
+    df_monthly['infiltracion_mm'] = df_monthly['excedente'] * ki
+    
+    # B. Escorrentía Superficial (Lo que rebosa inmediatamente)
+    run_surf = df_monthly['excedente'] * (1 - ki)
+    
+    # C. Recarga Real (Lo que atraviesa la zona no saturada hasta el acuífero)
+    df_monthly['recarga_mm'] = df_monthly['infiltracion_mm'] * kg
+    
+    # D. Interflujo (Agua que infiltra pero se mueve lateralmente y sale al río)
+    interflujo = df_monthly['infiltracion_mm'] * (1 - kg)
+    
+    # E. Escorrentía Total (Superficial + Interflujo)
+    df_monthly['escorrentia_mm'] = run_surf + interflujo
+
     return df_monthly
 
 @st.cache_data(show_spinner=False)
-def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0, kc=1.0):
-    # ... (Inicio de la función igual que antes) ...
+def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0, kg=0.8, kc=1.0):
     try:
         df_work = df_hist.copy()
-        # ... (Bloque de preparación Prophet igual que antes) ...
-        # (Asegúrate de copiar el código existente de normalización y prophet aquí si lo borraste, 
-        #  solo estoy abreviando para mostrar dónde cambia la llamada)
+        # ... (Normalización y Prophet igual que antes) ...
         col_fecha = next((c for c in ['fecha', 'fecha_mes_año', 'ds'] if c in df_work.columns), None)
         col_p = next((c for c in ['valor', 'precipitation', 'p_mes'] if c in df_work.columns), None)
-        cols_retorno = ['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'escorrentia_mm', 'fecha', 'yhat_lower', 'yhat_upper']
+        
+        # AGREGAMOS 'infiltracion_mm' a las columnas de retorno
+        cols_retorno = ['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'escorrentia_mm', 'infiltracion_mm', 'fecha', 'yhat_lower', 'yhat_upper']
         df_vacio = pd.DataFrame(columns=cols_retorno)
         
         if not col_fecha or not col_p: return df_vacio
@@ -82,19 +92,19 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0, 
 
         temp_df = pd.DataFrame({'fecha': df_final['ds'], 'valor': df_final['p_final']})
         
-        # --- AQUÍ CAMBIA: Pasamos kc ---
-        df_balance = calcular_balance_turc(temp_df, altitud, ki, kc=kc)
-        # -------------------------------
+        # --- LLAMADA ACTUALIZADA ---
+        df_balance = calcular_balance_turc(temp_df, altitud, ki, kg=kg, kc=kc)
+        # ---------------------------
 
         df_result = pd.merge(df_final, df_balance, left_on='ds', right_on='fecha')
         last_date_real = df_prophet['ds'].max()
         df_result['tipo'] = np.where(df_result['ds'] <= last_date_real, 'Histórico', 'Proyección')
-
         return df_result
 
     except Exception as e:
         print(f"Error Prophet: {e}")
         return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
+
 
 # ==============================================================================
 # 2. CARGA GIS "FULL DATA" (Arregla Tooltips vacíos)
