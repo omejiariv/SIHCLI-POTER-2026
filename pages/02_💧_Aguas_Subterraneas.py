@@ -277,9 +277,9 @@ with tab2:
         m, 
         width=1400, 
         height=600, 
-        # La key dinámica es vital:
-        key=f"ctx_map_{seleccion}_{radio_buffer}_{len(df_puntos)}" 
+        key=f"ctx_map_{seleccion}_{len(df_puntos)}" 
     )
+
 
 # TAB 3: Mapa de Recarga Interpolada (CORREGIDO Y LIMPIO)
 with tab3:
@@ -346,14 +346,15 @@ with tab3:
 
             # 5. RENDERIZADO (Con la corrección de nombre m_iso y key dinámica)
             st_folium(
-                m_iso,  # <--- CORREGIDO: Antes decía m_recarga
+                m_iso,
                 width=1400, 
                 height=600, 
-                key=f"rcg_map_{seleccion}_{radio_buffer}_{len(df_mapa_stats)}"
+                key=f"rcg_map_{seleccion}_{len(df_mapa_stats)}"
             )
             
         except Exception as e:
-            st.error(f"Error generando el mapa de interpolación: {e}")
+            st.error(f"Error generando el mapa de interpolación: {e}")            
+
 
 # TAB 4: Descargas
 with tab4:
