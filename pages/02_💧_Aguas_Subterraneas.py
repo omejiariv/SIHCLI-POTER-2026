@@ -192,66 +192,87 @@ with tab1:
     fig.update_layout(height=450, hovermode="x unified", title="Dinámica Hidrológica Completa (Lluvia, ETR, Recarga)")
     st.plotly_chart(fig, use_container_width=True)
 
-# TAB 2: Contexto (Capas + Popups Ricos)
+# TAB 2: Contexto (Capas + Popups Ricos - VERSIÓN MAESTRA)
 with tab2:
-    # --- CORRECCIÓN: Cálculo manual de límites ---
+    # 1. Definir caja geográfica (bounds) basada en estaciones
+    # Agregamos un pequeño margen (pad) para que no quede muy apretado
+    pad = 0.05
     bounds = [
-        df_puntos['longitud'].min(),
-        df_puntos['latitud'].min(),
-        df_puntos['longitud'].max(),
-        df_puntos['latitud'].max()
+        df_puntos['longitud'].min() - pad,
+        df_puntos['latitud'].min() - pad,
+        df_puntos['longitud'].max() + pad,
+        df_puntos['latitud'].max() + pad
     ]
     
-    # Carga capas con query robusta
+    # 2. Cargar capas usando el motor robusto (Compatible con lo que arreglamos hoy)
     layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds)
     
+    # 3. Mapa base
     m = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB positron")
     
-    # Capas GIS
+    # 4. Capas GIS (Si existen en la BD)
     if 'suelos' in layers: 
-        folium.GeoJson(layers['suelos'], name="Suelos", style_function=lambda x: {'color': 'green', 'weight': 0.5, 'fillOpacity': 0.1}).add_to(m)
+        folium.GeoJson(
+            layers['suelos'], 
+            name="Suelos", 
+            style_function=lambda x: {'color': 'green', 'weight': 0.5, 'fillOpacity': 0.1},
+            tooltip=folium.GeoJsonTooltip(fields=['info'], aliases=['Suelo:'])
+        ).add_to(m)
+        
     if 'hidro' in layers: 
-        folium.GeoJson(layers['hidro'], name="Hidrogeología", style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.1}).add_to(m)
+        folium.GeoJson(
+            layers['hidro'], 
+            name="Hidrogeología", 
+            style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.1},
+            tooltip=folium.GeoJsonTooltip(fields=['info'], aliases=['Potencial:'])
+        ).add_to(m)
+        
     if 'bocatomas' in layers: 
-        folium.GeoJson(layers['bocatomas'], name="Bocatomas", marker=folium.CircleMarker(radius=3, color='red')).add_to(m)
+        folium.GeoJson(
+            layers['bocatomas'], 
+            name="Bocatomas", 
+            marker=folium.CircleMarker(radius=3, color='red', fill_color='red'),
+            tooltip=folium.GeoJsonTooltip(fields=['info'], aliases=['Bocatoma:'])
+        ).add_to(m)
     
-    # Estaciones con POPUP ENRIQUECIDO
-    # Usamos df_mapa_stats si existe (tiene promedios), sino df_puntos crudo
+    # 5. Estaciones con POPUP ENRIQUECIDO (Tu lógica original recuperada)
+    # Usamos df_mapa_stats si existe (tiene promedios calculados), sino df_puntos crudo
     df_display = df_mapa_stats if df_mapa_stats is not None else df_puntos
     
     for _, r in df_display.iterrows():
-        # Construimos el HTML del popup
+        # Lógica de presentación de datos
         p_val = f"{r['p_media']*12:,.0f}" if 'p_media' in r else "N/A"
         rec_val = f"{r['recarga_calc']*12:,.0f}" if 'recarga_calc' in r else "N/A"
         mun = r['municipio'] if 'municipio' in r else "N/D"
         alt = f"{r['alt_est']:.0f}"
         
+        # HTML Estilizado
         html = f"""
-        <div style="font-family:sans-serif; width:150px;">
-            <b>{r['nom_est']}</b><br>
-            <hr style="margin:5px 0;">
+        <div style="font-family:sans-serif; width:160px; font-size:12px;">
+            <b style="font-size:13px;">{r['nom_est']}</b><br>
+            <hr style="margin:5px 0; border: 0; border-top: 1px solid #ccc;">
             📍 Mun: {mun}<br>
             ⛰️ Alt: {alt} m<br>
-            🌧️ Lluvia: {p_val} mm/año<br>
-            💧 Recarga: <b>{rec_val}</b> mm/año
+            <span style="color:#555;">🌧️ Lluvia:</span> <b>{p_val}</b> mm/año<br>
+            <span style="color:#0000AA;">💧 Recarga:</span> <b style="color:#0000AA; font-size:13px;">{rec_val}</b> mm/año
         </div>
         """
-        iframe = folium.IFrame(html, width=170, height=140)
-        popup = folium.Popup(iframe, max_width=170)
+        
+        iframe = folium.IFrame(html, width=180, height=150)
+        popup = folium.Popup(iframe, max_width=180)
         
         folium.Marker(
             [r['latitud'], r['longitud']], 
             popup=popup, 
-            icon=folium.Icon(color='black', icon='tint')
+            icon=folium.Icon(color='black', icon='tint', prefix='fa'),
+            tooltip=r['nom_est']
         ).add_to(m)
         
     folium.LayerControl().add_to(m)
     Fullscreen().add_to(m) # ✅ Fullscreen asegurado
     
-    # ✅ CLAVE ÚNICA (key): Forza la recarga del mapa si cambia la zona o las estaciones
-    # Esto soluciona el problema de que el mapa "desaparece" o no actualiza
+    # ✅ CLAVE ÚNICA (key): Evita que el mapa desaparezca al cambiar filtros
     st_folium(m, width=1400, height=600, key=f"map_ctx_{nombre_zona}_{len(ids_finales)}")
-
 
 # TAB 3: Interpolación (CORREGIDA)
 with tab3:

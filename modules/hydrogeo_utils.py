@@ -1,6 +1,5 @@
 # modules/hydrogeo_utils.py
 
-import streamlit as st
 import pandas as pd
 import numpy as np
 import io
@@ -11,6 +10,7 @@ from prophet import Prophet
 import geopandas as gpd
 import json
 from shapely.geometry import shape
+import streamlit as st
 
 # ---------------------------------------------------------
 # 1. MODELO TURC & BALANCE
@@ -42,13 +42,12 @@ def calcular_balance_turc(df_lluvia, altitud, ki):
     return df_monthly
 
 # ---------------------------------------------------------
-# 2. PROPHET HÍBRIDO (CON CACHE)
+# 2. PROPHET HÍBRIDO
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
     try:
         df_work = df_hist.copy()
-        # Detección de columnas
         if 'fecha_mes_año' in df_work.columns:
             df_work = df_work.rename(columns={'fecha_mes_año': 'ds'})
         elif 'fecha' in df_work.columns:
@@ -90,74 +89,77 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
         return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
 
 # ---------------------------------------------------------
-# 3. CARGA GIS INTELIGENTE (SIN BOCATOMAS)
+# 3. CARGA GIS OPTIMIZADA Y ROBUSTA
 # ---------------------------------------------------------
 def cargar_capas_gis_optimizadas(_engine, bounds=None):
     layers = {}
     if not _engine: return layers
     
-    # 1. Definimos SOLO las tablas que sabemos que existen
+    # Configuración: Tabla BD -> Campo informativo
+    # Ajustado a los nombres del Panel de Administración
     config_capas = {
-        'suelos': {'tabla': 'suelos', 'col_info': 'codigo'},
-        'hidro': {'tabla': 'zonas_hidrogeologicas', 'col_info': 'tipo'}
-        # 'bocatomas' ELIMINADO para evitar crash
+        'suelos': {'tabla': 'suelos', 'col_info': 'codigo', 'geom': 'geometry'},
+        'hidro': {'tabla': 'zonas_hidrogeologicas', 'col_info': 'potencial', 'geom': 'geometry'},
+        'bocatomas': {'tabla': 'bocatomas', 'col_info': 'nom_bocatoma', 'geom': 'geometry'}
     }
     
-    tol = 0.005 # Simplificación para velocidad
+    tol = 0.002 # Simplificación para velocidad
 
     with _engine.connect() as conn:
         for key, cfg in config_capas.items():
             try:
-                # A. Detectar columna geométrica (geom, geometry, etc.)
+                # 1. Verificar si la tabla existe
+                if not _engine.dialect.has_table(conn, cfg['tabla']):
+                    continue
+
+                # 2. Detectar columna geométrica real (geom vs geometry)
                 q_col = text(f"""
                     SELECT column_name FROM information_schema.columns 
                     WHERE table_name = '{cfg['tabla']}' AND udt_name = 'geometry' LIMIT 1
                 """)
-                res = pd.read_sql(q_col, conn)
-                if res.empty: continue
-                col_geom = res.iloc[0]['column_name']
+                res_col = pd.read_sql(q_col, conn)
+                col_geom = 'geometry' # Default
+                if not res_col.empty:
+                    col_geom = res_col.iloc[0]['column_name']
 
-                # B. Construir Query con Transformación a WGS84 (Lat/Lon)
-                # Esto arregla si los mapas se subieron en coordenadas planas
+                # 3. Query con Transformación WGS84
+                # Seleccionamos info y GeoJSON simplificado
                 base_q = f"""
-                    SELECT {cfg['col_info']}, 
+                    SELECT {cfg['col_info']} as info, 
                     ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Transform({col_geom}, 4326), {tol})) as gj 
                     FROM {cfg['tabla']}
                 """
                 
-                # C. Aplicar Filtro Espacial si hay bounds
-                final_q = base_q + " LIMIT 500" # Default
+                # 4. Filtro Espacial (Si tenemos bounds del usuario)
+                final_q = base_q + " LIMIT 800" # Límite seguridad
+                
                 if bounds is not None:
                     try:
                         minx, miny, maxx, maxy = bounds
-                        pad = 0.05
-                        envelope = f"ST_MakeEnvelope({minx-pad}, {miny-pad}, {maxx+pad}, {maxy+pad}, 4326)"
-                        # Filtramos transformando el envelope al SRID de la tabla origen
-                        final_q = f"{base_q} WHERE ST_Intersects({col_geom}, ST_Transform({envelope}, ST_SRID({col_geom}))) LIMIT 500"
-                    except: pass # Si falla el filtro, usamos el default
+                        # Envelope en 4326 transformado al SRID de la tabla
+                        envelope = f"ST_Transform(ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326), ST_SRID({col_geom}))"
+                        final_q = f"{base_q} WHERE ST_Intersects({col_geom}, {envelope}) LIMIT 800"
+                    except: pass 
 
-                # D. Ejecutar
+                # 5. Ejecutar
                 df = pd.read_sql(text(final_q), conn)
                 
-                # E. Plan B: Si el filtro espacial retorna vacío, traer muestra general
-                if df.empty:
-                    print(f"⚠️ Filtro vacío para {key}, intentando carga general...")
+                # Plan B: Si filtro espacial falla (vacío), traer muestra general
+                if df.empty and bounds is not None:
                     fallback_q = base_q + " LIMIT 100"
                     df = pd.read_sql(text(fallback_q), conn)
 
                 if not df.empty:
                     df['geometry'] = df['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
                     layers[key] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
-                    print(f"✅ {key} cargada: {len(df)} elementos")
-            
+                    
             except Exception as e:
-                print(f"❌ Error cargando {key}: {e}")
+                print(f"Aviso capa {key}: {e}")
 
     return layers
 
-
 # ---------------------------------------------------------
-# 4. GENERADORES DE DESCARGA (TIFF + GEOJSON)
+# 4. EXPORTADORES
 # ---------------------------------------------------------
 def generar_geotiff(z_grid, bounds):
     min_x, min_y, max_x, max_y = bounds
@@ -170,20 +172,15 @@ def generar_geotiff(z_grid, bounds):
     return mem
 
 def generar_geojson_isolines(contour_set):
-    """Convierte un conjunto de contornos de matplotlib a GeoJSON"""
     features = []
     for i, collection in enumerate(contour_set.collections):
         level = contour_set.levels[i]
         for path in collection.get_paths():
-            coords = [list(v) for v in path.vertices] # [x, y] = [lon, lat]
-            # Matplotlib usa X,Y. GeoJSON usa Lon,Lat. Coinciden.
+            coords = [list(v) for v in path.vertices]
             if len(coords) > 2:
                 features.append({
                     "type": "Feature",
                     "properties": {"recarga_mm": float(level)},
-                    "geometry": {
-                        "type": "LineString",
-                        "coordinates": coords
-                    }
+                    "geometry": {"type": "LineString", "coordinates": coords}
                 })
     return json.dumps({"type": "FeatureCollection", "features": features})
