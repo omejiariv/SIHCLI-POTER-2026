@@ -273,17 +273,25 @@ if gdf_zona is not None:
     tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "🌈 Mapa Recarga", "📥 Descargas"])
 
     # --- TAB 1: GRÁFICO COMPLETO Y TABLA ---
+    # --- TAB 1: ANÁLISIS COMPLETO (AGREGADO POR CUENCA) ---
     with tab1:
         if not df_res.empty:
-            df_hist = df_res[df_res['tipo'] == 'Histórico']
-            df_fut = df_res[df_res['tipo'] == 'Proyección']
+            # --- CORRECCIÓN: AGRUPAR POR FECHA (1 Fila = 1 Mes) ---
+            # Colapsamos las 37 estaciones en un solo valor promedio para la zona
+            df_avg = df_res.groupby(['fecha', 'tipo'])[[
+                'p_final', 'etr_mm', 'infiltracion_mm', 'recarga_mm', 
+                'escorrentia_mm', 'yhat_upper', 'yhat_lower'
+            ]].mean().reset_index().sort_values('fecha')
+
+            # --- SECCIÓN A: GRÁFICA DE BALANCE (USANDO PROMEDIOS) ---
+            df_hist = df_avg[df_avg['tipo'] == 'Histórico']
+            df_fut = df_avg[df_avg['tipo'] == 'Proyección']
             
-            # --- 1. CREACIÓN DEL GRÁFICO ---
             fig = go.Figure()
             
-            # Trazos Históricos
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia Hist.', line=dict(color='#95a5a6', width=1)))
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['etr_mm'], name='ETR Hist.', line=dict(color='#e67e22', width=1.5)))
+            # Trazos Históricos (Ahora son el promedio de la zona)
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia Hist. (Media)', line=dict(color='#95a5a6', width=1)))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['etr_mm'], name='ETR Hist. (Media)', line=dict(color='#e67e22', width=1.5)))
             fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['escorrentia_mm'], name='Escorrentía Hist.', line=dict(color='#27ae60', width=1.5)))
             fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga Hist.', line=dict(color='#2980b9', width=2), fill='tozeroy'))
             
@@ -291,79 +299,87 @@ if gdf_zona is not None:
             fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['p_final'], name='Lluvia Proy.', line=dict(color='#95a5a6', width=1, dash='dot')))
             fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Recarga Proy.', line=dict(color='#00d2d3', width=2, dash='dot')))
             
-            # Incertidumbre
-            if 'yhat_upper' in df_fut.columns:
+            # Incertidumbre (Solo si existe en la proyección)
+            if 'yhat_upper' in df_fut.columns and not df_fut['yhat_upper'].isna().all():
                  fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_upper'], showlegend=False, line=dict(width=0)))
                  fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(0,210,211,0.1)'))
             
-            fig.update_layout(height=500, hovermode="x unified", title="Balance Hídrico Completo y Proyección", template="plotly_white")
+            fig.update_layout(height=450, hovermode="x unified", title=f"Balance Hídrico Agregado: {nombre_zona}", template="plotly_white")
             
-            # Configuración Cámara de descarga
             config_plotly = {
-                'toImageButtonOptions': {
-                    'format': 'png',
-                    'filename': f'Balance_{nombre_zona.replace(" ", "_")}',
-                    'height': 600, 'width': 1200, 'scale': 2
-                },
+                'toImageButtonOptions': {'format': 'png', 'filename': f'Balance_{nombre_zona}', 'height': 600, 'width': 1200, 'scale': 2},
                 'displayModeBar': True
             }
-            
-            # RENDERIZAR GRÁFICO (Una sola vez)
             st.plotly_chart(fig, use_container_width=True, config=config_plotly)
 
-            # --- 2. TABLA DETALLADA ---
+            # --- SECCIÓN B: TABLA DE SERIE TEMPORAL (AGREGADA) ---
+            # Esta tabla ahora coincidirá con la gráfica: 1 fila por mes
+            with st.expander("📅 Ver Tabla de Datos Mensuales (Promedio de la Zona)", expanded=True):
+                df_tabla = df_avg.copy() # Usamos df_avg, no df_res
+                
+                meses_es = {1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun", 7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"}
+                df_tabla['Mes Año'] = df_tabla['fecha'].dt.month.map(meses_es) + " " + df_tabla['fecha'].dt.year.astype(str)
+                
+                cols_tabla = ['Mes Año', 'p_final', 'etr_mm', 'infiltracion_mm', 'recarga_mm', 'escorrentia_mm', 'tipo']
+                cols_existentes = [c for c in cols_tabla if c in df_tabla.columns]
+                df_tabla = df_tabla[cols_existentes]
+                
+                mapa_nombres = {
+                    'p_final': 'Lluvia', 'etr_mm': 'ETR', 'infiltracion_mm': 'Infiltración', 
+                    'recarga_mm': 'Recarga', 'escorrentia_mm': 'Escorrentía', 'tipo': 'Tipo'
+                }
+                df_tabla = df_tabla.rename(columns=mapa_nombres)
+                
+                # Configuración Barras
+                cols_num = ['Lluvia', 'ETR', 'Infiltración', 'Recarga', 'Escorrentía']
+                cols_num_validas = [c for c in cols_num if c in df_tabla.columns]
+                max_val = df_tabla[cols_num_validas].max().max() if cols_num_validas else 100
+
+                cfg_barras = {col: st.column_config.ProgressColumn(f"{col} (mm)", format="%.0f", min_value=0, max_value=max_val) for col in cols_num_validas}
+                cfg_barras["Mes Año"] = st.column_config.TextColumn("Fecha", width="medium")
+
+                st.dataframe(df_tabla, column_config=cfg_barras, hide_index=True, use_container_width=True, height=300)
+
+            # --- SECCIÓN C: DESGLOSE ESPACIAL (ESTACIONES) ---
+            # Aquí sí mostramos el detalle de qué estaciones componen ese promedio
             st.divider()
-            st.subheader("📋 Datos Detallados del Balance Hídrico")
+            st.subheader("📍 Estaciones Utilizadas (Resumen Histórico)")
             
-            # Preparar Datos
-            df_tabla = df_res.copy()
-            
-            # Formatear Fecha
-            meses_es = {1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun", 7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"}
-            df_tabla['Mes Año'] = df_tabla['fecha'].dt.month.map(meses_es) + " " + df_tabla['fecha'].dt.year.astype(str)
-            
-            # Seleccionar columnas
-            cols_tabla = ['Mes Año', 'p_final', 'etr_mm', 'infiltracion_mm', 'recarga_mm', 'escorrentia_mm', 'tipo']
-            cols_existentes = [c for c in cols_tabla if c in df_tabla.columns]
-            df_tabla = df_tabla[cols_existentes]
-            
-            # Renombrar
-            mapa_nombres = {
-                'p_final': 'Lluvia', 'etr_mm': 'ETR', 
-                'infiltracion_mm': 'Infiltración', 
-                'recarga_mm': 'Recarga', 'escorrentia_mm': 'Escorrentía',
-                'tipo': 'Tipo'
-            }
-            df_tabla = df_tabla.rename(columns=mapa_nombres)
-            
-            # Configuración de Barras
-            cols_num = ['Lluvia', 'ETR', 'Infiltración', 'Recarga', 'Escorrentía']
-            cols_num_validas = [c for c in cols_num if c in df_tabla.columns]
-            
-            if cols_num_validas:
-                max_val = df_tabla[cols_num_validas].max().max()
+            if 'df_puntos' in locals() and not df_puntos.empty:
+                # Calculamos el promedio histórico REAL de cada estación
+                df_promedios_est = df_raw.groupby('codigo')['valor'].mean().reset_index().rename(columns={'valor': 'Lluvia Media'})
+                
+                # Unimos con los metadatos (Nombre, Municipio, Altitud)
+                df_est_detalle = pd.merge(df_puntos, df_promedios_est, on='codigo', how='left')
+                
+                # Estimación rápida de Recarga por estación (para mostrar potencial)
+                # OJO: Esto es un promedio a largo plazo, no una serie temporal
+                temp_est = np.maximum(5, 30 - (0.0065 * df_est_detalle['alt_est']))
+                it_est = 300 + 25*temp_est + 0.05*(temp_est**3)
+                denom_est = np.sqrt(0.9 + (df_est_detalle['Lluvia Media'] / (it_est/12))**2)
+                
+                df_est_detalle['ETR Est.'] = np.where(denom_est > 0, df_est_detalle['Lluvia Media'] / denom_est, 0)
+                df_est_detalle['ETR Real'] = np.minimum(df_est_detalle['ETR Est.'] * kc_ponderado, df_est_detalle['Lluvia Media'])
+                df_est_detalle['Recarga Est.'] = (df_est_detalle['Lluvia Media'] - df_est_detalle['ETR Real']).clip(lower=0) * ki_final * kg_factor
+
+                # Tabla final de estaciones
+                cols_finales = ['nom_est', 'municipio', 'alt_est', 'Lluvia Media', 'Recarga Est.']
+                df_show = df_est_detalle[cols_finales].copy()
+                df_show.columns = ['Estación', 'Municipio', 'Altitud', 'Lluvia (mm/mes)', 'Recarga (mm/mes)']
+                
+                cfg_est = {
+                    "Lluvia (mm/mes)": st.column_config.ProgressColumn(format="%.0f", max_value=df_show['Lluvia (mm/mes)'].max()),
+                    "Recarga (mm/mes)": st.column_config.ProgressColumn(format="%.0f", max_value=df_show['Lluvia (mm/mes)'].max()), # Misma escala
+                    "Altitud": st.column_config.NumberColumn(format="%.0f m")
+                }
+                
+                st.dataframe(df_show.sort_values('Municipio'), column_config=cfg_est, hide_index=True, use_container_width=True)
             else:
-                max_val = 100
-
-            cfg_barras = {}
-            for col in cols_num_validas:
-                cfg_barras[col] = st.column_config.ProgressColumn(
-                    f"{col} (mm)", format="%.0f", min_value=0, max_value=max_val
-                )
-            
-            # CORRECCIÓN AQUÍ: Quitamos frozen=True para evitar el error
-            cfg_barras["Mes Año"] = st.column_config.TextColumn("Fecha", width="medium")
-
-            st.dataframe(
-                df_tabla,
-                column_config=cfg_barras,
-                hide_index=True,
-                use_container_width=True,
-                height=400
-            )
+                st.info("No se encontró detalle de estaciones.")
 
         else:
             st.warning("⚠️ Sin datos históricos suficientes para graficar.")
+
 
     # --- TAB 2: CONTEXTO (TOOLTIPS RICOS) ---
     with tab2:
