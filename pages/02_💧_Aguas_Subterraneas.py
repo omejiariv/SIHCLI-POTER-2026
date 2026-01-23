@@ -194,15 +194,15 @@ with tab1:
 
 
 # ==============================================================================
-# TAB 2: Contexto (CORREGIDO: Tooltips Seguros + Autoescala)
+# TAB 2: Contexto (TOOLTIPS COMPLETOS + POPUPS CON ESTADÍSTICAS)
 # ==============================================================================
 with tab2:
-    # 1. Controles Superiores
+    # 1. Controles
     col_refresh, col_txt = st.columns([1, 5])
     with col_refresh:
         refresh_map_2 = st.button("🔄 Recargar Mapa Contexto", help="Si el mapa sale gris, pulsa aquí.")
     
-    # 2. Definir límites (Bounds)
+    # 2. Definir límites
     pad = 0.05
     bounds_vals = [
         df_puntos['longitud'].min() - pad,
@@ -210,39 +210,27 @@ with tab2:
         df_puntos['longitud'].max() + pad,
         df_puntos['latitud'].max() + pad
     ]
-    # Formato para folium.fit_bounds: [[lat_min, lon_min], [lat_max, lon_max]]
     fit_bounds_coords = [[bounds_vals[1], bounds_vals[0]], [bounds_vals[3], bounds_vals[2]]]
     
     # 3. Cargar Capas
     layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds_vals)
-    
-    # 4. Mapa Base
     m = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB positron")
-    
-    # --- AUTOESCALA ---
     m.fit_bounds(fit_bounds_coords) 
 
-    # --- FUNCIÓN AUXILIAR PARA TOOLTIPS SEGUROS ---
+    # --- FUNCIÓN AUXILIAR ---
     def crear_tooltip_seguro(gdf, diccionario_campos):
-        """
-        Verifica qué campos existen realmente en el GeoJSON antes de pedirlos.
-        Evita que el tooltip falle si falta una columna.
-        """
         cols_reales = [c.lower() for c in gdf.columns]
         fields_final = []
         aliases_final = []
-        
         for col_deseada, alias in diccionario_campos.items():
             if col_deseada.lower() in cols_reales:
                 fields_final.append(col_deseada)
                 aliases_final.append(alias)
-        
         if not fields_final: return None
         return folium.GeoJsonTooltip(fields=fields_final, aliases=aliases_final, localize=True, sticky=False)
 
     # --- A. SUELOS ---
     if 'suelos' in layers:
-        # Definimos lo que QUEREMOS ver. El sistema filtrará lo que PUEDE ver.
         dict_suelos = {
             'ucs': 'UCS:', 'ucs_f': 'UCS:', 'simbolo': 'Símbolo:',
             'paisaje': 'Paisaje:', 'clima': 'Clima:',
@@ -255,10 +243,11 @@ with tab2:
             tooltip=crear_tooltip_seguro(layers['suelos'], dict_suelos)
         ).add_to(m)
         
-    # --- B. HIDROGEOLOGÍA ---
+    # --- B. HIDROGEOLOGÍA (Con 'caracteri') ---
     if 'hidro' in layers:
         dict_hidro = {
             'potencial': 'Potencial:', 'potencial_': 'Potencial:',
+            'caracteri': 'Características:', 'caracteristicas': 'Características:', # <--- AGREGADO
             'sigla': 'Sigla:', 'unidad_geo': 'Unidad:',
             'cod': 'Cód:', 'area_km2': 'Área km2:'
         }
@@ -281,24 +270,60 @@ with tab2:
             tooltip=crear_tooltip_seguro(layers['bocatomas'], dict_boca)
         ).add_to(m)
     
-    # 5. Estaciones (Popup Rico) - Mantenido igual
+    # 5. Estaciones (POPUP COMPLETO RECUPERADO)
     df_display = df_mapa_stats if df_mapa_stats is not None else df_puntos
+    
     for _, r in df_display.iterrows():
-        p_val = f"{r['p_media']*12:,.0f}" if 'p_media' in r else "N/A"
-        rec_val = f"{r['recarga_calc']*12:,.0f}" if 'recarga_calc' in r else "N/A"
+        # Extracción segura de datos (x12 para anualizar si son mensuales)
+        p_val = r['p_media'] * 12 if 'p_media' in r else 0
+        etr_val = r['etr_media'] * 12 if 'etr_media' in r else 0
+        esc_val = r['escorrentia_media'] * 12 if 'escorrentia_media' in r else 0
+        rec_val = r['recarga_calc'] * 12 if 'recarga_calc' in r else 0
+        std_val = r['std_lluvia'] if 'std_lluvia' in r else 0
+        
         mun = r['municipio'] if 'municipio' in r else "N/D"
         alt = f"{r['alt_est']:.0f}"
         
+        # HTML Estilizado con todas las métricas
         html = f"""
-        <div style="font-family:sans-serif; width:160px; font-size:12px;">
-            <b style="font-size:13px;">{r['nom_est']}</b><hr style="margin:5px 0;">
-            📍 {mun} | ⛰️ {alt}m<br>
-            🌧️ {p_val} mm | 💧 <b style="color:blue;">{rec_val}</b> mm
-        </div>"""
+        <div style="font-family:sans-serif; width:200px; font-size:12px;">
+            <b style="font-size:14px; color:#2c3e50;">{r['nom_est']}</b>
+            <hr style="margin:5px 0; border-top: 1px solid #ddd;">
+            
+            <div style="display:flex; justify-content:space-between;">
+                <span>📍 Mun:</span> <b>{mun}</b>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span>⛰️ Alt:</span> <b>{alt} m</b>
+            </div>
+            
+            <hr style="margin:5px 0; border-top: 1px dashed #eee;">
+            
+            <div style="display:flex; justify-content:space-between;">
+                <span>🌧️ Lluvia:</span> <b>{p_val:,.0f} mm</b>
+            </div>
+            <div style="display:flex; justify-content:space-between; color:#e67e22;">
+                <span>☀️ ETR:</span> <b>{etr_val:,.0f} mm</b>
+            </div>
+            <div style="display:flex; justify-content:space-between; color:#27ae60;">
+                <span>🌊 Escorrentía:</span> <b>{esc_val:,.0f} mm</b>
+            </div>
+            <div style="display:flex; justify-content:space-between; background-color:#e8f4f8; padding:2px; border-radius:3px;">
+                <span style="color:#0000AA;">💧 Recarga:</span> <b style="color:#0000AA;">{rec_val:,.0f} mm</b>
+            </div>
+            
+            <div style="margin-top:5px; font-size:10px; color:#7f8c8d; text-align:right;">
+                (Desv. Std Lluvia: {std_val:,.1f})
+            </div>
+        </div>
+        """
+        
+        iframe = folium.IFrame(html, width=220, height=210) # Ajustado para caber todo
+        popup = folium.Popup(iframe, max_width=220)
         
         folium.Marker(
             [r['latitud'], r['longitud']],
-            popup=folium.Popup(folium.IFrame(html, width=180, height=120)),
+            popup=popup,
             icon=folium.Icon(color='black', icon='tint', prefix='fa'),
             tooltip=r['nom_est']
         ).add_to(m)
@@ -306,7 +331,7 @@ with tab2:
     folium.LayerControl().add_to(m)
     Fullscreen().add_to(m)
     
-    # RENDER FINAL (Con lógica de refresco)
+    # RENDER FINAL
     key_ctx = f"ctx_map_{seleccion}_{len(df_puntos)}"
     if refresh_map_2: key_ctx += "_forced_reload"
     
