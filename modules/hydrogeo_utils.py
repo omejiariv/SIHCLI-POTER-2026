@@ -15,64 +15,64 @@ import streamlit as st
 # ==============================================================================
 # 1. MODELO TURC Y PROPHET
 # ==============================================================================
-def calcular_balance_turc(df_lluvia, altitud, ki):
-    """Calcula Turc. Respeta NaNs."""
+# --- EN modules/hydrogeo_utils.py ---
+
+def calcular_balance_turc(df_lluvia, altitud, ki, kc=1.0):
+    """
+    Calcula Turc mensual. 
+    kc: Coeficiente de cultivo/cobertura (1.0 = Bosque/Referencia, <1.0 = Poca vegetación).
+    """
     df = df_lluvia.copy()
-    
-    # 1. Normalizar nombres
     col_fecha = next((c for c in ['fecha', 'fecha_mes_año', 'ds'] if c in df.columns), None)
     col_p = next((c for c in ['valor', 'precipitation', 'p_mes', 'lluvia'] if c in df.columns), None)
-    
     if not col_fecha or not col_p: return df 
 
     df['ds'] = pd.to_datetime(df[col_fecha])
-    
-    # 2. Resample Mensual
     df_monthly = df.set_index('ds').resample('MS')[col_p].mean().reset_index()
     df_monthly.columns = ['fecha', 'p_mes']
 
-    # 3. Variables Físicas
     temp = np.maximum(5, 30 - (0.0065 * float(altitud)))
     I_t = 300 + 25*temp + 0.05*(temp**3)
     if I_t == 0: I_t = 0.001
 
-    # 4. Balance (Operaciones vectorizadas)
     denom = np.sqrt(0.9 + (df_monthly['p_mes'] / (I_t/12))**2)
-    # Si denom es 0 o NaN, resultado NaN
-    df_monthly['etr_mm'] = np.where(denom > 0, df_monthly['p_mes'] / denom, np.nan)
+    
+    # ETR Base (Climática)
+    etr_climatica = np.where(denom > 0, df_monthly['p_mes'] / denom, np.nan)
+    
+    # ETR Real Ajustada por Cobertura (kc)
+    # Si hay bosque (kc=1), transpira al máximo. Si es urbano (kc bajo), transpira menos.
+    # El límite físico siempre es la precipitación.
+    df_monthly['etr_mm'] = np.minimum(etr_climatica * kc, df_monthly['p_mes'])
     
     df_monthly['excedente'] = (df_monthly['p_mes'] - df_monthly['etr_mm']).clip(lower=0)
     df_monthly['recarga_mm'] = df_monthly['excedente'] * ki
     df_monthly['escorrentia_mm'] = df_monthly['excedente'] * (1 - ki)
-
+    
     return df_monthly
 
 @st.cache_data(show_spinner=False)
-def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
+def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0, kc=1.0):
+    # ... (Inicio de la función igual que antes) ...
     try:
         df_work = df_hist.copy()
-        
+        # ... (Bloque de preparación Prophet igual que antes) ...
+        # (Asegúrate de copiar el código existente de normalización y prophet aquí si lo borraste, 
+        #  solo estoy abreviando para mostrar dónde cambia la llamada)
         col_fecha = next((c for c in ['fecha', 'fecha_mes_año', 'ds'] if c in df_work.columns), None)
         col_p = next((c for c in ['valor', 'precipitation', 'p_mes'] if c in df_work.columns), None)
-        
-        # Estructura vacía de retorno por defecto
-        cols_retorno = ['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha', 'yhat_lower', 'yhat_upper']
+        cols_retorno = ['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'escorrentia_mm', 'fecha', 'yhat_lower', 'yhat_upper']
         df_vacio = pd.DataFrame(columns=cols_retorno)
-
-        if not col_fecha or not col_p: return df_vacio
-
-        # Preparar datos (Prophet no admite NaNs en entrenamiento)
-        df_prophet = df_work.rename(columns={col_fecha: 'ds', col_p: 'y'})[['ds', 'y']].dropna()
         
-        if len(df_prophet) < 6: return df_vacio # Mínimo datos
+        if not col_fecha or not col_p: return df_vacio
+        df_prophet = df_work.rename(columns={col_fecha: 'ds', col_p: 'y'})[['ds', 'y']].dropna()
+        if len(df_prophet) < 6: return df_vacio
 
-        # Modelo
         m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True)
         m.fit(df_prophet)
         future = m.make_future_dataframe(periods=meses_futuros, freq='MS')
         forecast = m.predict(future)
 
-        # Resultados
         df_final = pd.merge(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], df_prophet, on='ds', how='left')
         df_final['p_final'] = df_final['y'].combine_first(df_final['yhat']).clip(lower=0)
 
@@ -80,12 +80,13 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
             noise = np.random.normal(0, 0.05 * ruido, len(df_final))
             df_final['p_final'] = df_final['p_final'] * (1 + noise)
 
-        # Calcular Balance completo
         temp_df = pd.DataFrame({'fecha': df_final['ds'], 'valor': df_final['p_final']})
-        df_balance = calcular_balance_turc(temp_df, altitud, ki)
+        
+        # --- AQUÍ CAMBIA: Pasamos kc ---
+        df_balance = calcular_balance_turc(temp_df, altitud, ki, kc=kc)
+        # -------------------------------
 
         df_result = pd.merge(df_final, df_balance, left_on='ds', right_on='fecha')
-        
         last_date_real = df_prophet['ds'].max()
         df_result['tipo'] = np.where(df_result['ds'] <= last_date_real, 'Histórico', 'Proyección')
 
