@@ -68,31 +68,55 @@ if gdf_zona is not None:
     with st.spinner("Analizando hidrología..."):
         df_mapa_stats = hydrogeo_utils.obtener_estadisticas_estaciones(engine, df_puntos)
 
-    # 3.3 Serie Histórica
-    try:
-        tabla_p = "precipitacion" # O precipitation
-        # Simple check implícito en el try/catch del query
-        q_serie_base = f"SELECT fecha_mes_año, valor FROM {tabla_p} WHERE id_estacion_fk"
-        # Ajustar nombres si es necesario (se puede mejorar con lógica de detección del utils)
-        # Por brevedad usamos un query genérico o asumimos la tabla detectada en utils
-        # Pero aquí necesitamos traer la serie cruda para Prophet
-        
-        # Fallback rápido:
-        q_serie = text(f"SELECT fecha, valor FROM precipitacion WHERE id_estacion IN :ids")
-        if len(ids_estaciones) == 1:
-             q_serie = text(f"SELECT fecha, valor FROM precipitacion WHERE id_estacion = '{ids_estaciones[0]}'")
-        
-        df_raw = pd.read_sql(q_serie, engine, params={'ids': tuple(ids_estaciones)})
-    except:
-        df_raw = pd.DataFrame()
+# 3.3 Serie Histórica (DETECTOR INTELIGENTE DE TABLAS)
+    df_raw = pd.DataFrame()
+    debug_error = ""
 
+    # Lista de intentos: (Nombre Tabla, Columna ID, Columna Fecha, Columna Valor)
+    intentos = [
+        ('precipitacion', 'id_estacion', 'fecha', 'valor'),             # Tabla Nueva (Panel Admin)
+        ('precipitacion_mensual', 'id_estacion_fk', 'fecha_mes_año', 'precipitation') # Tabla Antigua
+    ]
+
+    for tabla, col_id_db, col_fecha, col_valor in intentos:
+        try:
+            # Construir query dinámica
+            if len(ids_estaciones) == 1:
+                q = text(f"SELECT {col_fecha}, {col_valor} FROM {tabla} WHERE {col_id_db} = '{ids_estaciones[0]}'")
+                df_temp = pd.read_sql(q, engine)
+            else:
+                q = text(f"SELECT {col_fecha}, {col_valor} FROM {tabla} WHERE {col_id_db} IN :ids")
+                df_temp = pd.read_sql(q, engine, params={'ids': tuple(ids_estaciones)})
+            
+            # Si encontramos datos, paramos de buscar
+            if not df_temp.empty:
+                df_raw = df_temp
+                # Estandarizamos nombres para que el resto del código no sufra
+                df_raw = df_raw.rename(columns={col_fecha: 'fecha', col_valor: 'valor'})
+                break 
+        except Exception as e:
+            debug_error += f"Fallo en {tabla}: {str(e)} | "
+            continue
+
+    # 3.4 Ejecutar Modelo
     df_res = pd.DataFrame()
+    
     if not df_raw.empty:
         alt_calc = altitud_ref if altitud_ref else df_puntos['alt_est'].mean()
+        # Ahora df_raw tiene columnas estandarizadas 'fecha' y 'valor', enviamos eso
         df_res = hydrogeo_utils.ejecutar_pronostico_prophet(df_raw, meses_futuros, alt_calc, ki_ponderado, ruido)
+    else:
+        # AQUÍ ESTÁ EL DIAGNÓSTICO: Si sigue vacío, mostramos por qué
+        if debug_error:
+            st.error(f"⚠️ No se pudieron leer datos de lluvia. Detalles técnicos: {debug_error}")
+        else:
+            # Si no hubo error técnico pero la consulta vino vacía
+            st.warning(f"⚠️ La consulta funcionó pero no hay registros de lluvia para las estaciones seleccionadas: {ids_estaciones[:3]}...")
 
-    # --- 4. VISUALIZACIÓN ---
-    st.markdown(f"### 📍 {nombre_zona}")
+
+    # --- 4. INTERFAZ VISUAL ---
+    # (El resto del código de visualización sigue aquí...)
+    st.markdown(f"### 📍 Análisis: {nombre_zona}")
     
     if not df_res.empty:
         df_hist = df_res[df_res['tipo'] == 'Histórico']

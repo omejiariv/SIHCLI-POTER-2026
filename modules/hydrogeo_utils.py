@@ -51,20 +51,40 @@ def calcular_balance_turc(df_lluvia, altitud, ki):
 def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
     try:
         df_work = df_hist.copy()
-        if 'fecha_mes_año' in df_work.columns: df_work = df_work.rename(columns={'fecha_mes_año': 'ds'})
-        elif 'fecha' in df_work.columns: df_work = df_work.rename(columns={'fecha': 'ds'})
-        else: return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
+        
+        # 1. Normalización de FECHA
+        col_fecha = None
+        for c in ['fecha', 'fecha_mes_año', 'ds', 'date']:
+            if c in df_work.columns:
+                col_fecha = c
+                break
+        
+        if not col_fecha:
+            return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
 
-        col_p = 'precipitation'
-        if 'p_mes' in df_work.columns: col_p = 'p_mes'
-        elif 'valor' in df_work.columns: col_p = 'valor'
+        # 2. Normalización de VALOR (Lluvia)
+        col_p = None
+        for c in ['valor', 'precipitation', 'p_mes', 'lluvia']:
+            if c in df_work.columns:
+                col_p = c
+                break
         
-        # Eliminar NaNs antes de entrar a Prophet (Prophet falla con NaNs en 'y')
-        df_prophet = df_work.rename(columns={col_p: 'y'})[['ds', 'y']].dropna()
+        if not col_p:
+            return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
+
+        # Renombrar para Prophet
+        df_prophet = df_work.rename(columns={col_fecha: 'ds', col_p: 'y'})[['ds', 'y']]
         
-        if len(df_prophet) < 12: # Mínimo datos para pronosticar
+        # Convertir a datetime y eliminar errores
+        df_prophet['ds'] = pd.to_datetime(df_prophet['ds'], errors='coerce')
+        df_prophet['y'] = pd.to_numeric(df_prophet['y'], errors='coerce')
+        df_prophet = df_prophet.dropna()
+
+        # Validación de cantidad mínima de datos
+        if len(df_prophet) < 6: # Bajamos la exigencia a 6 meses para que no salga vacío tan fácil
              return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
 
+        # --- MODELO ---
         m = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True)
         m.fit(df_prophet)
 
@@ -88,9 +108,11 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
         df_result['tipo'] = np.where(df_result['ds'] <= last_date_real, 'Histórico', 'Proyección')
 
         return df_result
+
     except Exception as e:
         print(f"Error Prophet: {e}")
         return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
+
 
 # ==============================================================================
 # 2. CARGA GIS OPTIMIZADA (Full Data)
