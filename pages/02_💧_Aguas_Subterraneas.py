@@ -21,6 +21,11 @@ from modules import db_manager, hydrogeo_utils, selectors
 
 st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
 
+# --- BOTÓN DE MANTENIMIENTO (Poner al inicio, después de st.set_page_config) ---
+if st.sidebar.button("🧹 Borrar Caché y Recargar Datos"):
+    st.cache_data.clear()
+    st.rerun()
+
 # ==============================================================================
 # FUNCIONES AUXILIARES (CACHED)
 # ==============================================================================
@@ -328,10 +333,9 @@ with tab2:
     st_folium(m, width=1400, height=600, key=key_ctx)
 
 # ==============================================================================
-# TAB 3: Mapa de Recarga (CORREGIDO: Autoescala + Botón Recarga)
+# TAB 3: Mapa de Recarga (CORREGIDO: Variable lat_mean definida)
 # ==============================================================================
 with tab3:
-    # 1. Controles
     col_ref_3, col_txt_3 = st.columns([1, 5])
     with col_ref_3:
         refresh_map_3 = st.button("🔄 Recargar Mapa Recarga")
@@ -342,15 +346,18 @@ with tab3:
         try:
             vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
             
-            # 2. Mapa Base con Autoescala
-            m_iso = folium.Map(location=[lat_mean, lon_mean], zoom_start=11, tiles="CartoDB positron")
+            # --- CORRECCIÓN: Definimos el centro del mapa explícitamente ---
+            lat_center = df_puntos['latitud'].mean()
+            lon_center = df_puntos['longitud'].mean()
             
-            # Calcular bounds para fit_bounds
-            # grid_coords tiene [min_x, max_x, min_y, max_y]
+            # Mapa Base
+            m_iso = folium.Map(location=[lat_center, lon_center], zoom_start=11, tiles="CartoDB positron")
+            
+            # Autoescala
             fit_bounds_iso = [[grid_coords[1].min(), grid_coords[0].min()], [grid_coords[1].max(), grid_coords[0].max()]]
             m_iso.fit_bounds(fit_bounds_iso)
             
-            # 3. Capas (Raster + Isolíneas) - Tu lógica visual se mantiene
+            # Capas Visuales
             try: cmap = plt.colormaps['viridis']
             except: cmap = cm.get_cmap('viridis')
             rgba = cmap((Zi - vmin) / (vmax - vmin))
@@ -374,11 +381,9 @@ with tab3:
                     lat_lon = [[y, x] for x, y in segment]
                     folium.PolyLine(lat_lon, color='white', weight=1, opacity=0.8, tooltip=f"{level_val:.0f} mm").add_to(m_iso)
 
-            # 4. Finalización
             m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga (mm)"))
             Fullscreen().add_to(m_iso)
             
-            # RENDER FINAL
             key_rcg = f"rcg_map_{seleccion}_{len(df_mapa_stats)}"
             if refresh_map_3: key_rcg += "_forced_reload"
             
@@ -386,7 +391,6 @@ with tab3:
             
         except Exception as e:
             st.error(f"Error en interpolación: {e}")
-
 
 # TAB 4: Descargas
 with tab4:
