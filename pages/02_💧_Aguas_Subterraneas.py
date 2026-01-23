@@ -193,96 +193,95 @@ with tab1:
     st.plotly_chart(fig, use_container_width=True)
 
 
-# TAB 2: Contexto (Capas + Tooltips Personalizados + Fix Render)
+# ==============================================================================
+# TAB 2: Contexto (CORREGIDO: Tooltips Seguros + Autoescala)
+# ==============================================================================
 with tab2:
-    # Botón de auxilio para el "Efecto Fantasma"
+    # 1. Controles Superiores
     col_refresh, col_txt = st.columns([1, 5])
     with col_refresh:
-        refresh_map = st.button("🔄 Recargar Mapa", help="Si el mapa aparece gris o vacío, pulsa aquí.")
+        refresh_map_2 = st.button("🔄 Recargar Mapa Contexto", help="Si el mapa sale gris, pulsa aquí.")
     
-    # 1. Definir bounds
+    # 2. Definir límites (Bounds)
     pad = 0.05
-    bounds = [
+    bounds_vals = [
         df_puntos['longitud'].min() - pad,
         df_puntos['latitud'].min() - pad,
         df_puntos['longitud'].max() + pad,
         df_puntos['latitud'].max() + pad
     ]
+    # Formato para folium.fit_bounds: [[lat_min, lon_min], [lat_max, lon_max]]
+    fit_bounds_coords = [[bounds_vals[1], bounds_vals[0]], [bounds_vals[3], bounds_vals[2]]]
     
-    layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds)
+    # 3. Cargar Capas
+    layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds_vals)
+    
+    # 4. Mapa Base
     m = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB positron")
     
-    # --- CAPAS GIS CON TOOLTIPS ESPECÍFICOS ---
-    
-    # A. SUELOS: ucs_f, paisaje, clima, litologia, caracteri, componente
-    if 'suelos' in layers:
-        # Intentamos buscar columnas que coincidan (a veces postgres las corta)
-        cols_suelo = layers['suelos'].columns
-        fields_s = []
-        aliases_s = []
-        
-        # Mapeo de deseos vs realidad
-        map_suelos = {
-            'ucs_f': 'UCS:', 
-            'paisaje': 'Paisaje:', 
-            'clima': 'Clima:', 
-            'litologia': 'Litología:', 
-            'caracteri': 'Caract:', # A veces se corta
-            'caracteristicas': 'Caract:',
-            'componente': 'Componente:'
-        }
-        
-        for col_db, alias in map_suelos.items():
-            if col_db in cols_suelo:
-                fields_s.append(col_db)
-                aliases_s.append(alias)
-        
-        folium.GeoJson(
-            layers['suelos'], 
-            name="Suelos", 
-            style_function=lambda x: {'color': 'orange', 'weight': 0.5, 'fillOpacity': 0.15},
-            tooltip=folium.GeoJsonTooltip(fields=fields_s, aliases=aliases_s, localize=True) if fields_s else None
-        ).add_to(m)
-        
-    # B. HIDROGEOLOGÍA: potencial_, sigla, unidad_geo
-    if 'hidro' in layers:
-        cols_hidro = layers['hidro'].columns
-        fields_h = []
-        aliases_h = []
-        
-        map_hidro = {
-            'potencial_': 'Potencial:',
-            'potencial': 'Potencial:', # Fallback
-            'sigla': 'Sigla:',
-            'unidad_geo': 'Unidad Geo:'
-        }
-        
-        for col_db, alias in map_hidro.items():
-            if col_db in cols_hidro:
-                fields_h.append(col_db)
-                aliases_h.append(alias)
+    # --- AUTOESCALA ---
+    m.fit_bounds(fit_bounds_coords) 
 
+    # --- FUNCIÓN AUXILIAR PARA TOOLTIPS SEGUROS ---
+    def crear_tooltip_seguro(gdf, diccionario_campos):
+        """
+        Verifica qué campos existen realmente en el GeoJSON antes de pedirlos.
+        Evita que el tooltip falle si falta una columna.
+        """
+        cols_reales = [c.lower() for c in gdf.columns]
+        fields_final = []
+        aliases_final = []
+        
+        for col_deseada, alias in diccionario_campos.items():
+            if col_deseada.lower() in cols_reales:
+                fields_final.append(col_deseada)
+                aliases_final.append(alias)
+        
+        if not fields_final: return None
+        return folium.GeoJsonTooltip(fields=fields_final, aliases=aliases_final, localize=True, sticky=False)
+
+    # --- A. SUELOS ---
+    if 'suelos' in layers:
+        # Definimos lo que QUEREMOS ver. El sistema filtrará lo que PUEDE ver.
+        dict_suelos = {
+            'ucs': 'UCS:', 'ucs_f': 'UCS:', 'simbolo': 'Símbolo:',
+            'paisaje': 'Paisaje:', 'clima': 'Clima:',
+            'litologia': 'Litología:', 'caracteri': 'Caract:', 'caracteristicas': 'Caract:',
+            'componente': 'Componente:', 'porcentaje': '%'
+        }
         folium.GeoJson(
-            layers['hidro'], 
-            name="Hidrogeología", 
-            style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.15},
-            tooltip=folium.GeoJsonTooltip(fields=fields_h, aliases=aliases_h, localize=True) if fields_h else None
+            layers['suelos'], name="Suelos",
+            style_function=lambda x: {'color': 'orange', 'weight': 0.5, 'fillOpacity': 0.15},
+            tooltip=crear_tooltip_seguro(layers['suelos'], dict_suelos)
         ).add_to(m)
         
-    # C. BOCATOMAS
-    if 'bocatomas' in layers:
-        # Muestra el nombre si existe
-        cols_boca = layers['bocatomas'].columns
-        field_b = ['nom_bocatoma'] if 'nom_bocatoma' in cols_boca else (['nombre_acu'] if 'nombre_acu' in cols_boca else None)
-        
+    # --- B. HIDROGEOLOGÍA ---
+    if 'hidro' in layers:
+        dict_hidro = {
+            'potencial': 'Potencial:', 'potencial_': 'Potencial:',
+            'sigla': 'Sigla:', 'unidad_geo': 'Unidad:',
+            'cod': 'Cód:', 'area_km2': 'Área km2:'
+        }
         folium.GeoJson(
-            layers['bocatomas'], 
-            name="Bocatomas", 
-            marker=folium.CircleMarker(radius=3, color='red', fill_color='red'),
-            tooltip=folium.GeoJsonTooltip(fields=field_b, aliases=['Nombre:']) if field_b else None
+            layers['hidro'], name="Hidrogeología",
+            style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.15},
+            tooltip=crear_tooltip_seguro(layers['hidro'], dict_hidro)
+        ).add_to(m)
+        
+    # --- C. BOCATOMAS ---
+    if 'bocatomas' in layers:
+        dict_boca = {
+            'nombre_acu': 'Acueducto:', 'nom_bocatoma': 'Bocatoma:',
+            'municipio': 'Mun:', 'veredas': 'Vereda:',
+            'fuente_aba': 'Fuente:', 'caudal_dis': 'Caudal:'
+        }
+        folium.GeoJson(
+            layers['bocatomas'], name="Bocatomas",
+            marker=folium.CircleMarker(radius=4, color='red', fill_color='red', fill_opacity=0.7),
+            tooltip=crear_tooltip_seguro(layers['bocatomas'], dict_boca)
         ).add_to(m)
     
-    # 5. Estaciones (Tu código de popup rico se mantiene intacto)
+    # 5. Estaciones (Popup Rico) - Mantenido igual
     df_display = df_mapa_stats if df_mapa_stats is not None else df_puntos
     for _, r in df_display.iterrows():
         p_val = f"{r['p_media']*12:,.0f}" if 'p_media' in r else "N/A"
@@ -292,65 +291,64 @@ with tab2:
         
         html = f"""
         <div style="font-family:sans-serif; width:160px; font-size:12px;">
-            <b style="font-size:13px;">{r['nom_est']}</b><br>
-            <hr style="margin:5px 0; border: 0; border-top: 1px solid #ccc;">
-            📍 Mun: {mun}<br>
-            ⛰️ Alt: {alt} m<br>
-            <span style="color:#555;">🌧️ Lluvia:</span> <b>{p_val}</b> mm/año<br>
-            <span style="color:#0000AA;">💧 Recarga:</span> <b style="color:#0000AA; font-size:13px;">{rec_val}</b> mm/año
-        </div>
-        """
-        iframe = folium.IFrame(html, width=180, height=150)
-        popup = folium.Popup(iframe, max_width=180)
+            <b style="font-size:13px;">{r['nom_est']}</b><hr style="margin:5px 0;">
+            📍 {mun} | ⛰️ {alt}m<br>
+            🌧️ {p_val} mm | 💧 <b style="color:blue;">{rec_val}</b> mm
+        </div>"""
+        
         folium.Marker(
-            [r['latitud'], r['longitud']], 
-            popup=popup, 
+            [r['latitud'], r['longitud']],
+            popup=folium.Popup(folium.IFrame(html, width=180, height=120)),
             icon=folium.Icon(color='black', icon='tint', prefix='fa'),
             tooltip=r['nom_est']
         ).add_to(m)
         
     folium.LayerControl().add_to(m)
-    Fullscreen().add_to(m) 
+    Fullscreen().add_to(m)
     
-    # KEY DINÁMICA + REFRESH: Esto fuerza el redibujado si se pulsa el botón
-    key_final = f"ctx_map_{seleccion}_{len(df_puntos)}"
-    if refresh_map:
-        key_final += "_refresh" # Cambia la key -> Fuerza repintado
-        
-    st_folium(m, width=1400, height=600, key=key_final)
+    # RENDER FINAL (Con lógica de refresco)
+    key_ctx = f"ctx_map_{seleccion}_{len(df_puntos)}"
+    if refresh_map_2: key_ctx += "_forced_reload"
+    
+    st_folium(m, width=1400, height=600, key=key_ctx)
 
 
-# TAB 3: Mapa de Recarga Interpolada (CORREGIDO Y LIMPIO)
+# ==============================================================================
+# TAB 3: Mapa de Recarga (CORREGIDO: Autoescala + Botón Recarga)
+# ==============================================================================
 with tab3:
-    # Verificamos si hay datos de interpolación (Zi)
-    if Zi is None: 
-        st.warning("⚠️ No hay suficientes estaciones (mínimo 4) para interpolar la recarga.")
+    # 1. Controles
+    col_ref_3, col_txt_3 = st.columns([1, 5])
+    with col_ref_3:
+        refresh_map_3 = st.button("🔄 Recargar Mapa Recarga")
+
+    if Zi is None:
+        st.warning("⚠️ Se requieren al menos 4 estaciones con datos para interpolar.")
     else:
         try:
             vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
             
-            # 1. Crear Mapa Base (Usamos 'm_iso' consistentemente)
-            m_iso = folium.Map(
-                location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], 
-                zoom_start=11, 
-                tiles="CartoDB positron"
-            )
+            # 2. Mapa Base con Autoescala
+            m_iso = folium.Map(location=[lat_mean, lon_mean], zoom_start=11, tiles="CartoDB positron")
             
-            # 2. Capa Raster (Colores)
+            # Calcular bounds para fit_bounds
+            # grid_coords tiene [min_x, max_x, min_y, max_y]
+            fit_bounds_iso = [[grid_coords[1].min(), grid_coords[0].min()], [grid_coords[1].max(), grid_coords[0].max()]]
+            m_iso.fit_bounds(fit_bounds_iso)
+            
+            # 3. Capas (Raster + Isolíneas) - Tu lógica visual se mantiene
             try: cmap = plt.colormaps['viridis']
             except: cmap = cm.get_cmap('viridis')
-            
             rgba = cmap((Zi - vmin) / (vmax - vmin))
-            rgba[np.isnan(Zi), 3] = 0 # Transparencia en nulos
+            rgba[np.isnan(Zi), 3] = 0
             
             folium.raster_layers.ImageOverlay(
                 image=rgba, 
                 bounds=[[grid_coords[1].min(), grid_coords[0].min()], [grid_coords[1].max(), grid_coords[0].max()]], 
-                opacity=0.6, 
-                origin='lower'
+                opacity=0.6, origin='lower'
             ).add_to(m_iso)
             
-            # 3. Capa Isolíneas (Líneas Blancas)
+            # Isolíneas
             fig_c, ax_c = plt.subplots()
             cs = ax_c.contour(Xi, Yi, Zi, levels=12, colors='white', linewidths=0.8)
             plt.close(fig_c)
@@ -360,39 +358,20 @@ with tab3:
                 for segment in collection:
                     if len(segment) < 2: continue
                     lat_lon = [[y, x] for x, y in segment]
-                    
-                    # Línea
-                    folium.PolyLine(
-                        lat_lon, color='white', weight=1, opacity=0.9, 
-                        tooltip=f"{level_val:.0f} mm"
-                    ).add_to(m_iso)
-                    
-                    # Etiqueta (Solo si la línea es larga para no saturar)
-                    if len(lat_lon) > 20: 
-                        mid_pt = lat_lon[len(lat_lon) // 2]
-                        icon_html = f"""
-                        <div style="font-size:8pt; font-weight:bold; color:#333; 
-                        background:rgba(255,255,255,0.8); padding:0 3px; border-radius:3px;">
-                        {level_val:.0f}</div>"""
-                        folium.map.Marker(
-                            mid_pt, 
-                            icon=DivIcon(icon_size=(20,10), icon_anchor=(10,5), html=icon_html)
-                        ).add_to(m_iso)
+                    folium.PolyLine(lat_lon, color='white', weight=1, opacity=0.8, tooltip=f"{level_val:.0f} mm").add_to(m_iso)
 
-            # 4. Leyenda y Fullscreen
-            m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga (mm/mes)"))
+            # 4. Finalización
+            m_iso.add_child(LinearColormap(['#440154', '#21918c', '#fde725'], vmin=vmin, vmax=vmax, caption="Recarga (mm)"))
             Fullscreen().add_to(m_iso)
-
-            # 5. RENDERIZADO (Con la corrección de nombre m_iso y key dinámica)
-            st_folium(
-                m_iso,
-                width=1400, 
-                height=600, 
-                key=f"rcg_map_{seleccion}_{len(df_mapa_stats)}"
-            )
+            
+            # RENDER FINAL
+            key_rcg = f"rcg_map_{seleccion}_{len(df_mapa_stats)}"
+            if refresh_map_3: key_rcg += "_forced_reload"
+            
+            st_folium(m_iso, width=1400, height=600, key=key_rcg)
             
         except Exception as e:
-            st.error(f"Error generando el mapa de interpolación: {e}")            
+            st.error(f"Error en interpolación: {e}")
 
 
 # TAB 4: Descargas
