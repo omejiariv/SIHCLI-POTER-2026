@@ -168,29 +168,44 @@ if gdf_zona is not None:
             dic_hidro = {'potencial':'Potencial:', 'unidad':'Unidad:', 'sigla':'Sigla:', 'cod':'Cod:', 'area':'Area:'}
             folium.GeoJson(layers['hidro'], name="Hidro", style_function=lambda x: {'color':'blue', 'weight':0.5, 'fillOpacity':0.2},
                            tooltip=tooltip_ok(layers['hidro'], dic_hidro)).add_to(m)
+
         if 'bocatomas' in layers:
-            dic_boca = {'bocatoma':'Nombre:', 'acueducto':'Acueducto:', 'municipio':'Mun:', 'vereda':'Vereda:', 'caudal':'Q:'}
-            folium.GeoJson(layers['bocatomas'], name="Bocatomas", marker=folium.CircleMarker(radius=4, color='red'),
-                           tooltip=tooltip_ok(layers['bocatomas'], dic_boca)).add_to(m)
+            # Diccionario exacto basado en tus tablas
+            dic_boca = {
+                'nombre_acu': 'Acueducto:',    # Nombre del Acueducto
+                'tipo': 'Tipo:',               # Veredal, Municipal, etc.
+                'fuente_aba': 'Fuente Sup:',   # Fuente Abastecedora (Superficial)
+                'fuente_sub': 'Fuente Sub:',   # Fuente Subterránea (SI/NO)
+                'pozos': 'Pozos:',             # Tiene pozos
+                'entidad_ad': 'Entidad:',      # Entidad Administradora
+                'suscriptor': 'Suscriptores:', # Número de suscriptores
+                'q': 'Caudal (L/s):'           # Caudal (Q)
+            }
+            
+            folium.GeoJson(
+                layers['bocatomas'], 
+                name="Bocatomas", 
+                marker=folium.CircleMarker(radius=5, color='#d63031', fill_color='#ff7675', fill_opacity=0.8),
+                tooltip=tooltip_ok(layers['bocatomas'], dic_boca)
+            ).add_to(m)
 
         # Popups Completos
+        # Popups Estaciones
         for _, r in df_mapa_stats.iterrows():
             def fmt(val): return f"{val*12:,.0f} mm" if pd.notnull(val) else "<span style='color:red'>N/D</span>"
-            mun = r.get('municipio', 'N/D')
-            alt = r.get('alt_est', 0)
-            etr = fmt(r.get('etr_media'))
-            
             html = f"""
-            <div style='font-family:sans-serif; width:180px; font-size:12px;'>
+            <div style='font-family:sans-serif; width:160px; font-size:12px;'>
                 <b>{r['nom_est']}</b><hr style='margin:3px 0;'>
-                📍 {mun} | ⛰️ {alt:.0f} m<br>
                 🌧️ Lluvia: <b>{fmt(r.get('p_media'))}</b><br>
-                ☀️ ETR: {etr}<br>
                 💧 Recarga: <b>{fmt(r.get('recarga_calc'))}</b>
             </div>"""
-            folium.Marker([r['latitud'], r['longitud']], popup=folium.Popup(html, max_width=200), icon=folium.Icon(color='black', icon='tint')).add_to(m)
+            folium.Marker([r['latitud'], r['longitud']], popup=folium.Popup(html, max_width=200), icon=folium.Icon(color='black', icon='tint'), name="Estaciones").add_to(m)
+
+        # 2. SELECTOR DE CAPAS (LayerControl)
+        folium.LayerControl(position='topright', collapsed=True).add_to(m)
 
         st_folium(m, width=1400, height=600, key=f"ctx_{nombre_zona}")
+
 
     # --- TAB 3: RECARGA (BOTÓN + RASTER) ---
     with tab3:
@@ -199,29 +214,70 @@ if gdf_zona is not None:
         df_valid = df_mapa_stats.dropna(subset=['p_media'])
         if len(df_valid) < 4:
             st.warning("⚠️ Se requieren al menos 4 estaciones con datos válidos para interpolar.")
+
             st.session_state.raster_data = None # Limpiar si falla
         else:
-            x, y = df_valid.longitud.values, df_valid.latitud.values
-            z_r = df_valid.recarga_calc.values * 12
-            
+            # Interpolación
+            x, y, z = df_valid.longitud.values, df_valid.latitud.values, df_valid.p_media.values
             xi = np.linspace(bounds[0], bounds[2], 100)
             yi = np.linspace(bounds[1], bounds[3], 100)
             Xi, Yi = np.meshgrid(xi, yi)
-            Zi = griddata((x, y), z_r, (Xi, Yi), method='linear')
+            Zi = griddata((x, y), z, (Xi, Yi), method='linear')
             
-            # Guardar en sesión para Tab 4
-            st.session_state.raster_data = (Zi, xi, yi)
+            z_r = df_valid.recarga_calc.values * 12
+            Zi_r = griddata((x, y), z_r, (Xi, Yi), method='linear')
             
+            # Guardar en sesión
+            st.session_state.raster_data = (Zi_r, xi, yi)
+            
+            # Mapa Base
             m_iso = folium.Map(location=[df_puntos.latitud.mean(), df_puntos.longitud.mean()], zoom_start=11, tiles="CartoDB positron")
             m_iso.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
             
-            vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
+            # Capa Raster (Colores)
+            vmin, vmax = np.nanmin(Zi_r), np.nanmax(Zi_r)
             try: cmap = plt.colormaps['viridis']
             except: cmap = cm.get_cmap('viridis')
-            rgba = cmap((Zi - vmin)/(vmax - vmin)); rgba[np.isnan(Zi), 3] = 0
+            rgba = cmap((Zi_r - vmin)/(vmax - vmin)); rgba[np.isnan(Zi_r), 3] = 0
             
-            folium.raster_layers.ImageOverlay(image=rgba, bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]], opacity=0.7, origin='lower').add_to(m_iso)
+            folium.raster_layers.ImageOverlay(
+                image=rgba, 
+                bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]], 
+                opacity=0.7, 
+                origin='lower',
+                name="Recarga (Raster)"
+            ).add_to(m_iso)
+
+            # 3. ISOLÍNEAS CON LEYENDA FLOTANTE (Recuperado)
+            try:
+                fig_c, ax_c = plt.subplots()
+                # Niveles automáticos para isolíneas suaves
+                cs = ax_c.contour(Xi, Yi, Zi_r, levels=10, colors='white', linewidths=0.5)
+                plt.close(fig_c)
+                
+                # Convertir isolíneas a Folium
+                for i, collection in enumerate(cs.allsegs):
+                    level_val = cs.levels[i]
+                    for segment in collection:
+                        if len(segment) > 2:
+                            # Invertir coords a Lat, Lon para Folium
+                            locs = [[pt[1], pt[0]] for pt in segment]
+                            folium.PolyLine(
+                                locs, 
+                                color='white', 
+                                weight=1.5, 
+                                opacity=0.8,
+                                tooltip=f"Recarga: {level_val:.0f} mm", # Leyenda flotante al pasar mouse
+                                name="Isolíneas"
+                            ).add_to(m_iso)
+            except Exception as e:
+                print(f"Error isolíneas: {e}")
+
+            # 2. SELECTOR DE CAPAS
+            folium.LayerControl(position='topright', collapsed=True).add_to(m_iso)
+
             st_folium(m_iso, width=1400, height=600, key=f"iso_{nombre_zona}")
+
 
     # --- TAB 4: DESCARGAS (RASTER + CSV) ---
     with tab4:
