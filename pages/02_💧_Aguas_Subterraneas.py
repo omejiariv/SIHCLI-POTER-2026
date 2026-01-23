@@ -41,34 +41,47 @@ ruido = st.sidebar.slider("Incertidumbre", 0.0, 1.0, 0.1)
 if 'raster_data' not in st.session_state: st.session_state.raster_data = None
 
 if gdf_zona is not None:
-    # 1. Recuperar Estaciones
+    # 1. Recuperar Estaciones (CORREGIDO: Incluye columna 'municipio')
     if not ids_estaciones:
         minx, miny, maxx, maxy = gdf_zona.total_bounds
         buff = 0.05
-        q_geo = text(f"SELECT id_estacion, nom_est, latitud, longitud, alt_est FROM estaciones WHERE longitud BETWEEN {minx-buff} AND {maxx+buff} AND latitud BETWEEN {miny-buff} AND {maxy+buff}")
+        # AGREGADO: municipio en el SELECT
+        q_geo = text(f"""
+            SELECT id_estacion, nom_est, latitud, longitud, alt_est, municipio 
+            FROM estaciones 
+            WHERE longitud BETWEEN {minx-buff} AND {maxx+buff} 
+            AND latitud BETWEEN {miny-buff} AND {maxy+buff}
+        """)
         df_puntos = pd.read_sql(q_geo, engine)
+        
         if not df_puntos.empty:
-            # Intento de filtro fino
+            # Intento de filtro fino por polígono
             try:
                 points = gpd.points_from_xy(df_puntos.longitud, df_puntos.latitud)
                 gdf_pts = gpd.GeoDataFrame(df_puntos, geometry=points, crs="EPSG:4326")
+                
                 if gdf_zona.crs is None: gdf_zona = gdf_zona.set_crs("EPSG:4326")
                 else: gdf_zona = gdf_zona.to_crs("EPSG:4326")
+                
                 df_joined = gpd.sjoin(gdf_pts, gdf_zona, how="inner", predicate="intersects")
-                if not df_joined.empty: df_puntos = df_joined[df_puntos.columns].copy()
+                if not df_joined.empty: 
+                    df_puntos = df_joined[df_puntos.columns].copy()
             except: pass
+            
             ids_estaciones = df_puntos['id_estacion'].tolist()
     else:
+        # Selección por IDs (AGREGADO: municipio)
         if len(ids_estaciones) == 1:
-            q = text(f"SELECT id_estacion, nom_est, latitud, longitud, alt_est FROM estaciones WHERE id_estacion = '{ids_estaciones[0]}'")
+            q = text(f"SELECT id_estacion, nom_est, latitud, longitud, alt_est, municipio FROM estaciones WHERE id_estacion = '{ids_estaciones[0]}'")
             df_puntos = pd.read_sql(q, engine)
         else:
-            q = text("SELECT id_estacion, nom_est, latitud, longitud, alt_est FROM estaciones WHERE id_estacion IN :ids")
+            q = text("SELECT id_estacion, nom_est, latitud, longitud, alt_est, municipio FROM estaciones WHERE id_estacion IN :ids")
             df_puntos = pd.read_sql(q, engine, params={'ids': tuple(ids_estaciones)})
 
     if df_puntos.empty:
         st.error("❌ No se encontraron estaciones.")
         st.stop()
+
 
     # 2. Estadísticas (Cacheado)
     with st.spinner("Procesando hidrología..."):
