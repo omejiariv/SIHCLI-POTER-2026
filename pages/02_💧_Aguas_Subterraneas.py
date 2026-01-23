@@ -341,79 +341,92 @@ if gdf_zona is not None:
                 st.dataframe(df_tabla, column_config=cfg_barras, hide_index=True, use_container_width=True, height=300)
 
             # --- SECCIÓN C: DESGLOSE ESPACIAL (ESTACIONES) ---
-            # CORRECCIÓN: Detectamos automáticamente el nombre de la columna ID
             st.divider()
             st.subheader("📍 Estaciones Utilizadas (Resumen Histórico)")
             
             if 'df_puntos' in locals() and not df_puntos.empty:
-                # 1. Intentar encontrar la columna de identificación en df_raw
-                posibles_nombres = ['codigo', 'CODIGO', 'id_estacion', 'id', 'station_id']
-                col_id_raw = next((c for c in posibles_nombres if c in df_raw.columns), None)
+                # 1. DETECCIÓN INTELIGENTE DE COLUMNAS DE IDENTIFICACIÓN
+                # Lista de posibles nombres para el ID de la estación
+                posibles_ids = ['codigo', 'CODIGO', 'id_estacion', 'id', 'station_id', 'cod']
                 
-                # 2. Intentar encontrar la columna de identificación en df_puntos
-                col_id_puntos = next((c for c in posibles_nombres if c in df_puntos.columns), None)
+                # A) Buscar ID en datos de Lluvia (df_raw)
+                col_id_raw = next((c for c in posibles_ids if c in df_raw.columns), None)
                 
-                if col_id_raw and col_id_puntos:
-                    # Si tenemos IDs en ambos lados, calculamos la estadística real
+                # B) Buscar ID en datos de Estaciones (df_puntos)
+                col_id_puntos = next((c for c in posibles_ids if c in df_puntos.columns), None)
+                
+                # C) Caso Especial: Si df_puntos no tiene 'codigo', intentamos usar 'nombre' si contiene [12345]
+                if not col_id_puntos and 'nombre' in df_puntos.columns:
+                     # Creamos una columna temporal 'codigo_extract' extrayendo números entre corchetes
+                     df_puntos['codigo_extract'] = df_puntos['nombre'].astype(str).str.extract(r'\[(\d+)\]')
+                     col_id_puntos = 'codigo_extract'
+
+                # 2. PROCESAMIENTO
+                if col_id_raw:
+                    # Agrupar datos de lluvia por el ID encontrado
                     df_promedios_est = df_raw.groupby(col_id_raw)['valor'].mean().reset_index().rename(columns={'valor': 'Lluvia Media'})
                     
-                    # Unimos usando los nombres detectados
-                    df_est_detalle = pd.merge(
-                        df_puntos, 
-                        df_promedios_est, 
-                        left_on=col_id_puntos, 
-                        right_on=col_id_raw, 
-                        how='left'
-                    )
-                    
-                    # Cálculos Hidrológicos (Estimación)
-                    # Usamos valores seguros para evitar NaN
-                    altitud = df_est_detalle['alt_est'].fillna(1000)
-                    lluvia = df_est_detalle['Lluvia Media'].fillna(0)
-                    
-                    temp_est = np.maximum(5, 30 - (0.0065 * altitud))
-                    it_est = 300 + 25*temp_est + 0.05*(temp_est**3)
-                    # Evitamos división por cero
-                    denom_est = np.sqrt(0.9 + (lluvia / (np.maximum(it_est, 0.1)/12))**2)
-                    
-                    df_est_detalle['ETR Est.'] = np.where(denom_est > 0, lluvia / denom_est, 0)
-                    df_est_detalle['ETR Real'] = np.minimum(df_est_detalle['ETR Est.'] * kc_ponderado, lluvia)
-                    df_est_detalle['Recarga Est.'] = (lluvia - df_est_detalle['ETR Real']).clip(lower=0) * ki_final * kg_factor
+                    # Intentar unir si tenemos ID en ambos lados
+                    if col_id_puntos:
+                        # Asegurar tipos de datos iguales (string vs string)
+                        df_puntos[col_id_puntos] = df_puntos[col_id_puntos].astype(str)
+                        df_promedios_est[col_id_raw] = df_promedios_est[col_id_raw].astype(str)
 
-                    # Selección de columnas para mostrar
-                    cols_finales = ['nom_est', 'municipio', 'alt_est', 'Lluvia Media', 'Recarga Est.']
-                    # Asegurar que existan (por si df_puntos tiene nombres distintos)
-                    cols_existentes = [c for c in cols_finales if c in df_est_detalle.columns]
+                        df_est_detalle = pd.merge(
+                            df_puntos, 
+                            df_promedios_est, 
+                            left_on=col_id_puntos, 
+                            right_on=col_id_raw, 
+                            how='left'
+                        )
+                    else:
+                        # Si no hay ID en puntos, no podemos cruzar, usamos lo que haya
+                        df_est_detalle = df_puntos.copy()
+                        df_est_detalle['Lluvia Media'] = 0 # Valor default
                     
-                    df_show = df_est_detalle[cols_existentes].copy()
+                    # Manejo de nombres de columnas (Normalización)
+                    # Buscamos las columnas que el usuario quiere ver: Nombre y Municipio
+                    col_nombre = next((c for c in ['nombre', 'nom_est', 'estacion'] if c in df_est_detalle.columns), 'Nombre')
+                    col_mun = next((c for c in ['municipio', 'mun', 'ciudad'] if c in df_est_detalle.columns), 'Municipio')
+                    col_alt = next((c for c in ['altitud', 'alt_est', 'elevacion'] if c in df_est_detalle.columns), 'Altitud')
                     
-                    # Renombrar para la tabla final
-                    mapa_cols = {
-                        'nom_est': 'Estación', 'municipio': 'Municipio', 
-                        'alt_est': 'Altitud', 'Lluvia Media': 'Lluvia (mm/mes)', 
-                        'Recarga Est.': 'Recarga (mm/mes)'
+                    # Cálculos Hidrológicos (Estimación simple para la tabla)
+                    altitud_safe = pd.to_numeric(df_est_detalle.get(col_alt, 1000), errors='coerce').fillna(1000)
+                    lluvia_safe = df_est_detalle.get('Lluvia Media', 0).fillna(0)
+                    
+                    temp_est = np.maximum(5, 30 - (0.0065 * altitud_safe))
+                    it_est = 300 + 25*temp_est + 0.05*(temp_est**3)
+                    denom_est = np.sqrt(0.9 + (lluvia_safe / (np.maximum(it_est, 0.1)/12))**2)
+                    
+                    etr_est = np.where(denom_est > 0, lluvia_safe / denom_est, 0)
+                    etr_real = np.minimum(etr_est * kc_ponderado, lluvia_safe)
+                    recarga_est = (lluvia_safe - etr_real).clip(lower=0) * ki_final * kg_factor
+
+                    # Construir DataFrame Final
+                    df_show = pd.DataFrame({
+                        'Estación': df_est_detalle[col_nombre],
+                        'Municipio': df_est_detalle[col_mun],
+                        'Altitud': altitud_safe,
+                        'Lluvia (mm/mes)': lluvia_safe,
+                        'Recarga (mm/mes)': recarga_est
+                    })
+                    
+                    # Configuración Visual
+                    cfg_est = {
+                        "Estación": st.column_config.TextColumn("Estación", width="large"),
+                        "Municipio": st.column_config.TextColumn("Municipio", width="medium"),
+                        "Altitud": st.column_config.NumberColumn(format="%.0f m"),
+                        "Lluvia (mm/mes)": st.column_config.ProgressColumn(format="%.0f", max_value=max(100, df_show['Lluvia (mm/mes)'].max())),
+                        "Recarga (mm/mes)": st.column_config.ProgressColumn(format="%.0f", max_value=max(100, df_show['Lluvia (mm/mes)'].max()))
                     }
-                    df_show = df_show.rename(columns=mapa_cols)
                     
-                    # Configuración visual
-                    cfg_est = {}
-                    if 'Lluvia (mm/mes)' in df_show.columns:
-                        max_lluvia = df_show['Lluvia (mm/mes)'].max()
-                        cfg_est["Lluvia (mm/mes)"] = st.column_config.ProgressColumn(format="%.0f", max_value=max_lluvia)
-                        if 'Recarga (mm/mes)' in df_show.columns:
-                            cfg_est["Recarga (mm/mes)"] = st.column_config.ProgressColumn(format="%.0f", max_value=max_lluvia)
-                    
-                    if 'Altitud' in df_show.columns:
-                        cfg_est["Altitud"] = st.column_config.NumberColumn(format="%.0f m")
-                    
-                    st.dataframe(df_show, column_config=cfg_est, hide_index=True, use_container_width=True)
+                    st.dataframe(df_show.sort_values('Municipio'), column_config=cfg_est, hide_index=True, use_container_width=True)
                 
                 else:
-                    # Fallback: Si no logramos cruzar los datos, mostramos solo la lista de estaciones básica
-                    st.warning("⚠️ No se pudo vincular el detalle histórico (falta columna 'codigo'). Mostrando listado básico.")
-                    st.dataframe(df_puntos[['nom_est', 'municipio', 'alt_est']], hide_index=True, use_container_width=True)
+                    st.warning(f"⚠️ No se encontró columna de ID en los datos de lluvia. Columnas disponibles: {list(df_raw.columns)}")
+                    st.dataframe(df_puntos, hide_index=True, use_container_width=True)
             else:
-                st.info("No se encontró detalle de estaciones.")
+                st.info("No hay información de estaciones para mostrar.")
 
 
     # --- TAB 2: CONTEXTO (TOOLTIPS RICOS) ---
