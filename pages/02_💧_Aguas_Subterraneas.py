@@ -341,44 +341,79 @@ if gdf_zona is not None:
                 st.dataframe(df_tabla, column_config=cfg_barras, hide_index=True, use_container_width=True, height=300)
 
             # --- SECCIÓN C: DESGLOSE ESPACIAL (ESTACIONES) ---
-            # Aquí sí mostramos el detalle de qué estaciones componen ese promedio
+            # CORRECCIÓN: Detectamos automáticamente el nombre de la columna ID
             st.divider()
             st.subheader("📍 Estaciones Utilizadas (Resumen Histórico)")
             
             if 'df_puntos' in locals() and not df_puntos.empty:
-                # Calculamos el promedio histórico REAL de cada estación
-                df_promedios_est = df_raw.groupby('codigo')['valor'].mean().reset_index().rename(columns={'valor': 'Lluvia Media'})
+                # 1. Intentar encontrar la columna de identificación en df_raw
+                posibles_nombres = ['codigo', 'CODIGO', 'id_estacion', 'id', 'station_id']
+                col_id_raw = next((c for c in posibles_nombres if c in df_raw.columns), None)
                 
-                # Unimos con los metadatos (Nombre, Municipio, Altitud)
-                df_est_detalle = pd.merge(df_puntos, df_promedios_est, on='codigo', how='left')
+                # 2. Intentar encontrar la columna de identificación en df_puntos
+                col_id_puntos = next((c for c in posibles_nombres if c in df_puntos.columns), None)
                 
-                # Estimación rápida de Recarga por estación (para mostrar potencial)
-                # OJO: Esto es un promedio a largo plazo, no una serie temporal
-                temp_est = np.maximum(5, 30 - (0.0065 * df_est_detalle['alt_est']))
-                it_est = 300 + 25*temp_est + 0.05*(temp_est**3)
-                denom_est = np.sqrt(0.9 + (df_est_detalle['Lluvia Media'] / (it_est/12))**2)
-                
-                df_est_detalle['ETR Est.'] = np.where(denom_est > 0, df_est_detalle['Lluvia Media'] / denom_est, 0)
-                df_est_detalle['ETR Real'] = np.minimum(df_est_detalle['ETR Est.'] * kc_ponderado, df_est_detalle['Lluvia Media'])
-                df_est_detalle['Recarga Est.'] = (df_est_detalle['Lluvia Media'] - df_est_detalle['ETR Real']).clip(lower=0) * ki_final * kg_factor
+                if col_id_raw and col_id_puntos:
+                    # Si tenemos IDs en ambos lados, calculamos la estadística real
+                    df_promedios_est = df_raw.groupby(col_id_raw)['valor'].mean().reset_index().rename(columns={'valor': 'Lluvia Media'})
+                    
+                    # Unimos usando los nombres detectados
+                    df_est_detalle = pd.merge(
+                        df_puntos, 
+                        df_promedios_est, 
+                        left_on=col_id_puntos, 
+                        right_on=col_id_raw, 
+                        how='left'
+                    )
+                    
+                    # Cálculos Hidrológicos (Estimación)
+                    # Usamos valores seguros para evitar NaN
+                    altitud = df_est_detalle['alt_est'].fillna(1000)
+                    lluvia = df_est_detalle['Lluvia Media'].fillna(0)
+                    
+                    temp_est = np.maximum(5, 30 - (0.0065 * altitud))
+                    it_est = 300 + 25*temp_est + 0.05*(temp_est**3)
+                    # Evitamos división por cero
+                    denom_est = np.sqrt(0.9 + (lluvia / (np.maximum(it_est, 0.1)/12))**2)
+                    
+                    df_est_detalle['ETR Est.'] = np.where(denom_est > 0, lluvia / denom_est, 0)
+                    df_est_detalle['ETR Real'] = np.minimum(df_est_detalle['ETR Est.'] * kc_ponderado, lluvia)
+                    df_est_detalle['Recarga Est.'] = (lluvia - df_est_detalle['ETR Real']).clip(lower=0) * ki_final * kg_factor
 
-                # Tabla final de estaciones
-                cols_finales = ['nom_est', 'municipio', 'alt_est', 'Lluvia Media', 'Recarga Est.']
-                df_show = df_est_detalle[cols_finales].copy()
-                df_show.columns = ['Estación', 'Municipio', 'Altitud', 'Lluvia (mm/mes)', 'Recarga (mm/mes)']
+                    # Selección de columnas para mostrar
+                    cols_finales = ['nom_est', 'municipio', 'alt_est', 'Lluvia Media', 'Recarga Est.']
+                    # Asegurar que existan (por si df_puntos tiene nombres distintos)
+                    cols_existentes = [c for c in cols_finales if c in df_est_detalle.columns]
+                    
+                    df_show = df_est_detalle[cols_existentes].copy()
+                    
+                    # Renombrar para la tabla final
+                    mapa_cols = {
+                        'nom_est': 'Estación', 'municipio': 'Municipio', 
+                        'alt_est': 'Altitud', 'Lluvia Media': 'Lluvia (mm/mes)', 
+                        'Recarga Est.': 'Recarga (mm/mes)'
+                    }
+                    df_show = df_show.rename(columns=mapa_cols)
+                    
+                    # Configuración visual
+                    cfg_est = {}
+                    if 'Lluvia (mm/mes)' in df_show.columns:
+                        max_lluvia = df_show['Lluvia (mm/mes)'].max()
+                        cfg_est["Lluvia (mm/mes)"] = st.column_config.ProgressColumn(format="%.0f", max_value=max_lluvia)
+                        if 'Recarga (mm/mes)' in df_show.columns:
+                            cfg_est["Recarga (mm/mes)"] = st.column_config.ProgressColumn(format="%.0f", max_value=max_lluvia)
+                    
+                    if 'Altitud' in df_show.columns:
+                        cfg_est["Altitud"] = st.column_config.NumberColumn(format="%.0f m")
+                    
+                    st.dataframe(df_show, column_config=cfg_est, hide_index=True, use_container_width=True)
                 
-                cfg_est = {
-                    "Lluvia (mm/mes)": st.column_config.ProgressColumn(format="%.0f", max_value=df_show['Lluvia (mm/mes)'].max()),
-                    "Recarga (mm/mes)": st.column_config.ProgressColumn(format="%.0f", max_value=df_show['Lluvia (mm/mes)'].max()), # Misma escala
-                    "Altitud": st.column_config.NumberColumn(format="%.0f m")
-                }
-                
-                st.dataframe(df_show.sort_values('Municipio'), column_config=cfg_est, hide_index=True, use_container_width=True)
+                else:
+                    # Fallback: Si no logramos cruzar los datos, mostramos solo la lista de estaciones básica
+                    st.warning("⚠️ No se pudo vincular el detalle histórico (falta columna 'codigo'). Mostrando listado básico.")
+                    st.dataframe(df_puntos[['nom_est', 'municipio', 'alt_est']], hide_index=True, use_container_width=True)
             else:
                 st.info("No se encontró detalle de estaciones.")
-
-        else:
-            st.warning("⚠️ Sin datos históricos suficientes para graficar.")
 
 
     # --- TAB 2: CONTEXTO (TOOLTIPS RICOS) ---
