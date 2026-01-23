@@ -427,6 +427,9 @@ if gdf_zona is not None:
             ).add_to(m)
 
         # --- ESTACIONES (Popups Completos) ---
+        # 1. Crear Grupo de Capas para Estaciones
+        fg_estaciones = folium.FeatureGroup(name="Estaciones", show=True)
+
         for _, r in df_mapa_stats.iterrows():
             # Formateador seguro
             def fmt(val, mult=12): 
@@ -458,10 +461,13 @@ if gdf_zona is not None:
                 popup=folium.Popup(html, max_width=220), 
                 icon=folium.Icon(color='black', icon='tint'),
                 tooltip=r['nom_est']
-            ).add_to(m)
+            ).add_to(fg_estaciones) # <-- Agregamos al GRUPO, no al mapa directo
 
-        # Selector de Capas (Vital para activar/desactivar)
-        # 1. CONTROL DE CAPAS
+        # 2. Agregar el grupo completo al mapa
+        fg_estaciones.add_to(m)
+
+        # --- CONTROLES FINALES ---
+        # 1. CONTROL DE CAPAS (Ahora reconocerá "Estaciones")
         folium.LayerControl(position='topright', collapsed=True).add_to(m)
 
         # 2. BOTÓN PANTALLA COMPLETA
@@ -474,17 +480,17 @@ if gdf_zona is not None:
 
         # 3. RENDERIZAR MAPA
         st_folium(m, width=1400, height=600, key=f"ctx_{nombre_zona}")
-
-        # 4. BOTÓN DE DESCARGA HTML
-        # Convertimos el objeto mapa a texto HTML
+        
+        # 4. BOTÓN DESCARGA HTML
         map_html = m.get_root().render()
         st.download_button(
             label="🌍 Descargar Mapa Contexto (HTML)",
             data=map_html,
             file_name=f"Contexto_{nombre_zona}.html",
             mime="text/html",
-            help="Descarga este mapa interactivo para abrirlo en cualquier navegador."
+            help="Descarga este mapa interactivo."
         )
+
 
     # --- TAB 3: RECARGA (BOTÓN + RASTER) ---
     with tab3:
