@@ -166,6 +166,80 @@ if not df_hist.empty:
     c3.metric("Recarga", f"{df_hist['recarga_mm'].mean()*12:,.0f} mm/año")
     c4.metric("Estaciones", len(df_puntos))
 
+# ==============================================================================
+# 🧠 CÁLCULO MASIVO DE ESTADÍSTICAS (Nuevo Bloque)
+# ==============================================================================
+# Este bloque calcula ETR, Escorrentía y Desviación para TODAS las estaciones filtradas
+# para que el Popup no muestre ceros.
+
+if df_puntos is not None and not df_puntos.empty:
+    with st.spinner("Calculando balance hídrico de las estaciones..."):
+        # 1. Traemos datos de lluvia de todas las estaciones visibles de una sola vez
+        ids_tuple = tuple(df_puntos['id_estacion'].tolist())
+        if ids_tuple:
+            q_stats = text(f"""
+                SELECT id_estacion, 
+                       AVG(precipitation) as p_mensual_avg, 
+                       STDDEV(precipitation) as p_std
+                FROM precipitation 
+                WHERE id_estacion IN :ids
+                GROUP BY id_estacion
+            """)
+            
+            # Usamos una conexión segura para traer estadísticas básicas
+            try:
+                with engine.connect() as conn:
+                    # Truco para tupla de 1 elemento en SQL
+                    if len(ids_tuple) == 1: 
+                        q_stats = text(f"SELECT id_estacion, AVG(precipitation) as p_mensual_avg, STDDEV(precipitation) as p_std FROM precipitation WHERE id_estacion = '{ids_tuple[0]}' GROUP BY id_estacion")
+                        df_stats_raw = pd.read_sql(q_stats, conn)
+                    else:
+                        df_stats_raw = pd.read_sql(q_stats, conn, params={'ids': ids_tuple})
+                
+                # 2. Fusión de datos
+                # Unimos las estadísticas a la tabla de puntos
+                df_mapa_stats = pd.merge(df_puntos, df_stats_raw, on='id_estacion', how='left')
+                
+                # 3. Cálculo Aproximado de TURC para Popups (Más rápido que correr el modelo mes a mes)
+                # Aplicamos la fórmula anualizada sobre los promedios
+                def calc_turc_rapido(row):
+                    p_anual = (row['p_mensual_avg'] * 12) if pd.notnull(row['p_mensual_avg']) else 0
+                    t_media = 30 - (0.0065 * row['alt_est']) # Gradiente térmico simple
+                    if t_media < 5: t_media = 5
+                    
+                    # Fórmula Turc Anual
+                    l_t = 300 + 25*t_media + 0.05*(t_media**3)
+                    denom = np.sqrt(0.9 + (p_anual/l_t)**2)
+                    etr = p_anual / denom if denom > 0 else 0
+                    
+                    # Balance simple
+                    excedente = p_anual - etr
+                    recarga = excedente * 0.20 # Asumimos un Ki promedio del 20% si no hay dato específico, o usa row['ki'] si lo tienes
+                    escorrentia = excedente * 0.80
+                    
+                    return pd.Series([p_anual, etr, escorrentia, recarga])
+
+                # Aplicar cálculo
+                cols_calc = df_mapa_stats.apply(calc_turc_rapido, axis=1)
+                cols_calc.columns = ['p_anual_calc', 'etr_calc', 'escorrentia_calc', 'recarga_turc']
+                
+                # Unir resultados al dataframe principal
+                df_mapa_stats = pd.concat([df_mapa_stats, cols_calc], axis=1)
+                
+                # Renombrar para que coincida con tu código de mapa existente
+                # Tu código espera: p_media, etr_media, escorrentia_media, std_lluvia
+                df_mapa_stats['p_media'] = df_mapa_stats['p_mensual_avg'] # Mensual
+                df_mapa_stats['etr_media'] = df_mapa_stats['etr_calc'] / 12 # Lo volvemos mensual para que tu popup x12 funcione
+                df_mapa_stats['escorrentia_media'] = df_mapa_stats['escorrentia_calc'] / 12
+                df_mapa_stats['recarga_calc'] = df_mapa_stats['recarga_turc'] / 12
+                df_mapa_stats['std_lluvia'] = df_mapa_stats['p_std']
+                
+            except Exception as e:
+                st.error(f"Error calculando estadísticas: {e}")
+                df_mapa_stats = df_puntos.copy() # Fallback
+else:
+    df_mapa_stats = df_puntos
+
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Series y Pronóstico", "🗺️ Mapa Contexto", "🌈 Mapa Recarga", "📥 Descargas"])
 
 # TAB 1: Serie Completa (Corregida)
@@ -232,39 +306,60 @@ with tab2:
     m = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB positron")
     m.fit_bounds(fit_bounds_coords) 
 
-    # --- FUNCIÓN AUXILIAR ROBUSTA ---
+    # --- DIAGNÓSTICO TEMPORAL (Eliminar luego si molesta) ---
+    if 'suelos' in layers:
+        cols_suelos_real = layers['suelos'].columns.tolist()
+        # st.caption(f"🔍 Columnas detectadas en Suelos: {cols_suelos_real}") 
+
+    # --- FUNCIÓN AUXILIAR A PRUEBA DE TODO ---
     def crear_tooltip_seguro(gdf, diccionario_campos):
-        cols_reales = [c.lower() for c in gdf.columns]
+        # Normalizamos las columnas del GeoJSON: minúsculas y sin espacios
+        cols_reales = [c.lower().strip() for c in gdf.columns]
+        
         fields_final = []
         aliases_final = []
+        
         for col_deseada, alias in diccionario_campos.items():
-            # Buscamos coincidencia exacta en minúsculas
-            if col_deseada.lower() in cols_reales:
-                fields_final.append(col_deseada.lower())
+            # Limpiamos también la clave deseada
+            col_target = col_deseada.lower().strip()
+            
+            if col_target in cols_reales:
+                # Importante: debemos usar el nombre EXACTO que tiene el dataframe, no el 'col_deseada'
+                # Buscamos el índice para sacar el nombre original (por si acaso)
+                idx = cols_reales.index(col_target)
+                nombre_real_df = gdf.columns[idx]
+                
+                fields_final.append(nombre_real_df)
                 aliases_final.append(alias)
         
         if not fields_final: return None
-        # sticky=True ayuda a "cazar" polígonos pequeños con el mouse
         return folium.GeoJsonTooltip(fields=fields_final, aliases=aliases_final, localize=True, sticky=True)
 
-    # --- A. SUELOS ---
+    # --- A. SUELOS (CONFIGURACIÓN CONFIRMADA POR IMAGEN) ---
     if 'suelos' in layers:
-        # Diccionario ampliado con tus campos esenciales
+        # Según tu imagen image_04c5b7.jpg, los nombres son exactos:
         dict_suelos = {
-            'ucs_f': 'UCS:', 'ucs': 'UCS:',
+            'ucs_f': 'UCS:', 
             'paisaje': 'Paisaje:', 
             'clima': 'Clima:',
-            'litologia': 'Litología:',      # <--- ESENCIAL
-            'caracteri': 'Características:', # <--- ESENCIAL
+            'litologia': 'Litología:',      # Confirmado en imagen
+            'caracteri': 'Características:', # Confirmado en imagen (cortado)
             'componente': 'Componente:',
             'porcentaje': '%'
         }
+        
+        # Lógica para rellenar datos nulos y que no salgan vacíos en el tooltip
+        for col in ['litologia', 'caracteri', 'componente']:
+            if col in layers['suelos'].columns:
+                layers['suelos'][col] = layers['suelos'][col].fillna("Sin Información").astype(str)
+
         folium.GeoJson(
             layers['suelos'], name="Suelos",
-            style_function=lambda x: {'color': 'orange', 'weight': 0.8, 'fillOpacity': 0.2}, # Borde un poco más grueso para ver los pequeños
+            style_function=lambda x: {'color': 'orange', 'weight': 0.8, 'fillOpacity': 0.2},
             tooltip=crear_tooltip_seguro(layers['suelos'], dict_suelos)
         ).add_to(m)
-        
+
+    
     # --- B. HIDROGEOLOGÍA ---
     if 'hidro' in layers:
         dict_hidro = {
