@@ -596,3 +596,65 @@ if gdf_zona is not None:
 
 else:
     st.info("👈 Selecciona una zona.")
+
+# --- FINAL DE pages/02_💧_Aguas_Subterraneas.py ---
+
+st.divider()
+
+with st.expander("📘 Guía Técnica, Metodología y Fuentes de Información", expanded=False):
+    tab_guia1, tab_guia2, tab_guia3 = st.tabs(["📚 Conceptos & Ecuaciones", "🛠️ Metodología", "Source Fuentes de Datos"])
+    
+    with tab_guia1:
+        st.markdown(r"""
+        ### 💧 Balance Hídrico Simplificado
+        El modelo se basa en la ecuación fundamental de conservación de masa:
+        
+        $$ P = ETR + E_s + R + \Delta S $$
+        
+        Donde:
+        * $P$: Precipitación (Lluvia).
+        * $ETR$: Evapotranspiración Real (Agua que vuelve a la atmósfera).
+        * $E_s$: Escorrentía Superficial (Agua que corre por ríos/quebradas).
+        * $R$: Recarga (Agua que entra al acuífero).
+        
+        ### 🧠 Factores Clave
+        * **Infiltración ($I$):** Es el agua que logra atravesar la superficie del suelo. Depende de la **Cobertura Vegetal** (Bosques infiltran más que Cemento) y la **Textura del Suelo** (Arenas infiltran más que Arcillas).
+        * **Recarga Real ($R$):** Es la fracción de la infiltración que efectivamente llega al almacenamiento subterráneo profundo, condicionada por la **Geología** (Permeabilidad de la roca).
+        """)
+        
+    with tab_guia2:
+        st.markdown("""
+        ### ⚙️ Motor de Cálculo
+        1.  **Climatología:** Se utiliza el método de **Turc Modificado** para estimar la ETR mensual, ajustada por un coeficiente de cultivo ($K_c$) dependiente de la cobertura vegetal satelital.
+        2.  **Proyección:** Se implementa el algoritmo **Facebook Prophet** (Regresión Aditiva Generalizada) para proyectar tendencias climáticas y detectar estacionalidad en la lluvia.
+        3.  **Espacialización:** Los mapas de isoyetas y recarga se generan mediante interpolación lineal o IDW (Inverse Distance Weighting) sobre la red de estaciones activas.
+        
+        ### 🚦 Interpretación del Mapa de Potencial
+        * 🟢 **Muy Alto / Alto:** Zonas estratégicas de recarga. Acuíferos productivos o zonas de alta permeabilidad.
+        * 🟡 **Medio:** Zonas de transición.
+        * 🔴 **Bajo / Muy Bajo:** Zonas impermeables, rocas cristalinas o áreas con baja capacidad de almacenamiento.
+        """)
+        
+    with tab_guia3:
+        st.info("Este sistema integra información de múltiples entidades oficiales y académicas.")
+        
+        col_f1, col_f2 = st.columns(2)
+        
+        with col_f1:
+            st.markdown("**🗺️ Información Cartográfica**")
+            st.caption("""
+            * **Potencial Hidrogeológico:** Teresita Betancur V. (Universidad de Antioquia).
+            * **Coberturas de la Tierra:** Corine Land Cover (2020).
+            * **Suelos y Litología:** Secretaría de Agricultura, Gobernación de Antioquia.
+            * **Bocatomas:** Secretaría de Agricultura, Gobernación de Antioquia.
+            """)
+            
+        with col_f2:
+            st.markdown("**🌧️ Red de Monitoreo Hidroclimático**")
+            st.caption("""
+            * **IDEAM:** Instituto de Hidrología, Meteorología y Estudios Ambientales.
+            * **EPM:** Empresas Públicas de Medellín.
+            * **Piragua:** Corantioquia.
+            * **CuencaVerde:** Fondo de Agua.
+            * **Google Earth Engine:** Datos satelitales complementarios (CHIRPS/GOES).
+            """)
