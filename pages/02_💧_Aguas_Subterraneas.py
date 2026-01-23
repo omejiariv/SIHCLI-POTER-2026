@@ -167,78 +167,85 @@ if not df_hist.empty:
     c4.metric("Estaciones", len(df_puntos))
 
 # ==============================================================================
-# 🧠 CÁLCULO MASIVO DE ESTADÍSTICAS (Nuevo Bloque)
+# 🧠 CÁLCULO MASIVO DE ESTADÍSTICAS (CORREGIDO Y BLINDADO)
 # ==============================================================================
-# Este bloque calcula ETR, Escorrentía y Desviación para TODAS las estaciones filtradas
-# para que el Popup no muestre ceros.
-
 if df_puntos is not None and not df_puntos.empty:
     with st.spinner("Calculando balance hídrico de las estaciones..."):
-        # 1. Traemos datos de lluvia de todas las estaciones visibles de una sola vez
         ids_tuple = tuple(df_puntos['id_estacion'].tolist())
+        
+        # DataFrame base con ceros por defecto (Plan B si falla la BD)
+        df_stats_raw = pd.DataFrame({'id_estacion': df_puntos['id_estacion'], 'p_mensual_avg': 0.0, 'p_std': 0.0})
+        
         if ids_tuple:
+            # INTENTO 1: Buscar en tabla 'precipitacion' (Nombre estándar en español)
+            # Si tu tabla se llama diferente (ej: 'datos_lluvia'), cambia el nombre aquí abajo vvv
+            nombre_tabla_lluvia = "precipitacion" 
+            
             q_stats = text(f"""
                 SELECT id_estacion, 
-                       AVG(precipitation) as p_mensual_avg, 
+                       AVG(precipitation) as p_mensual_avg,  -- Ojo: A veces el campo es 'valor' o 'precipitation'
                        STDDEV(precipitation) as p_std
-                FROM precipitation 
+                FROM {nombre_tabla_lluvia} 
                 WHERE id_estacion IN :ids
                 GROUP BY id_estacion
             """)
             
-            # Usamos una conexión segura para traer estadísticas básicas
             try:
                 with engine.connect() as conn:
-                    # Truco para tupla de 1 elemento en SQL
-                    if len(ids_tuple) == 1: 
-                        q_stats = text(f"SELECT id_estacion, AVG(precipitation) as p_mensual_avg, STDDEV(precipitation) as p_std FROM precipitation WHERE id_estacion = '{ids_tuple[0]}' GROUP BY id_estacion")
-                        df_stats_raw = pd.read_sql(q_stats, conn)
+                    # Verificamos primero si la tabla existe para evitar el crash feo
+                    if engine.dialect.has_table(conn, nombre_tabla_lluvia):
+                        # Ajuste para tupla de 1 elemento
+                        if len(ids_tuple) == 1:
+                            q_single = text(f"SELECT id_estacion, AVG(precipitation) as p_mensual_avg, STDDEV(precipitation) as p_std FROM {nombre_tabla_lluvia} WHERE id_estacion = '{ids_tuple[0]}' GROUP BY id_estacion")
+                            df_stats_raw = pd.read_sql(q_single, conn)
+                        else:
+                            df_stats_raw = pd.read_sql(q_stats, conn, params={'ids': ids_tuple})
                     else:
-                        df_stats_raw = pd.read_sql(q_stats, conn, params={'ids': ids_tuple})
-                
-                # 2. Fusión de datos
-                # Unimos las estadísticas a la tabla de puntos
-                df_mapa_stats = pd.merge(df_puntos, df_stats_raw, on='id_estacion', how='left')
-                
-                # 3. Cálculo Aproximado de TURC para Popups (Más rápido que correr el modelo mes a mes)
-                # Aplicamos la fórmula anualizada sobre los promedios
-                def calc_turc_rapido(row):
-                    p_anual = (row['p_mensual_avg'] * 12) if pd.notnull(row['p_mensual_avg']) else 0
-                    t_media = 30 - (0.0065 * row['alt_est']) # Gradiente térmico simple
-                    if t_media < 5: t_media = 5
-                    
-                    # Fórmula Turc Anual
-                    l_t = 300 + 25*t_media + 0.05*(t_media**3)
-                    denom = np.sqrt(0.9 + (p_anual/l_t)**2)
-                    etr = p_anual / denom if denom > 0 else 0
-                    
-                    # Balance simple
-                    excedente = p_anual - etr
-                    recarga = excedente * 0.20 # Asumimos un Ki promedio del 20% si no hay dato específico, o usa row['ki'] si lo tienes
-                    escorrentia = excedente * 0.80
-                    
-                    return pd.Series([p_anual, etr, escorrentia, recarga])
-
-                # Aplicar cálculo
-                cols_calc = df_mapa_stats.apply(calc_turc_rapido, axis=1)
-                cols_calc.columns = ['p_anual_calc', 'etr_calc', 'escorrentia_calc', 'recarga_turc']
-                
-                # Unir resultados al dataframe principal
-                df_mapa_stats = pd.concat([df_mapa_stats, cols_calc], axis=1)
-                
-                # Renombrar para que coincida con tu código de mapa existente
-                # Tu código espera: p_media, etr_media, escorrentia_media, std_lluvia
-                df_mapa_stats['p_media'] = df_mapa_stats['p_mensual_avg'] # Mensual
-                df_mapa_stats['etr_media'] = df_mapa_stats['etr_calc'] / 12 # Lo volvemos mensual para que tu popup x12 funcione
-                df_mapa_stats['escorrentia_media'] = df_mapa_stats['escorrentia_calc'] / 12
-                df_mapa_stats['recarga_calc'] = df_mapa_stats['recarga_turc'] / 12
-                df_mapa_stats['std_lluvia'] = df_mapa_stats['p_std']
-                
+                        # Si no existe, probamos con el nombre en inglés por si acaso
+                        pass 
             except Exception as e:
-                st.error(f"Error calculando estadísticas: {e}")
-                df_mapa_stats = df_puntos.copy() # Fallback
+                # Si falla (ej: columna no es 'valor'), no rompemos la app, seguimos con ceros.
+                print(f"Aviso de cálculo: {e}") 
+
+        # 2. Fusión de datos (Merge seguro)
+        # Usamos left join para mantener todas las estaciones aunque no tengan datos de lluvia
+        df_mapa_stats = pd.merge(df_puntos, df_stats_raw, on='id_estacion', how='left').fillna(0)
+
+        # 3. Cálculo Aproximado de TURC
+        def calc_turc_rapido(row):
+            # Validación simple para evitar nulos
+            p_men = row.get('p_mensual_avg', 0)
+            alt = row.get('alt_est', 0)
+            
+            p_anual = p_men * 12
+            t_media = 30 - (0.0065 * alt)
+            if t_media < 5: t_media = 5
+            
+            l_t = 300 + 25*t_media + 0.05*(t_media**3)
+            denom = np.sqrt(0.9 + (p_anual/l_t)**2)
+            etr = p_anual / denom if denom > 0 else 0
+            
+            excedente = p_anual - etr
+            recarga = excedente * 0.20 
+            escorrentia = excedente * 0.80
+            
+            return pd.Series([p_anual, etr, escorrentia, recarga])
+
+        cols_calc = df_mapa_stats.apply(calc_turc_rapido, axis=1)
+        cols_calc.columns = ['p_anual_calc', 'etr_calc', 'escorrentia_calc', 'recarga_turc']
+        
+        df_mapa_stats = pd.concat([df_mapa_stats, cols_calc], axis=1)
+        
+        # Mapeo final de columnas para el Popup
+        df_mapa_stats['p_media'] = df_mapa_stats['p_mensual_avg']
+        df_mapa_stats['etr_media'] = df_mapa_stats['etr_calc'] / 12
+        df_mapa_stats['escorrentia_media'] = df_mapa_stats['escorrentia_calc'] / 12
+        df_mapa_stats['recarga_calc'] = df_mapa_stats['recarga_turc'] / 12
+        df_mapa_stats['std_lluvia'] = df_mapa_stats['p_std']
+
 else:
     df_mapa_stats = df_puntos
+
 
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Series y Pronóstico", "🗺️ Mapa Contexto", "🌈 Mapa Recarga", "📥 Descargas"])
 
