@@ -31,7 +31,7 @@ st.sidebar.divider()
 st.sidebar.header("🎛️ Parámetros")
 
 # ⚠️ Asegúrate de que este archivo exista en tu carpeta data/
-RUTA_RASTER = "data/mapaCVENSO.tif" 
+RUTA_RASTER = "data/Cob25m_WGS84.tif"
 
 modo_params = st.sidebar.radio(
     "Fuente de Parámetros:", 
