@@ -189,23 +189,44 @@ if gdf_zona is not None:
                 tooltip=tooltip_ok(layers['bocatomas'], dic_boca)
             ).add_to(m)
 
-        # Popups Completos
-        # Popups Estaciones
+        # --- ESTACIONES (Popups Completos) ---
         for _, r in df_mapa_stats.iterrows():
-            def fmt(val): return f"{val*12:,.0f} mm" if pd.notnull(val) else "<span style='color:red'>N/D</span>"
-            html = f"""
-            <div style='font-family:sans-serif; width:160px; font-size:12px;'>
-                <b>{r['nom_est']}</b><hr style='margin:3px 0;'>
-                🌧️ Lluvia: <b>{fmt(r.get('p_media'))}</b><br>
-                💧 Recarga: <b>{fmt(r.get('recarga_calc'))}</b>
-            </div>"""
-            folium.Marker([r['latitud'], r['longitud']], popup=folium.Popup(html, max_width=200), icon=folium.Icon(color='black', icon='tint'), name="Estaciones").add_to(m)
+            # Formateador seguro
+            def fmt(val, mult=12): 
+                if pd.isnull(val): return "<span style='color:red'>N/D</span>"
+                return f"{val*mult:,.0f} mm"
 
-        # 2. SELECTOR DE CAPAS (LayerControl)
+            mun = r.get('municipio', 'N/D')
+            alt = r.get('alt_est', 0)
+            std_val = r.get('std_lluvia', 0)
+            
+            html = f"""
+            <div style='font-family:sans-serif; width:200px; font-size:12px;'>
+                <b style="font-size:13px; color:#2c3e50;">{r['nom_est']}</b>
+                <hr style='margin:4px 0; border-top: 1px solid #ccc;'>
+                📍 <b>Mun:</b> {mun} <br>
+                ⛰️ <b>Alt:</b> {alt:,.0f} m <br>
+                <hr style='margin:4px 0; border-top: 1px dashed #ccc;'>
+                🌧️ <b>Lluvia:</b> {fmt(r.get('p_media'))}<br>
+                ☀️ <b>ETR:</b> {fmt(r.get('etr_media'))}<br>
+                🌊 <b>Escorrentía:</b> {fmt(r.get('escorrentia_media'))}<br>
+                💧 <b>Recarga:</b> <b style='color:#0000AA;'>{fmt(r.get('recarga_calc'))}</b><br>
+                <div style="margin-top:4px; font-size:10px; color:#7f8c8d; text-align:right;">
+                    (Desv. Std Lluvia: {std_val:.1f})
+                </div>
+            </div>"""
+            
+            folium.Marker(
+                [r['latitud'], r['longitud']], 
+                popup=folium.Popup(html, max_width=220), 
+                icon=folium.Icon(color='black', icon='tint'),
+                tooltip=r['nom_est']
+            ).add_to(m)
+
+        # Selector de Capas (Vital para activar/desactivar)
         folium.LayerControl(position='topright', collapsed=True).add_to(m)
 
         st_folium(m, width=1400, height=600, key=f"ctx_{nombre_zona}")
-
 
     # --- TAB 3: RECARGA (BOTÓN + RASTER) ---
     with tab3:
