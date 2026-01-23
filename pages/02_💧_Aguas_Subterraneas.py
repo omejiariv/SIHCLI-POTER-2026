@@ -282,30 +282,56 @@ if gdf_zona is not None:
                 name="Recarga (Raster)"
             ).add_to(m_iso)
 
-            # 3. ISOLÍNEAS CON LEYENDA FLOTANTE (Recuperado)
+            # 3. ISOLÍNEAS CON ETIQUETAS FIJAS (Números visibles)
             try:
                 fig_c, ax_c = plt.subplots()
-                # Niveles automáticos para isolíneas suaves
-                cs = ax_c.contour(Xi, Yi, Zi_r, levels=10, colors='white', linewidths=0.5)
+                # Generamos las curvas (menos niveles para no saturar el mapa con texto)
+                cs = ax_c.contour(Xi, Yi, Zi_r, levels=10, colors='white', linewidths=0.8)
                 plt.close(fig_c)
                 
-                # Convertir isolíneas a Folium
                 for i, collection in enumerate(cs.allsegs):
                     level_val = cs.levels[i]
                     for segment in collection:
-                        if len(segment) > 2:
-                            # Invertir coords a Lat, Lon para Folium
+                        # Solo dibujamos si el segmento es relevante (> 5 puntos) para evitar ruido
+                        if len(segment) > 5:
                             locs = [[pt[1], pt[0]] for pt in segment]
+                            
+                            # 1. Dibujar la Línea
                             folium.PolyLine(
                                 locs, 
                                 color='white', 
-                                weight=1.5, 
+                                weight=1.0, 
                                 opacity=0.8,
-                                tooltip=f"Recarga: {level_val:.0f} mm", # Leyenda flotante al pasar mouse
                                 name="Isolíneas"
+                            ).add_to(m_iso)
+                            
+                            # 2. Calcular punto medio para poner el texto
+                            mid_idx = len(locs) // 2
+                            lat_lbl, lon_lbl = locs[mid_idx]
+                            
+                            # 3. Crear Etiqueta de Texto Fija (DivIcon)
+                            # Usamos text-shadow para que el número blanco se lea sobre fondo claro u oscuro
+                            html_text = f"""
+                                <div style="
+                                    font-size: 9pt; 
+                                    font-weight: bold; 
+                                    color: white; 
+                                    text-shadow: 1px 1px 2px black, -1px -1px 2px black;
+                                    white-space: nowrap;
+                                ">{int(level_val)}</div>
+                            """
+                            
+                            folium.Marker(
+                                location=[lat_lbl, lon_lbl],
+                                icon=DivIcon(
+                                    icon_size=(30, 10),
+                                    icon_anchor=(15, 5), # Centrar el texto
+                                    html=html_text
+                                )
                             ).add_to(m_iso)
             except Exception as e:
                 print(f"Error isolíneas: {e}")
+
 
             # 2. SELECTOR DE CAPAS
             folium.LayerControl(position='topright', collapsed=True).add_to(m_iso)
