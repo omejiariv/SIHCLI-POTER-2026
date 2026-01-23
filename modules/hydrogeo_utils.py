@@ -167,7 +167,7 @@ def cargar_capas_gis_optimizadas(_engine, bounds=None):
     return layers
 
 # ==============================================================================
-# 3. CÁLCULO ESTADÍSTICO CACHEADO (Solución a la inestabilidad)
+# 3. CÁLCULO ESTADÍSTICO CACHEADO (La función que faltaba)
 # ==============================================================================
 @st.cache_data(show_spinner=False, ttl=600)
 def obtener_estadisticas_estaciones(_engine, df_puntos_snapshot):
@@ -216,7 +216,9 @@ def obtener_estadisticas_estaciones(_engine, df_puntos_snapshot):
 
     # 3. Cálculo Vectorial (Rápido)
     p_anual = df_res['p_men'] * 12
-    t_media = np.maximum(5, 30 - 0.0065 * df_res['alt_est'])
+    # Aseguramos que no haya nulos en altitud
+    altitudes = df_res['alt_est'].fillna(1500) 
+    t_media = np.maximum(5, 30 - 0.0065 * altitudes)
     
     l_t = 300 + 25*t_media + 0.05*(t_media**3)
     denom = np.sqrt(0.9 + (p_anual/l_t)**2)
