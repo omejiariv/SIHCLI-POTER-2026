@@ -155,8 +155,9 @@ st.markdown("---")
 
 tabs = st.tabs([
     "📡 Estaciones", "📊 Índices", "🏠 Predios", "🌊 Cuencas", 
-    "🏙️ Municipios", "🌲 Coberturas", "💧 Bocatomas", "⛰️ Hidrogeología", "🌱 Suelos", "🛠️ SQL"
+    "🏙️ Municipios", "🌲 Coberturas", "💧 Bocatomas", "⛰️ Hidrogeología", "🌱 Suelos", "🛠️ SQL", "📚 Inventario"
 ])
+
 
 # ==============================================================================
 # TAB 1: ESTACIONES
@@ -235,53 +236,52 @@ with tabs[0]:
             except Exception as e: st.error(f"Error: {e}")
 
 # ==============================================================================
-# TAB 2: ÍNDICES (CORREGIDO: SEPARADOR PUNTO Y COMA)
+# TAB 2: ÍNDICES (FORZANDO PUNTO Y COMA)
 # ==============================================================================
 with tabs[1]:
-    st.header("📊 Índices Climáticos (ONI, SOI, IOD)")
+    st.header("📊 Índices Climáticos")
     sb1, sb2 = st.tabs(["👁️ Ver Tabla Completa", "📂 Cargar/Actualizar CSV"])
     
     with sb1:
         try:
+            # Leemos la tabla
             df_idx = pd.read_sql("SELECT * FROM indices_climaticos", engine)
+            
             if not df_idx.empty:
-                st.markdown(f"**Registros:** {len(df_idx)} | **Columnas:** {len(df_idx.columns)}")
-                # Convertimos todo a string para evitar problemas de visualización en el editor
-                st.data_editor(df_idx, key="ed_idx_view", use_container_width=True, num_rows="dynamic", height=500)
+                # Verificamos si por error se guardó todo en una columna
+                if len(df_idx.columns) < 2:
+                    st.warning("⚠️ La tabla actual parece tener formato incorrecto (una sola columna). Por favor ve a la pestaña 'Cargar' y sube el archivo de nuevo para corregirlo.")
+                    st.dataframe(df_idx) # Mostramos dataframe simple para diagnosticar
+                else:
+                    st.success(f"✅ Datos cargados correctamente: {len(df_idx)} registros.")
+                    st.data_editor(df_idx, key="ed_idx_final", use_container_width=True, num_rows="dynamic", height=500)
             else:
-                st.info("La tabla está vacía. Carga el archivo en la pestaña de al lado.")
-        except: 
-            st.warning("No se encontraron datos.")
+                st.info("La tabla está vacía.")
+        except: st.warning("No hay datos.")
 
     with sb2:
         st.markdown("### Cargar Archivo de Índices")
-        st.info("Sube el archivo CSV. Se usará punto y coma (;) como separador.")
-        up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_csv_semicolon")
+        st.info("Sube 'Indices_Globales.csv'. Se forzará el uso de **punto y coma (;)** como separador.")
+        up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_final")
         
-        if up_i and st.button("Procesar y Cargar", key="btn_load_ind_semi"):
+        if up_i and st.button("Procesar y Corregir BD", key="btn_load_ind_final"):
             try:
-                # INTENTO 1: Leer explícitamente con punto y coma ';'
-                # engine='python' es más flexible detectando líneas
+                # LEER CON PUNTO Y COMA EXPLÍCITAMENTE
                 df = pd.read_csv(up_i, sep=';', encoding='latin-1', engine='python')
                 
-                # Validación: Si solo detectó 1 columna, es que el separador falló
-                if len(df.columns) < 2:
-                    up_i.seek(0)
-                    # Intento 2: Coma normal
-                    df = pd.read_csv(up_i, sep=',', encoding='latin-1')
-                
-                # Limpieza de columnas (quitar espacios y minúsculas)
+                # Limpieza de columnas
                 df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
                 
-                # Carga a BD (Reemplazando tabla anterior)
-                df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-                
-                st.success(f"✅ ¡Éxito! Se cargaron {len(df)} registros con {len(df.columns)} columnas.")
-                st.dataframe(df.head()) # Muestra previa para confirmar que se separó bien
-                st.balloons()
-                
+                if len(df.columns) < 2:
+                    st.error("❌ Error: El archivo no parece estar separado por punto y coma (;). Revisa tu CSV.")
+                else:
+                    # Guardar en BD reemplazando lo anterior
+                    df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
+                    st.success(f"✅ ¡Base de datos corregida! {len(df)} registros con {len(df.columns)} columnas.")
+                    st.dataframe(df.head())
+                    st.balloons()
             except Exception as e:
-                st.error(f"❌ Error al leer el archivo: {str(e)}")
+                st.error(f"Error: {e}")
 
 # ==============================================================================
 # TAB 3: PREDIOS
@@ -534,3 +534,92 @@ with tabs[9]:
                     conn.commit()
                     st.success("Hecho.")
         except Exception as e: st.error(str(e))
+
+# ==============================================================================
+# TAB 11: INVENTARIO DE ARCHIVOS (NUEVO)
+# ==============================================================================
+with tabs[10]: # Índice 10 porque es la pestaña número 11 (0-10)
+    st.header("📚 Inventario de Archivos del Sistema")
+    st.markdown("Documentación técnica de los archivos requeridos para la operación de la plataforma.")
+    
+    # Definimos la data del inventario manualmente según tu estructura
+    inventario_data = [
+        {
+            "Archivo": "mapaCVENSO.csv",
+            "Formato": ".csv",
+            "Tipo": "Metadatos Estaciones",
+            "Descripción": "Coordenadas, nombres y alturas de las estaciones.",
+            "Campos Clave": "Id_estacio, Nom_Est, Latitud_geo, Longitud_geo, alt_est"
+        },
+        {
+            "Archivo": "Indices_Globales.csv",
+            "Formato": ".csv",
+            "Tipo": "Clima Global",
+            "Descripción": "Series históricas de índices macroclimáticos (ONI, SOI, etc).",
+            "Campos Clave": "año, mes, anomalia_oni, soi, iod, enso_mes"
+        },
+        {
+            "Archivo": "Predios Ejecutados.geojson",
+            "Formato": ".geojson",
+            "Tipo": "Vector (Polígonos)",
+            "Descripción": "Delimitación de predios intervenidos o gestionados.",
+            "Campos Clave": "PK_PREDIOS, NOMBRE_PRE, NOMB_MPIO, AREA_HA"
+        },
+        {
+            "Archivo": "SubcuencasAinfluencia.geojson",
+            "Formato": ".geojson",
+            "Tipo": "Vector (Polígonos)",
+            "Descripción": "Límites hidrográficos y zonas de influencia.",
+            "Campos Clave": "COD/OBJECTID, SUBC_LBL, Shape_Area, SZH, AH, ZH"
+        },
+        {
+            "Archivo": "Municipios.geojson",
+            "Formato": ".geojson",
+            "Tipo": "Vector (Polígonos)",
+            "Descripción": "División político-administrativa del departamento.",
+            "Campos Clave": "MPIO_CDPMP (Código DANE), MPIO_CNMBR (Nombre)"
+        },
+        {
+            "Archivo": "Cob25m_WGS84.tiff",
+            "Formato": ".tiff",
+            "Tipo": "Raster",
+            "Descripción": "Imagen satelital clasificada de coberturas vegetales.",
+            "Campos Clave": "N/A (Valores de píxel: 1=Bosque, 2=Cultivo, etc.)"
+        },
+        {
+            "Archivo": "Bocatomas_Ant.zip",
+            "Formato": ".zip (Shapefile)",
+            "Tipo": "Vector (Puntos)",
+            "Descripción": "Ubicación de captaciones de agua.",
+            "Campos Clave": "nombre_bocatoma, caudal, usuario"
+        },
+        {
+            "Archivo": "Zonas_PotHidrogeologico.geojson",
+            "Formato": ".geojson",
+            "Tipo": "Vector (Polígonos)",
+            "Descripción": "Clasificación del potencial de aguas subterráneas.",
+            "Campos Clave": "potencial, unidad_geologica"
+        },
+        {
+            "Archivo": "Suelos_Antioquia.geojson",
+            "Formato": ".geojson",
+            "Tipo": "Vector (Polígonos)",
+            "Descripción": "Unidades de suelo y capacidad agrológica.",
+            "Campos Clave": "unidad_suelo, textura, grupo_hidro"
+        }
+    ]
+    
+    # Crear DataFrame
+    df_inv = pd.DataFrame(inventario_data)
+    
+    # Mostrar tabla bonita
+    st.dataframe(
+        df_inv,
+        column_config={
+            "Archivo": st.column_config.TextColumn("Nombre Archivo", width="medium"),
+            "Descripción": st.column_config.TextColumn("Descripción", width="large"),
+            "Campos Clave": st.column_config.TextColumn("Campos / Columnas", width="large"),
+        },
+        hide_index=True,
+        use_container_width=True
+    )
