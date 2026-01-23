@@ -487,3 +487,58 @@ def agrupar_coberturas_turc(stats_dict):
     sum_urbano = max(0, 100 - (sum_bosque + sum_agricola + sum_pecuario + sum_agua))
     
     return sum_bosque, sum_agricola, sum_pecuario, sum_agua, sum_urbano
+
+# --- OBTENER IMAGEN ---
+
+def obtener_imagen_folium_coberturas(gdf_zona, raster_path):
+    """
+    Genera la imagen RGBA y los límites para pintar el raster en Folium.
+    Usa los colores definidos en LAND_COVER_COLORS.
+    """
+    if gdf_zona is None or not os.path.exists(raster_path):
+        return None, None
+
+    try:
+        with rasterio.open(raster_path) as src:
+            # 1. Asegurar proyección
+            if gdf_zona.crs != src.crs:
+                gdf_zona = gdf_zona.to_crs(src.crs)
+
+            # 2. Recortar (Mask)
+            out_image, out_transform = mask(src, gdf_zona.geometry, crop=True)
+            data = out_image[0] # Banda 1
+
+            # 3. Crear imagen RGBA vacía
+            # Dimensiones: (Alto, Ancho, 4 canales)
+            rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
+
+            # 4. Colorear según diccionario LAND_COVER_COLORS
+            for cat_id, hex_color in LAND_COVER_COLORS.items():
+                # Convertir Hex a RGB
+                h = hex_color.lstrip('#')
+                r, g, b = tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+                
+                # Máscara booleana para esta categoría
+                mask_cat = (data == cat_id)
+                
+                # Asignar colores
+                rgba[mask_cat, 0] = r
+                rgba[mask_cat, 1] = g
+                rgba[mask_cat, 2] = b
+                rgba[mask_cat, 3] = 180 # Transparencia (0-255). 180 es semi-transparente.
+
+            # Hacer transparentes los píxeles sin datos
+            rgba[(data == src.nodata) | (data == 0), 3] = 0
+
+            # 5. Calcular Bounds para Folium (Lat/Lon)
+            # Necesitamos los bordes en el sistema de coordenadas original, luego transformar a WGS84
+            # Una forma rápida es usar los bounds de la zona recortada vectorial (aproximación segura)
+            minx, miny, maxx, maxy = gdf_zona.to_crs("EPSG:4326").total_bounds
+            # Folium usa [[LatMin, LonMin], [LatMax, LonMax]]
+            bounds_folium = [[miny, minx], [maxy, maxx]]
+
+            return rgba, bounds_folium
+
+    except Exception as e:
+        print(f"Error generando imagen coberturas: {e}")
+        return None, None

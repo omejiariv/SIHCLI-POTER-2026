@@ -258,6 +258,23 @@ if gdf_zona is not None:
                     a.append(v)
             return folium.GeoJsonTooltip(fields=f, aliases=a, localize=True) if f else None
 
+        # --- CAPA DE COBERTURAS VEGETALES ---
+        # Solo intentamos cargar si estamos en modo automático o si existe la ruta
+        if 'mapaCVENSO' in RUTA_RASTER or os.path.exists(RUTA_RASTER):
+            # Llamamos a la función que acabamos de crear
+            img_cob, bounds_cob = land_cover.obtener_imagen_folium_coberturas(gdf_zona, RUTA_RASTER)
+            
+            if img_cob is not None:
+                folium.raster_layers.ImageOverlay(
+                    image=img_cob,
+                    bounds=bounds_cob,
+                    opacity=0.7,
+                    name="Coberturas (Real)",
+                    # Z-index bajo para que bocatomas y estaciones queden encima
+                    zindex=1
+                ).add_to(m)
+        # -------------------------------------------
+
         # Diccionarios Expandidos para Tooltips
         if 'suelos' in layers:
             dic_suelos = {'ucs':'UCS:', 'litolo':'Litología:', 'caracter':'Caract:', 'paisaje':'Paisaje:', 'clima':'Clima:', 'component':'Comp:', 'porcent':'%:'}
