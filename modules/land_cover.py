@@ -541,3 +541,56 @@ def obtener_imagen_folium_coberturas(gdf_zona, raster_path):
     except Exception as e:
         print(f"Error generando imagen coberturas: {e}")
         return None, None
+
+# --- AGREGAR AL FINAL DE modules/land_cover.py ---
+
+from rasterio.features import shapes
+from shapely.geometry import shape
+
+def obtener_vector_coberturas_ligero(gdf_zona, raster_path, max_poly=1000):
+    """
+    Vectoriza el raster para generar tooltips.
+    Optimizado: Simplifica geometrías y limita la cantidad de polígonos para no bloquear el navegador.
+    """
+    if gdf_zona is None or not os.path.exists(raster_path):
+        return None
+
+    try:
+        with rasterio.open(raster_path) as src:
+            # 1. Asegurar proyección
+            if gdf_zona.crs != src.crs:
+                gdf_zona = gdf_zona.to_crs(src.crs)
+
+            # 2. Recortar
+            out_image, out_transform = mask(src, gdf_zona.geometry, crop=True)
+            data = out_image[0]
+
+            # 3. Vectorizar (Raster -> Polígonos)
+            # Solo procesamos píxeles válidos
+            mask_valid = (data != src.nodata) & (data > 0)
+            
+            results = (
+                {'properties': {'val': v}, 'geometry': s}
+                for i, (s, v) 
+                in enumerate(shapes(data, mask=mask_valid, transform=out_transform))
+                if i < max_poly # Límite de seguridad
+            )
+
+            # 4. Construir GeoDataFrame
+            geoms = list(results)
+            if not geoms: return None
+            
+            gdf_vector = gpd.GeoDataFrame.from_features(geoms, crs=src.crs)
+            
+            # 5. Mapear Nombres (ID -> Nombre)
+            # Usamos el diccionario LAND_COVER_LEGEND (asegúrate que existe arriba)
+            gdf_vector['Cobertura'] = gdf_vector['val'].map(lambda x: LAND_COVER_LEGEND.get(int(x), f"Clase {int(x)}"))
+            
+            # 6. Reproyectar a WGS84 (Obligatorio para Folium)
+            gdf_vector = gdf_vector.to_crs("EPSG:4326")
+            
+            return gdf_vector
+
+    except Exception as e:
+        print(f"Error vectorizando coberturas: {e}")
+        return None

@@ -259,10 +259,9 @@ if gdf_zona is not None:
                     a.append(v)
             return folium.GeoJsonTooltip(fields=f, aliases=a, localize=True) if f else None
 
-        # --- CAPA DE COBERTURAS VEGETALES ---
-        # Solo intentamos cargar si estamos en modo automático o si existe la ruta
-        # Cargar Coberturas si el archivo existe
+        # --- CAPA DE COBERTURAS (RASTER + TOOLTIPS) ---
         if os.path.exists(RUTA_RASTER):
+            # 1. Capa Visual (Imagen bonita)
             img_cob, bounds_cob = land_cover.obtener_imagen_folium_coberturas(gdf_zona, RUTA_RASTER)
             
             if img_cob is not None:
@@ -270,9 +269,32 @@ if gdf_zona is not None:
                     image=img_cob,
                     bounds=bounds_cob,
                     opacity=0.6,
-                    name="Coberturas (Real)",
+                    name="Coberturas (Imagen)",
                     zindex=1
                 ).add_to(m)
+
+                # 2. Capa Interactiva (Vectores invisibles para Tooltip)
+                # Solo la calculamos si la zona no es gigante (para no colgar el navegador)
+                if len(gdf_zona) == 1: # Solo si es una cuenca/municipio específico
+                    gdf_tooltips = land_cover.obtener_vector_coberturas_ligero(gdf_zona, RUTA_RASTER)
+                    
+                    if gdf_tooltips is not None:
+                        folium.GeoJson(
+                            gdf_tooltips,
+                            name="Coberturas (Interactivo)",
+                            style_function=lambda x: {
+                                'color': 'transparent', 
+                                'fillColor': 'transparent', 
+                                'weight': 0, 
+                                'fillOpacity': 0
+                            },
+                            tooltip=folium.GeoJsonTooltip(
+                                fields=['Cobertura'],
+                                aliases=['Tipo:'],
+                                localize=True,
+                                sticky=True
+                            )
+                        ).add_to(m)
         # -------------------------------------------
 
         # Diccionarios Expandidos para Tooltips
