@@ -18,7 +18,6 @@ from modules import db_manager, hydrogeo_utils, selectors
 
 st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
 
-# Botón de Auxilio
 if st.sidebar.button("🧹 Limpiar Memoria y Recargar"):
     st.cache_data.clear()
     st.rerun()
@@ -26,7 +25,6 @@ if st.sidebar.button("🧹 Limpiar Memoria y Recargar"):
 ids_estaciones, nombre_zona, altitud_ref, gdf_zona = selectors.render_selector_espacial()
 engine = db_manager.get_engine()
 
-# --- PARÁMETROS ---
 st.sidebar.divider()
 st.sidebar.header("🎛️ Parámetros")
 col_s1, col_s2 = st.sidebar.columns(2)
@@ -39,9 +37,9 @@ st.sidebar.metric("Coef. Infiltración (Ki)", f"{ki_ponderado:.2f}")
 meses_futuros = st.sidebar.slider("Horizonte", 12, 60, 24)
 ruido = st.sidebar.slider("Incertidumbre", 0.0, 1.0, 0.1)
 
-Zi, xi, yi = None, None, None
+# Inicializar variables de sesión para descargas
+if 'raster_data' not in st.session_state: st.session_state.raster_data = None
 
-# --- LÓGICA PRINCIPAL ---
 if gdf_zona is not None:
     # 1. Recuperar Estaciones
     if not ids_estaciones:
@@ -50,6 +48,15 @@ if gdf_zona is not None:
         q_geo = text(f"SELECT id_estacion, nom_est, latitud, longitud, alt_est FROM estaciones WHERE longitud BETWEEN {minx-buff} AND {maxx+buff} AND latitud BETWEEN {miny-buff} AND {maxy+buff}")
         df_puntos = pd.read_sql(q_geo, engine)
         if not df_puntos.empty:
+            # Intento de filtro fino
+            try:
+                points = gpd.points_from_xy(df_puntos.longitud, df_puntos.latitud)
+                gdf_pts = gpd.GeoDataFrame(df_puntos, geometry=points, crs="EPSG:4326")
+                if gdf_zona.crs is None: gdf_zona = gdf_zona.set_crs("EPSG:4326")
+                else: gdf_zona = gdf_zona.to_crs("EPSG:4326")
+                df_joined = gpd.sjoin(gdf_pts, gdf_zona, how="inner", predicate="intersects")
+                if not df_joined.empty: df_puntos = df_joined[df_puntos.columns].copy()
+            except: pass
             ids_estaciones = df_puntos['id_estacion'].tolist()
     else:
         if len(ids_estaciones) == 1:
@@ -63,17 +70,13 @@ if gdf_zona is not None:
         st.error("❌ No se encontraron estaciones.")
         st.stop()
 
-    # 2. Calcular Estadísticas (Motor arreglado)
+    # 2. Estadísticas (Cacheado)
     with st.spinner("Procesando hidrología..."):
         df_mapa_stats = hydrogeo_utils.obtener_estadisticas_estaciones(engine, df_puntos)
 
-    # 3. Serie Histórica (Intento múltiple)
+    # 3. Serie Histórica
     df_raw = pd.DataFrame()
-    intentos = [
-        ('precipitacion', 'id_estacion', 'fecha', 'valor'),
-        ('precipitacion_mensual', 'id_estacion_fk', 'fecha_mes_año', 'precipitation')
-    ]
-    
+    intentos = [('precipitacion', 'id_estacion', 'fecha', 'valor'), ('precipitacion_mensual', 'id_estacion_fk', 'fecha_mes_año', 'precipitation')]
     for tbl, col_id, col_f, col_v in intentos:
         try:
             if len(ids_estaciones) == 1:
@@ -82,7 +85,6 @@ if gdf_zona is not None:
             else:
                 q = text(f"SELECT {col_f} as fecha, {col_v} as valor FROM {tbl} WHERE {col_id} IN :ids")
                 df_temp = pd.read_sql(q, engine, params={'ids': tuple(ids_estaciones)})
-            
             if not df_temp.empty:
                 df_raw = df_temp
                 break
@@ -93,7 +95,6 @@ if gdf_zona is not None:
         alt_calc = altitud_ref if altitud_ref else df_puntos['alt_est'].mean()
         df_res = hydrogeo_utils.ejecutar_pronostico_prophet(df_raw, meses_futuros, alt_calc, ki_ponderado, ruido)
 
-    # --- VISUALIZACIÓN ---
     st.markdown(f"### 📍 {nombre_zona}")
     
     if not df_res.empty:
@@ -107,27 +108,37 @@ if gdf_zona is not None:
     
     tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "🌈 Mapa Recarga", "📥 Descargas"])
 
+    # --- TAB 1: GRÁFICO COMPLETO ---
     with tab1:
         if not df_res.empty:
             df_hist = df_res[df_res['tipo'] == 'Histórico']
             df_fut = df_res[df_res['tipo'] == 'Proyección']
+            
             fig = go.Figure()
-            # Gráficas Completas
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia', line=dict(color='gray', width=1), opacity=0.5))
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga Hist.', line=dict(color='blue', width=2), fill='tozeroy'))
-            fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Recarga Proy.', line=dict(color='cyan', width=2, dash='dot')))
-            # Incertidumbre
+            
+            # 1. Variables Históricas
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia Hist.', line=dict(color='#95a5a6', width=1)))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['etr_mm'], name='ETR Hist.', line=dict(color='#e67e22', width=1.5)))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['escorrentia_mm'], name='Escorrentía Hist.', line=dict(color='#27ae60', width=1.5)))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga Hist.', line=dict(color='#2980b9', width=2), fill='tozeroy'))
+            
+            # 2. Proyecciones
+            fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['p_final'], name='Lluvia Proy.', line=dict(color='#95a5a6', width=1, dash='dot')))
+            fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Recarga Proy.', line=dict(color='#00d2d3', width=2, dash='dot')))
+            
+            # 3. Incertidumbre
             if 'yhat_upper' in df_fut.columns:
                  fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_upper'], showlegend=False, line=dict(width=0)))
-                 fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(0,255,255,0.1)'))
+                 fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(0,210,211,0.1)'))
             
-            fig.update_layout(height=400, hovermode="x unified", title="Dinámica de Recarga (Balance Hídrico)")
+            fig.update_layout(height=500, hovermode="x unified", title="Balance Hídrico Completo y Proyección", template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning("⚠️ No se encontraron datos históricos de lluvia para generar el gráfico.")
+            st.warning("⚠️ Sin datos históricos suficientes para graficar.")
 
+    # --- TAB 2: CONTEXTO (TOOLTIPS RICOS) ---
     with tab2:
-        if st.button("🔄 Recargar Mapa"): st.rerun()
+        if st.button("🔄 Recargar Mapa Contexto"): st.rerun()
         pad = 0.05
         bounds = [df_puntos.longitud.min()-pad, df_puntos.latitud.min()-pad, df_puntos.longitud.max()+pad, df_puntos.latitud.max()+pad]
         layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds)
@@ -135,70 +146,102 @@ if gdf_zona is not None:
         m = folium.Map(location=[df_puntos.latitud.mean(), df_puntos.longitud.mean()], zoom_start=11, tiles="CartoDB positron")
         m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
-        # Tooltip Helper (Limpia espacios y minúsculas)
+        st.markdown("<style>.leaflet-tooltip {white-space: normal !important; max-width: 300px !important; font-size:11px;}</style>", unsafe_allow_html=True)
+
         def tooltip_ok(gdf, dic):
             cols = [c.lower().strip() for c in gdf.columns]
             f, a = [], []
+            # Lógica permisiva: busca coincidencias parciales
             for k, v in dic.items():
-                k_clean = k.lower().strip()
-                if k_clean in cols:
-                    f.append(gdf.columns[cols.index(k_clean)])
+                match = next((c for c in cols if k.lower() in c), None)
+                if match:
+                    f.append(match)
                     a.append(v)
             return folium.GeoJsonTooltip(fields=f, aliases=a, localize=True) if f else None
 
+        # Diccionarios Expandidos para Tooltips
         if 'suelos' in layers:
+            dic_suelos = {'ucs':'UCS:', 'litolo':'Litología:', 'caracter':'Caract:', 'paisaje':'Paisaje:', 'clima':'Clima:', 'component':'Comp:', 'porcent':'%:'}
             folium.GeoJson(layers['suelos'], name="Suelos", style_function=lambda x: {'color':'orange', 'weight':0.5, 'fillOpacity':0.2},
-                           tooltip=tooltip_ok(layers['suelos'], {'ucs_f':'UCS:', 'litologia':'Lit:', 'caracteri':'Caract:', 'paisaje':'Paisaje:'})).add_to(m)
+                           tooltip=tooltip_ok(layers['suelos'], dic_suelos)).add_to(m)
         if 'hidro' in layers:
+            dic_hidro = {'potencial':'Potencial:', 'unidad':'Unidad:', 'sigla':'Sigla:', 'cod':'Cod:', 'area':'Area:'}
             folium.GeoJson(layers['hidro'], name="Hidro", style_function=lambda x: {'color':'blue', 'weight':0.5, 'fillOpacity':0.2},
-                           tooltip=tooltip_ok(layers['hidro'], {'potencial':'Pot:', 'unidad_geo':'Uni:'})).add_to(m)
+                           tooltip=tooltip_ok(layers['hidro'], dic_hidro)).add_to(m)
         if 'bocatomas' in layers:
+            dic_boca = {'bocatoma':'Nombre:', 'acueducto':'Acueducto:', 'municipio':'Mun:', 'vereda':'Vereda:', 'caudal':'Q:'}
             folium.GeoJson(layers['bocatomas'], name="Bocatomas", marker=folium.CircleMarker(radius=4, color='red'),
-                           tooltip=tooltip_ok(layers['bocatomas'], {'nom_bocatoma':'Nom:', 'nombre_acu':'Acu:'})).add_to(m)
+                           tooltip=tooltip_ok(layers['bocatomas'], dic_boca)).add_to(m)
 
-        # Popups
+        # Popups Completos
         for _, r in df_mapa_stats.iterrows():
             def fmt(val): return f"{val*12:,.0f} mm" if pd.notnull(val) else "<span style='color:red'>N/D</span>"
+            mun = r.get('municipio', 'N/D')
+            alt = r.get('alt_est', 0)
+            etr = fmt(r.get('etr_media'))
+            
             html = f"""
-            <div style='font-family:sans-serif; width:160px; font-size:12px;'>
+            <div style='font-family:sans-serif; width:180px; font-size:12px;'>
                 <b>{r['nom_est']}</b><hr style='margin:3px 0;'>
+                📍 {mun} | ⛰️ {alt:.0f} m<br>
                 🌧️ Lluvia: <b>{fmt(r.get('p_media'))}</b><br>
+                ☀️ ETR: {etr}<br>
                 💧 Recarga: <b>{fmt(r.get('recarga_calc'))}</b>
             </div>"""
             folium.Marker([r['latitud'], r['longitud']], popup=folium.Popup(html, max_width=200), icon=folium.Icon(color='black', icon='tint')).add_to(m)
 
         st_folium(m, width=1400, height=600, key=f"ctx_{nombre_zona}")
 
+    # --- TAB 3: RECARGA (BOTÓN + RASTER) ---
     with tab3:
-        # Interpolación: Requiere al menos 4 puntos CON DATOS
-        df_valid = df_mapa_stats.dropna(subset=['p_media'])
+        if st.button("🔄 Recargar Mapa Recarga"): st.rerun() # Botón Recuperado
         
+        df_valid = df_mapa_stats.dropna(subset=['p_media'])
         if len(df_valid) < 4:
-            st.warning(f"⚠️ Se encontraron {len(df_valid)} estaciones con datos válidos. Se requieren mínimo 4 para interpolar.")
+            st.warning("⚠️ Se requieren al menos 4 estaciones con datos válidos para interpolar.")
+            st.session_state.raster_data = None # Limpiar si falla
         else:
-            x, y, z = df_valid.longitud.values, df_valid.latitud.values, df_valid.p_media.values
+            x, y = df_valid.longitud.values, df_valid.latitud.values
+            z_r = df_valid.recarga_calc.values * 12
+            
             xi = np.linspace(bounds[0], bounds[2], 100)
             yi = np.linspace(bounds[1], bounds[3], 100)
             Xi, Yi = np.meshgrid(xi, yi)
-            Zi = griddata((x, y), z, (Xi, Yi), method='linear')
+            Zi = griddata((x, y), z_r, (Xi, Yi), method='linear')
             
-            z_r = df_valid.recarga_calc.values * 12
-            Zi_r = griddata((x, y), z_r, (Xi, Yi), method='linear')
+            # Guardar en sesión para Tab 4
+            st.session_state.raster_data = (Zi, xi, yi)
             
             m_iso = folium.Map(location=[df_puntos.latitud.mean(), df_puntos.longitud.mean()], zoom_start=11, tiles="CartoDB positron")
             m_iso.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
             
-            vmin, vmax = np.nanmin(Zi_r), np.nanmax(Zi_r)
+            vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
             try: cmap = plt.colormaps['viridis']
             except: cmap = cm.get_cmap('viridis')
-            rgba = cmap((Zi_r - vmin)/(vmax - vmin)); rgba[np.isnan(Zi_r), 3] = 0
+            rgba = cmap((Zi - vmin)/(vmax - vmin)); rgba[np.isnan(Zi), 3] = 0
             
             folium.raster_layers.ImageOverlay(image=rgba, bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]], opacity=0.7, origin='lower').add_to(m_iso)
             st_folium(m_iso, width=1400, height=600, key=f"iso_{nombre_zona}")
 
+    # --- TAB 4: DESCARGAS (RASTER + CSV) ---
     with tab4:
         c1, c2 = st.columns(2)
-        if not df_res.empty: c1.download_button("Descargar CSV", df_res.to_csv(index=False), "serie.csv")
+        if not df_res.empty: 
+            c1.download_button("📥 Descargar Serie (CSV)", df_res.to_csv(index=False), "serie_hidrologica.csv")
+        
+        # Recuperar Raster de Sesión
+        if st.session_state.raster_data is not None:
+            Zi_s, xi_s, yi_s = st.session_state.raster_data
+            try:
+                # bounds para rasterio: minx, miny, maxx, maxy
+                b_tif = [xi_s.min(), yi_s.min(), xi_s.max(), yi_s.max()]
+                # GeoTIFF
+                tif_bytes = hydrogeo_utils.generar_geotiff(Zi_s[::-1], b_tif)
+                c2.download_button("🗺️ Descargar Mapa Recarga (GeoTIFF)", tif_bytes, "mapa_recarga.tif", mime="image/tiff")
+            except Exception as e:
+                c2.error(f"Error generando descarga: {e}")
+        else:
+            c2.info("El mapa raster se genera en la pestaña 'Mapa Recarga'. Visítala primero.")
 
 else:
     st.info("👈 Selecciona una zona.")
