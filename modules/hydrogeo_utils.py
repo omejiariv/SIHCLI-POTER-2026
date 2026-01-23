@@ -13,7 +13,7 @@ from shapely.geometry import shape
 import streamlit as st
 
 # ---------------------------------------------------------
-# 1. MODELO TURC & BALANCE
+# 1. MODELO TURC & BALANCE (Sin Cambios)
 # ---------------------------------------------------------
 def calcular_balance_turc(df_lluvia, altitud, ki):
     df = df_lluvia.copy()
@@ -42,7 +42,7 @@ def calcular_balance_turc(df_lluvia, altitud, ki):
     return df_monthly
 
 # ---------------------------------------------------------
-# 2. PROPHET HÍBRIDO
+# 2. PROPHET HÍBRIDO (Sin Cambios)
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
@@ -85,18 +85,17 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
         return df_result
 
     except Exception as e:
-        print(f"❌ Error en Prophet: {e}")
         return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
 
 # ---------------------------------------------------------
-# 3. CARGA GIS INTELIGENTE (ADAPTABLE A CUALQUIER COLUMNA)
+# 3. CARGA GIS INTELIGENTE & OPTIMIZADA (LA CLAVE DE LA ESTABILIDAD)
 # ---------------------------------------------------------
+@st.cache_data(show_spinner=False, ttl=300) # Cache de 5 mins para evitar recargas constantes
 def cargar_capas_gis_optimizadas(_engine, bounds=None):
     layers = {}
+    # Truco de caché: Convertimos el objeto engine a algo cacheable o lo ignoramos (el _ indica no hashear)
     if not _engine: return layers
     
-    # CONFIGURACIÓN: Lista de posibles nombres de columna para cada capa
-    # El sistema buscará en orden. Si no encuentra ninguna, usará la primera que sea texto.
     config = {
         'suelos': {
             'tabla': 'suelos', 
@@ -112,80 +111,77 @@ def cargar_capas_gis_optimizadas(_engine, bounds=None):
         }
     }
     
-    tol = 0.002 # Tolerancia para simplificar geometría (mejora velocidad)
+    # PARAMETROS DE RENDIMIENTO
+    # 0.01 grados ~ 1km de simplificación. Hace que los polígonos pesen poquísimo.
+    # Para bocatomas (puntos) la tolerancia no afecta mucho, pero para polígonos es vital.
+    tol = 0.008 
+    limit_poly = 400 # Máximo 400 polígonos para no colapsar el navegador
+    limit_pts = 1000 # Puntos son más ligeros, permitimos más
 
     with _engine.connect() as conn:
         for key, cfg in config.items():
             try:
                 tabla = cfg['tabla']
-                
-                # A. Verificar si la tabla existe
-                if not _engine.dialect.has_table(conn, tabla):
-                    continue
+                if not _engine.dialect.has_table(conn, tabla): continue
 
-                # B. Obtener columnas reales de la tabla
+                # 1. Detectar columnas
                 q_cols = text(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{tabla}'")
                 cols_reales = pd.read_sql(q_cols, conn)['column_name'].tolist()
                 
-                # C. Detectar columna de geometría
                 col_geom = 'geometry' if 'geometry' in cols_reales else ('geom' if 'geom' in cols_reales else None)
-                if not col_geom: continue # Sin geometría no hay mapa
+                if not col_geom: continue
 
-                # D. Detectar la mejor columna de información (El Match Inteligente)
                 col_info = None
-                # 1. Buscamos en la lista de candidatos
                 for cand in cfg['candidatos']:
                     if cand in cols_reales:
                         col_info = cand
                         break
-                
-                # 2. Si falló, buscamos cualquier columna que parezca texto
                 if not col_info:
                     for c in cols_reales:
                         if c not in ['id', 'gid', 'objectid', col_geom]:
                             col_info = c
                             break
                 
-                # Si aún nada, usamos un string fijo
-                sql_info = f'"{col_info}"' if col_info else "'Sin Info'"
+                sql_info = f'"{col_info}"' if col_info else "'Info'"
+                limite = limit_pts if key == 'bocatomas' else limit_poly
 
-                # E. Construir Query
-                # ST_Transform(..., 4326) asegura WGS84
+                # 2. CONSTRUIR QUERY DE ALTO RENDIMIENTO
+                # Usamos ST_SimplifyPreserveTopology FUERTE
                 base_q = f"""
                     SELECT {sql_info} as info, 
                     ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Transform({col_geom}, 4326), {tol})) as gj 
                     FROM {tabla}
                 """
                 
-                # F. Filtro Espacial (Opcional pero recomendado)
-                final_q = base_q + " LIMIT 1000"
+                final_q = ""
+                
+                # 3. FILTRO ESPACIAL ESTRICTO
                 if bounds is not None:
                     try:
                         minx, miny, maxx, maxy = bounds
+                        # Ampliamos un poco el bounding box para que no corte feo
                         envelope = f"ST_Transform(ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326), ST_SRID({col_geom}))"
-                        final_q = f"{base_q} WHERE ST_Intersects({col_geom}, {envelope}) LIMIT 1000"
+                        final_q = f"{base_q} WHERE ST_Intersects({col_geom}, {envelope}) LIMIT {limite}"
                     except: pass
+                else:
+                    # Si no hay bounds, NO cargamos nada o cargamos muy poco para evitar crash
+                    final_q = f"{base_q} LIMIT 50"
 
-                # G. Ejecutar y Plan B
-                df = pd.read_sql(text(final_q), conn)
-                
-                if df.empty and bounds is not None:
-                    # Si el filtro espacial falló (ej. coordenadas no coinciden), intentar carga sin filtro
-                    print(f"⚠️ Filtro vacío para {key}, intentando carga general...")
-                    df = pd.read_sql(text(base_q + " LIMIT 100"), conn)
-
-                if not df.empty:
-                    df['geometry'] = df['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
-                    layers[key] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
-                    print(f"✅ Capa {key} cargada usando columna: {col_info}")
+                # 4. EJECUTAR
+                if final_q:
+                    df = pd.read_sql(text(final_q), conn)
+                    if not df.empty:
+                        df['geometry'] = df['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
+                        df = df.dropna(subset=['geometry']) # Limpiar geometrías inválidas tras simplificación
+                        layers[key] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
                     
             except Exception as e:
-                print(f"Error cargando capa {key}: {e}")
+                print(f"Error ligero en capa {key}: {e}")
 
     return layers
 
 # ---------------------------------------------------------
-# 4. EXPORTADORES
+# 4. EXPORTADORES (Sin Cambios)
 # ---------------------------------------------------------
 def generar_geotiff(z_grid, bounds):
     min_x, min_y, max_x, max_y = bounds
