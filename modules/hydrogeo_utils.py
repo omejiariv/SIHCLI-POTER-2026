@@ -88,24 +88,25 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0):
         return pd.DataFrame(columns=['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'fecha'])
 
 # ---------------------------------------------------------
-# 3. CARGA GIS "FULL DATA" (Trae todas las columnas)
+# 3. CARGA GIS "FULL DATA" + ALTA PRECISIÓN
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False, ttl=300)
 def cargar_capas_gis_optimizadas(_engine, bounds=None):
     layers = {}
     if not _engine: return layers
     
-    # Solo definimos la tabla, ya no adivinamos columnas porque traeremos TODO (*)
     config = {
         'suelos': 'suelos',
         'hidro': 'zonas_hidrogeologicas',
         'bocatomas': 'bocatomas'
     }
     
-    # PARAMETROS DE RENDIMIENTO
-    tol = 0.008 # Simplificación fuerte para velocidad
-    limit_poly = 300 
-    limit_pts = 1000
+    # --- AJUSTE DE PRECISIÓN ---
+    # Antes: 0.008 (Borraba polígonos pequeños)
+    # Ahora: 0.0005 (Mantiene detalles finos, aprox 50 metros)
+    tol = 0.0005 
+    limit_poly = 1500 # Subimos el límite para permitir más parches de suelo
+    limit_pts = 2000
 
     with _engine.connect() as conn:
         for key, tabla in config.items():
@@ -120,10 +121,8 @@ def cargar_capas_gis_optimizadas(_engine, bounds=None):
                 if not col_geom: continue
 
                 # 2. QUERY "FULL DATA"
-                # Seleccionamos TODO (*) excepto la geometría pesada original
-                # La geometría la traemos procesada como 'gj'
                 cols_select = [c for c in cols_reales if c != col_geom]
-                cols_sql = ", ".join([f'"{c}"' for c in cols_select]) # Comillas para proteger nombres
+                cols_sql = ", ".join([f'"{c}"' for c in cols_select])
                 
                 base_q = f"""
                     SELECT {cols_sql}, 
@@ -142,26 +141,25 @@ def cargar_capas_gis_optimizadas(_engine, bounds=None):
                         final_q = f"{base_q} WHERE ST_Intersects({col_geom}, {envelope}) LIMIT {limite}"
                     except: pass
                 else:
-                    final_q = f"{base_q} LIMIT 50" # Fallback ligero
+                    final_q = f"{base_q} LIMIT 100"
 
                 # 4. EJECUTAR
                 if final_q:
                     df = pd.read_sql(text(final_q), conn)
                     if not df.empty:
-                        # Convertir a GeoDataFrame
                         df['geometry'] = df['gj'].apply(lambda x: shape(json.loads(x)) if x else None)
                         df = df.dropna(subset=['geometry'])
-                        # Eliminamos la columna temporal gj para limpiar
                         if 'gj' in df.columns: df = df.drop(columns=['gj'])
                         
                         layers[key] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
-                        # Normalizar nombres de columnas a minúsculas para facilitar tooltips
+                        # Normalizar nombres de columnas para asegurar match en tooltips
                         layers[key].columns = [c.lower() for c in layers[key].columns]
                     
             except Exception as e:
                 print(f"Error capa {key}: {e}")
 
     return layers
+
 
 # ---------------------------------------------------------
 # 4. EXPORTADORES (Sin Cambios)

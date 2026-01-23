@@ -193,9 +193,7 @@ with tab1:
     st.plotly_chart(fig, use_container_width=True)
 
 
-# ==============================================================================
-# TAB 2: Contexto (TOOLTIPS COMPLETOS + POPUPS CON ESTADÍSTICAS)
-# ==============================================================================
+# TAB 2: Contexto (TOOLTIPS MEJORADOS PARA TEXTO LARGO)
 with tab2:
     # 1. Controles
     col_refresh, col_txt = st.columns([1, 5])
@@ -212,126 +210,118 @@ with tab2:
     ]
     fit_bounds_coords = [[bounds_vals[1], bounds_vals[0]], [bounds_vals[3], bounds_vals[2]]]
     
-    # 3. Cargar Capas
+    # 3. Cargar Capas (Ahora con más detalle gracias al cambio en utils)
     layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds_vals)
+    
+    # Estilo CSS para que los tooltips largos se vean bien (scroll si es necesario)
+    st.markdown("""
+        <style>
+        .leaflet-tooltip {
+            white-space: normal !important;
+            max-width: 300px !important;
+            font-size: 11px !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     m = folium.Map(location=[df_puntos['latitud'].mean(), df_puntos['longitud'].mean()], zoom_start=11, tiles="CartoDB positron")
     m.fit_bounds(fit_bounds_coords) 
 
-    # --- FUNCIÓN AUXILIAR ---
+    # --- FUNCIÓN AUXILIAR ROBUSTA ---
     def crear_tooltip_seguro(gdf, diccionario_campos):
         cols_reales = [c.lower() for c in gdf.columns]
         fields_final = []
         aliases_final = []
         for col_deseada, alias in diccionario_campos.items():
+            # Buscamos coincidencia exacta en minúsculas
             if col_deseada.lower() in cols_reales:
-                fields_final.append(col_deseada)
+                fields_final.append(col_deseada.lower())
                 aliases_final.append(alias)
+        
         if not fields_final: return None
-        return folium.GeoJsonTooltip(fields=fields_final, aliases=aliases_final, localize=True, sticky=False)
+        # sticky=True ayuda a "cazar" polígonos pequeños con el mouse
+        return folium.GeoJsonTooltip(fields=fields_final, aliases=aliases_final, localize=True, sticky=True)
 
     # --- A. SUELOS ---
     if 'suelos' in layers:
+        # Diccionario ampliado con tus campos esenciales
         dict_suelos = {
-            'ucs': 'UCS:', 'ucs_f': 'UCS:', 'simbolo': 'Símbolo:',
-            'paisaje': 'Paisaje:', 'clima': 'Clima:',
-            'litologia': 'Litología:', 'caracteri': 'Caract:', 'caracteristicas': 'Caract:',
-            'componente': 'Componente:', 'porcentaje': '%'
+            'ucs_f': 'UCS:', 'ucs': 'UCS:',
+            'paisaje': 'Paisaje:', 
+            'clima': 'Clima:',
+            'litologia': 'Litología:',      # <--- ESENCIAL
+            'caracteri': 'Características:', # <--- ESENCIAL
+            'componente': 'Componente:',
+            'porcentaje': '%'
         }
         folium.GeoJson(
             layers['suelos'], name="Suelos",
-            style_function=lambda x: {'color': 'orange', 'weight': 0.5, 'fillOpacity': 0.15},
+            style_function=lambda x: {'color': 'orange', 'weight': 0.8, 'fillOpacity': 0.2}, # Borde un poco más grueso para ver los pequeños
             tooltip=crear_tooltip_seguro(layers['suelos'], dict_suelos)
         ).add_to(m)
         
-    # --- B. HIDROGEOLOGÍA (Con 'caracteri') ---
+    # --- B. HIDROGEOLOGÍA ---
     if 'hidro' in layers:
         dict_hidro = {
-            'potencial': 'Potencial:', 'potencial_': 'Potencial:',
-            'caracteri': 'Características:', 'caracteristicas': 'Características:', # <--- AGREGADO
-            'sigla': 'Sigla:', 'unidad_geo': 'Unidad:',
-            'cod': 'Cód:', 'area_km2': 'Área km2:'
+            'potencial_': 'Potencial:', 'potencial': 'Potencial:',
+            'unidad_geo': 'Unidad:', 'unidad': 'Unidad:',
+            'sigla': 'Sigla:', 
+            'caracteri': 'Características:', # Por si acaso
+            'area_km2': 'Área km2:'
         }
         folium.GeoJson(
             layers['hidro'], name="Hidrogeología",
-            style_function=lambda x: {'color': 'blue', 'weight': 0.5, 'fillOpacity': 0.15},
+            style_function=lambda x: {'color': 'blue', 'weight': 0.8, 'fillOpacity': 0.2},
             tooltip=crear_tooltip_seguro(layers['hidro'], dict_hidro)
         ).add_to(m)
         
     # --- C. BOCATOMAS ---
     if 'bocatomas' in layers:
         dict_boca = {
-            'nombre_acu': 'Acueducto:', 'nom_bocatoma': 'Bocatoma:',
+            'nom_bocatoma': 'Bocatoma:', 'nombre_acu': 'Acueducto:',
             'municipio': 'Mun:', 'veredas': 'Vereda:',
             'fuente_aba': 'Fuente:', 'caudal_dis': 'Caudal:'
         }
         folium.GeoJson(
             layers['bocatomas'], name="Bocatomas",
-            marker=folium.CircleMarker(radius=4, color='red', fill_color='red', fill_opacity=0.7),
+            marker=folium.CircleMarker(radius=4, color='red', fill_color='red', fill_opacity=0.8),
             tooltip=crear_tooltip_seguro(layers['bocatomas'], dict_boca)
         ).add_to(m)
     
-    # 5. Estaciones (POPUP COMPLETO RECUPERADO)
+    # 5. Estaciones (Popup Completo) - Mantenido intacto porque te gustó
     df_display = df_mapa_stats if df_mapa_stats is not None else df_puntos
-    
     for _, r in df_display.iterrows():
-        # Extracción segura de datos (x12 para anualizar si son mensuales)
         p_val = r['p_media'] * 12 if 'p_media' in r else 0
         etr_val = r['etr_media'] * 12 if 'etr_media' in r else 0
         esc_val = r['escorrentia_media'] * 12 if 'escorrentia_media' in r else 0
         rec_val = r['recarga_calc'] * 12 if 'recarga_calc' in r else 0
         std_val = r['std_lluvia'] if 'std_lluvia' in r else 0
-        
         mun = r['municipio'] if 'municipio' in r else "N/D"
         alt = f"{r['alt_est']:.0f}"
         
-        # HTML Estilizado con todas las métricas
         html = f"""
         <div style="font-family:sans-serif; width:200px; font-size:12px;">
             <b style="font-size:14px; color:#2c3e50;">{r['nom_est']}</b>
             <hr style="margin:5px 0; border-top: 1px solid #ddd;">
-            
-            <div style="display:flex; justify-content:space-between;">
-                <span>📍 Mun:</span> <b>{mun}</b>
-            </div>
-            <div style="display:flex; justify-content:space-between;">
-                <span>⛰️ Alt:</span> <b>{alt} m</b>
-            </div>
-            
+            <div style="display:flex; justify-content:space-between;"><span>📍 Mun:</span> <b>{mun}</b></div>
+            <div style="display:flex; justify-content:space-between;"><span>⛰️ Alt:</span> <b>{alt} m</b></div>
             <hr style="margin:5px 0; border-top: 1px dashed #eee;">
-            
-            <div style="display:flex; justify-content:space-between;">
-                <span>🌧️ Lluvia:</span> <b>{p_val:,.0f} mm</b>
-            </div>
-            <div style="display:flex; justify-content:space-between; color:#e67e22;">
-                <span>☀️ ETR:</span> <b>{etr_val:,.0f} mm</b>
-            </div>
-            <div style="display:flex; justify-content:space-between; color:#27ae60;">
-                <span>🌊 Escorrentía:</span> <b>{esc_val:,.0f} mm</b>
-            </div>
+            <div style="display:flex; justify-content:space-between;"><span>🌧️ Lluvia:</span> <b>{p_val:,.0f} mm</b></div>
+            <div style="display:flex; justify-content:space-between; color:#e67e22;"><span>☀️ ETR:</span> <b>{etr_val:,.0f} mm</b></div>
+            <div style="display:flex; justify-content:space-between; color:#27ae60;"><span>🌊 Escorrentía:</span> <b>{esc_val:,.0f} mm</b></div>
             <div style="display:flex; justify-content:space-between; background-color:#e8f4f8; padding:2px; border-radius:3px;">
                 <span style="color:#0000AA;">💧 Recarga:</span> <b style="color:#0000AA;">{rec_val:,.0f} mm</b>
             </div>
-            
-            <div style="margin-top:5px; font-size:10px; color:#7f8c8d; text-align:right;">
-                (Desv. Std Lluvia: {std_val:,.1f})
-            </div>
+            <div style="margin-top:5px; font-size:10px; color:#7f8c8d; text-align:right;">(Desv. Std Lluvia: {std_val:,.1f})</div>
         </div>
         """
-        
-        iframe = folium.IFrame(html, width=220, height=210) # Ajustado para caber todo
+        iframe = folium.IFrame(html, width=220, height=210)
         popup = folium.Popup(iframe, max_width=220)
-        
-        folium.Marker(
-            [r['latitud'], r['longitud']],
-            popup=popup,
-            icon=folium.Icon(color='black', icon='tint', prefix='fa'),
-            tooltip=r['nom_est']
-        ).add_to(m)
+        folium.Marker([r['latitud'], r['longitud']], popup=popup, icon=folium.Icon(color='black', icon='tint', prefix='fa'), tooltip=r['nom_est']).add_to(m)
         
     folium.LayerControl().add_to(m)
-    Fullscreen().add_to(m)
+    Fullscreen().add_to(m) 
     
-    # RENDER FINAL
     key_ctx = f"ctx_map_{seleccion}_{len(df_puntos)}"
     if refresh_map_2: key_ctx += "_forced_reload"
     
