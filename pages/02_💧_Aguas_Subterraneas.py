@@ -14,10 +14,12 @@ from branca.colormap import LinearColormap
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
+# Importaciones locales
 from modules import db_manager, hydrogeo_utils, selectors
 
 st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
 
+# --- MANTENIMIENTO ---
 if st.sidebar.button("🧹 Limpiar Memoria y Recargar"):
     st.cache_data.clear()
     st.rerun()
@@ -41,83 +43,99 @@ ruido = st.sidebar.slider("Incertidumbre", 0.0, 1.0, 0.1)
 
 Zi, xi, yi, grid_coords = None, None, None, None
 
-# --- 3. LÓGICA ---
+# --- 3. LÓGICA DE DATOS ---
 if gdf_zona is not None:
-    # 3.1 Obtener Estaciones
+    
+    # 3.1 OBTENER ESTACIONES (SISTEMA DE RESPALDO)
     if not ids_estaciones:
+        # Intento 1: Búsqueda amplia por Recuadro (Bounding Box) - Es infalible
         minx, miny, maxx, maxy = gdf_zona.total_bounds
         buff = 0.05
-        q_geo = text(f"SELECT id_estacion, nom_est, latitud, longitud, alt_est FROM estaciones WHERE longitud BETWEEN {minx-buff} AND {maxx+buff} AND latitud BETWEEN {miny-buff} AND {maxy+buff}")
+        q_geo = text(f"""
+            SELECT id_estacion, nom_est, latitud, longitud, alt_est 
+            FROM estaciones 
+            WHERE longitud BETWEEN {minx-buff} AND {maxx+buff} 
+            AND latitud BETWEEN {miny-buff} AND {maxy+buff}
+        """)
         df_puntos = pd.read_sql(q_geo, engine)
+        
         if not df_puntos.empty:
-            points = gpd.points_from_xy(df_puntos.longitud, df_puntos.latitud)
-            gdf_pts = gpd.GeoDataFrame(df_puntos, geometry=points, crs="EPSG:4326")
-            df_puntos = gpd.sjoin(gdf_pts, gdf_zona, how="inner", predicate="within")[df_puntos.columns]
+            # Intento 2: Refinar con Polígono exacto (puede fallar si hay error de CRS)
+            try:
+                points = gpd.points_from_xy(df_puntos.longitud, df_puntos.latitud)
+                gdf_pts = gpd.GeoDataFrame(df_puntos, geometry=points, crs="EPSG:4326")
+                
+                # Asegurar CRS zona
+                if gdf_zona.crs is None: gdf_zona = gdf_zona.set_crs("EPSG:4326")
+                else: gdf_zona = gdf_zona.to_crs("EPSG:4326")
+                
+                # Intersección
+                df_joined = gpd.sjoin(gdf_pts, gdf_zona, how="inner", predicate="intersects")
+                if not df_joined.empty:
+                    df_puntos = df_joined[df_puntos.columns].copy()
+            except:
+                pass # Si falla el recorte fino, usamos el recuadro (mejor ver algo que nada)
+            
             ids_estaciones = df_puntos['id_estacion'].tolist()
     else:
+        # Selección directa por ID
         if len(ids_estaciones) == 1:
              df_puntos = pd.read_sql(text(f"SELECT id_estacion, nom_est, latitud, longitud, alt_est FROM estaciones WHERE id_estacion = '{ids_estaciones[0]}'"), engine)
         else:
              df_puntos = pd.read_sql(text("SELECT id_estacion, nom_est, latitud, longitud, alt_est FROM estaciones WHERE id_estacion IN :ids"), engine, params={'ids': tuple(ids_estaciones)})
 
     if df_puntos.empty:
-        st.warning("⚠️ No se encontraron estaciones.")
+        st.error("❌ No se encontraron estaciones en esta zona (ni siquiera en el área ampliada).")
         st.stop()
 
-    # 3.2 CÁLCULO ESTADÍSTICAS (Cacheado y respetando NaNs)
+    # 3.2 CÁLCULO ESTADÍSTICAS MAPA (Cacheado y con NaNs)
     with st.spinner("Analizando hidrología..."):
         df_mapa_stats = hydrogeo_utils.obtener_estadisticas_estaciones(engine, df_puntos)
 
-# 3.3 Serie Histórica (DETECTOR INTELIGENTE DE TABLAS)
+    # 3.3 SERIE HISTÓRICA (BUSCADOR DE TABLAS INTELIGENTE)
     df_raw = pd.DataFrame()
-    debug_error = ""
-
-    # Lista de intentos: (Nombre Tabla, Columna ID, Columna Fecha, Columna Valor)
-    intentos = [
-        ('precipitacion', 'id_estacion', 'fecha', 'valor'),             # Tabla Nueva (Panel Admin)
-        ('precipitacion_mensual', 'id_estacion_fk', 'fecha_mes_año', 'precipitation') # Tabla Antigua
+    debug_msg = []
+    
+    # Lista de intentos: (Tabla, Columna Fecha, Columna Valor)
+    posibles_tablas = [
+        ('precipitacion', 'fecha', 'valor'),                # Nueva
+        ('precipitacion_mensual', 'fecha_mes_año', 'precipitation') # Antigua
     ]
+    
+    col_id_lookup = 'id_estacion' if 'id_estacion' in df_puntos.columns else 'id_estacion_fk'
 
-    for tabla, col_id_db, col_fecha, col_valor in intentos:
+    for t_name, c_fecha, c_valor in posibles_tablas:
         try:
-            # Construir query dinámica
+            col_id_db = 'id_estacion' if t_name == 'precipitacion' else 'id_estacion_fk'
+            
             if len(ids_estaciones) == 1:
-                q = text(f"SELECT {col_fecha}, {col_valor} FROM {tabla} WHERE {col_id_db} = '{ids_estaciones[0]}'")
+                q = text(f"SELECT {c_fecha} as fecha, {c_valor} as valor FROM {t_name} WHERE {col_id_db} = '{ids_estaciones[0]}'")
                 df_temp = pd.read_sql(q, engine)
             else:
-                q = text(f"SELECT {col_fecha}, {col_valor} FROM {tabla} WHERE {col_id_db} IN :ids")
+                q = text(f"SELECT {c_fecha} as fecha, {c_valor} as valor FROM {t_name} WHERE {col_id_db} IN :ids")
                 df_temp = pd.read_sql(q, engine, params={'ids': tuple(ids_estaciones)})
             
-            # Si encontramos datos, paramos de buscar
             if not df_temp.empty:
                 df_raw = df_temp
-                # Estandarizamos nombres para que el resto del código no sufra
-                df_raw = df_raw.rename(columns={col_fecha: 'fecha', col_valor: 'valor'})
-                break 
+                break # Encontró datos, salimos del loop
         except Exception as e:
-            debug_error += f"Fallo en {tabla}: {str(e)} | "
-            continue
+            debug_msg.append(f"{t_name}: {e}")
 
-    # 3.4 Ejecutar Modelo
+    # 3.4 Ejecutar Modelo (Solo si hay datos)
     df_res = pd.DataFrame()
-    
     if not df_raw.empty:
         alt_calc = altitud_ref if altitud_ref else df_puntos['alt_est'].mean()
-        # Ahora df_raw tiene columnas estandarizadas 'fecha' y 'valor', enviamos eso
         df_res = hydrogeo_utils.ejecutar_pronostico_prophet(df_raw, meses_futuros, alt_calc, ki_ponderado, ruido)
     else:
-        # AQUÍ ESTÁ EL DIAGNÓSTICO: Si sigue vacío, mostramos por qué
-        if debug_error:
-            st.error(f"⚠️ No se pudieron leer datos de lluvia. Detalles técnicos: {debug_error}")
+        if debug_msg:
+            st.warning(f"⚠️ No se pudo leer lluvia de la BD. Detalles: {'; '.join(debug_msg)}")
         else:
-            # Si no hubo error técnico pero la consulta vino vacía
-            st.warning(f"⚠️ La consulta funcionó pero no hay registros de lluvia para las estaciones seleccionadas: {ids_estaciones[:3]}...")
+            st.warning("⚠️ No hay registros históricos de lluvia para las estaciones de esta zona.")
 
-
-    # --- 4. INTERFAZ VISUAL ---
-    # (El resto del código de visualización sigue aquí...)
-    st.markdown(f"### 📍 Análisis: {nombre_zona}")
+    # --- 4. VISUALIZACIÓN ---
+    st.markdown(f"### 📍 {nombre_zona}")
     
+    # KPIs
     if not df_res.empty:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
         if not df_hist.empty:
@@ -138,10 +156,10 @@ if gdf_zona is not None:
             fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Proyección', line=dict(color='cyan', width=2, dash='dot')))
             fig.update_layout(height=400, hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
-        else: st.info("Sin datos suficientes para pronóstico.")
+        else: st.info("Gráfico no disponible (faltan datos).")
 
     with tab2:
-        if st.button("🔄 Recargar"): st.rerun()
+        if st.button("🔄 Recargar Mapa"): st.rerun()
         
         pad = 0.05
         bounds = [df_puntos.longitud.min()-pad, df_puntos.latitud.min()-pad, df_puntos.longitud.max()+pad, df_puntos.latitud.max()+pad]
@@ -150,7 +168,9 @@ if gdf_zona is not None:
         m = folium.Map(location=[df_puntos.latitud.mean(), df_puntos.longitud.mean()], zoom_start=11, tiles="CartoDB positron")
         m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
-        # Tooltip Helper
+        # Tooltips con scroll
+        st.markdown("<style>.leaflet-tooltip {white-space: normal !important; max-width: 250px !important;}</style>", unsafe_allow_html=True)
+        
         def tooltip_ok(gdf, dic):
             cols = [c.lower().strip() for c in gdf.columns]
             f, a = [], []
@@ -162,66 +182,60 @@ if gdf_zona is not None:
 
         if 'suelos' in layers:
             folium.GeoJson(layers['suelos'], name="Suelos", style_function=lambda x: {'color':'orange', 'weight':0.5, 'fillOpacity':0.2},
-                           tooltip=tooltip_ok(layers['suelos'], {'ucs':'UCS:', 'litologia':'Lit:', 'caracteri':'Caract:'})).add_to(m)
+                           tooltip=tooltip_ok(layers['suelos'], {'ucs':'UCS:', 'litologia':'Lit:', 'caracteri':'Caract:', 'paisaje':'Paisaje:'})).add_to(m)
         if 'hidro' in layers:
             folium.GeoJson(layers['hidro'], name="Hidro", style_function=lambda x: {'color':'blue', 'weight':0.5, 'fillOpacity':0.2},
                            tooltip=tooltip_ok(layers['hidro'], {'potencial':'Pot:', 'unidad_geo':'Uni:'})).add_to(m)
         if 'bocatomas' in layers:
-            folium.GeoJson(layers['bocatomas'], name="Bocatomas", marker=folium.CircleMarker(radius=4, color='red'),
+            folium.GeoJson(layers['bocatomas'], name="Bocatomas", marker=folium.CircleMarker(radius=4, color='red', fill_color='red'),
                            tooltip=tooltip_ok(layers['bocatomas'], {'nom_bocatoma':'Nom:', 'nombre_acu':'Acu:'})).add_to(m)
 
-        # POPUPS HONESTOS (Manejo de N/D)
+        # POPUPS HONESTOS (N/D)
         for _, r in df_mapa_stats.iterrows():
-             # Helper para formatear valor o N/D
-             def fmt(val, mult=1):
-                 return f"{val*mult:,.0f} mm" if pd.notnull(val) else "<span style='color:red'>N/D</span>"
-             
-             p_str = fmt(r.get('p_media'), 12)
-             r_str = fmt(r.get('recarga_calc'), 12)
+             def fmt(val): 
+                 return f"{val*12:,.0f} mm" if pd.notnull(val) else "<span style='color:red; font-weight:bold'>N/D</span>"
              
              html = f"""
              <div style='font-family:sans-serif; width:150px; font-size:12px;'>
                  <b>{r['nom_est']}</b><hr style='margin:3px 0;'>
-                 🌧️ Lluvia: <b>{p_str}</b><br>
-                 💧 Recarga: <b>{r_str}</b>
+                 🌧️ Lluvia: <b>{fmt(r.get('p_media'))}</b><br>
+                 💧 Recarga: <b>{fmt(r.get('recarga_calc'))}</b>
              </div>"""
              folium.Marker([r['latitud'], r['longitud']], popup=folium.Popup(html, max_width=200), icon=folium.Icon(color='black', icon='tint')).add_to(m)
 
         st_folium(m, width=1400, height=600, key=f"ctx_{nombre_zona}")
 
     with tab3:
-        # Interpolación: Solo usamos estaciones con datos válidos
+        # Interpolación SOLO con datos válidos
         df_valid = df_mapa_stats.dropna(subset=['p_media'])
+        
         if len(df_valid) < 4:
-            st.warning("⚠️ Se requieren al menos 4 estaciones con datos válidos para interpolar.")
+            st.warning("⚠️ Se requieren al menos 4 estaciones con datos válidos (no vacíos) para interpolar.")
         else:
-            # Interpolamos sobre p_media (patrón de lluvia)
             x, y, z = df_valid.longitud.values, df_valid.latitud.values, df_valid.p_media.values
             xi = np.linspace(bounds[0], bounds[2], 100)
             yi = np.linspace(bounds[1], bounds[3], 100)
             Xi, Yi = np.meshgrid(xi, yi)
-            Zi_p = griddata((x, y), z, (Xi, Yi), method='linear')
+            Zi = griddata((x, y), z, (Xi, Yi), method='linear')
             
-            # Recalculamos Turc espacialmente (simplificado) sobre la grilla interpolada
-            # Asumimos T_media espacial también o usamos un promedio zonal para simplificar visualización
-            # O mejor: Interpolamos directamente la Recarga Calculada en los puntos
+            # Recarga (simplificada para visualización)
             z_r = df_valid.recarga_calc.values * 12
-            Zi = griddata((x, y), z_r, (Xi, Yi), method='linear')
+            Zi_r = griddata((x, y), z_r, (Xi, Yi), method='linear')
             
             m_iso = folium.Map(location=[df_puntos.latitud.mean(), df_puntos.longitud.mean()], zoom_start=11, tiles="CartoDB positron")
             m_iso.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
             
-            vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
+            vmin, vmax = np.nanmin(Zi_r), np.nanmax(Zi_r)
             try: cmap = plt.colormaps['viridis']
             except: cmap = cm.get_cmap('viridis')
-            rgba = cmap((Zi - vmin)/(vmax - vmin)); rgba[np.isnan(Zi), 3] = 0
+            rgba = cmap((Zi_r - vmin)/(vmax - vmin)); rgba[np.isnan(Zi_r), 3] = 0
             
             folium.raster_layers.ImageOverlay(image=rgba, bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]], opacity=0.7, origin='lower').add_to(m_iso)
-            
             st_folium(m_iso, width=1400, height=600, key=f"iso_{nombre_zona}")
 
     with tab4:
         c1, c2 = st.columns(2)
         if not df_res.empty: c1.download_button("Descargar CSV", df_res.to_csv(index=False), "serie.csv")
+
 else:
-    st.info("Selecciona zona.")
+    st.info("👈 Selecciona una zona.")
