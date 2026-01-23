@@ -155,7 +155,7 @@ st.markdown("---")
 
 tabs = st.tabs([
     "📡 Estaciones", "📊 Índices", "🏠 Predios", "🌊 Cuencas", 
-    "🏙️ Municipios", "🌲 Coberturas", "💧 Bocatomas", "⛰️ Hidrogeología", "🌱 Suelos", "🛠️ SQL", "📚 Inventario"
+    "🏙️ Municipios", "🌲 Coberturas", "💧 Bocatomas", "⛰️ Hidrogeología", "🌱 Suelos", "🛠️ SQL", "📚 Inventario", "🌧️ Lluvia"
 ])
 
 
@@ -623,3 +623,31 @@ with tabs[10]: # Índice 10 porque es la pestaña número 11 (0-10)
         hide_index=True,
         use_container_width=True
     )
+
+
+# ==============================================================================
+# TAB 12: Precipitación MENSUAL
+# ==============================================================================
+with tabs[11]:
+    st.header("🌧️ Gestión de Precipitaciones (Archivo Maestro)")
+    st.info("Sube el archivo CSV con formato matricial (Cód Estación en filas, Fechas en columnas).")
+    
+    up_rain = st.file_uploader("Cargar DatosPptnmes_ENSO.csv", type=["csv"])
+    if up_rain and st.button("Migrar a Base de Datos"):
+        try:
+            df = pd.read_csv(up_rain)
+            # Detección simple de formato ancho
+            id_col = df.columns[0]
+            fechas = df.columns[1:]
+            
+            # Transformación (Melt)
+            df_long = df.melt(id_vars=[id_col], value_vars=fechas, var_name='fecha', value_name='valor')
+            df_long = df_long.rename(columns={id_col: 'id_estacion'})
+            df_long['fecha'] = pd.to_datetime(df_long['fecha'], errors='coerce')
+            df_long = df_long.dropna(subset=['fecha', 'valor'])
+            
+            # Subida por lotes
+            df_long.to_sql('precipitacion', engine, if_exists='replace', index=False, chunksize=5000)
+            st.success(f"✅ Migración exitosa: {len(df_long)} registros cargados.")
+        except Exception as e:
+            st.error(f"Error en migración: {e}")
