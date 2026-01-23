@@ -354,7 +354,21 @@ if gdf_zona is not None:
                     tooltip=f"Zona: {nombre_zona}"
                 ).add_to(m_iso)
 
-            # 5. SELECTOR DE CAPAS
+            # 5. ESTACIONES (Puntos negros simples)
+            for _, r in df_valid.iterrows(): # Usamos df_valid para mostrar solo las que tienen datos
+                folium.CircleMarker(
+                    location=[r['latitud'], r['longitud']],
+                    radius=3,
+                    color='black',
+                    fill=True,
+                    fill_color='white',
+                    fill_opacity=1.0,
+                    weight=1,
+                    tooltip=f"{r['nom_est']}: {r['recarga_calc']*12:,.0f} mm",
+                    name="Estaciones"
+                ).add_to(m_iso)
+
+            # 6. SELECTOR DE CAPAS (Asegúrate que esto esté AL FINAL)
             folium.LayerControl(position='topright', collapsed=True).add_to(m_iso)
             
             st_folium(m_iso, width=1400, height=600, key=f"iso_{nombre_zona}")
