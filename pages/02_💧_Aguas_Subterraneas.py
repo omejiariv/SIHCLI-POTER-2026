@@ -297,49 +297,6 @@ if gdf_zona is not None:
             
             fig.update_layout(height=500, hovermode="x unified", title="Balance Hídrico Completo y Proyección", template="plotly_white")
             
-            # --- CONFIGURACIÓN DE DESCARGA DE IMAGEN ---
-            config_plotly = {
-                'toImageButtonOptions': {
-                    'format': 'png', # o 'svg', 'jpeg', 'webp'
-                    'filename': f'Balance_Hidrico_{nombre_zona.replace(" ", "_")}',
-                    'height': 600,
-                    'width': 1200,
-                    'scale': 2 # Mayor resolución (x2)
-                },
-                'displayModeBar': True, # Asegura que se vea la barra de herramientas
-                # Opcional: quitar botones que no uses
-                # 'modeBarButtonsToRemove': ['zoom', 'pan', 'select', 'lasso2d'] 
-            }
-            
-            # Renderizar con configuración
-            st.plotly_chart(fig, use_container_width=True, config=config_plotly)
-
-
-    # --- TAB 1: GRÁFICO COMPLETO ---
-    with tab1:
-        if not df_res.empty:
-            df_hist = df_res[df_res['tipo'] == 'Histórico']
-            df_fut = df_res[df_res['tipo'] == 'Proyección']
-            
-            fig = go.Figure()
-            
-            # 1. Variables Históricas
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia Hist.', line=dict(color='#95a5a6', width=1)))
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['etr_mm'], name='ETR Hist.', line=dict(color='#e67e22', width=1.5)))
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['escorrentia_mm'], name='Escorrentía Hist.', line=dict(color='#27ae60', width=1.5)))
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga Hist.', line=dict(color='#2980b9', width=2), fill='tozeroy'))
-            
-            # 2. Proyecciones
-            fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['p_final'], name='Lluvia Proy.', line=dict(color='#95a5a6', width=1, dash='dot')))
-            fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Recarga Proy.', line=dict(color='#00d2d3', width=2, dash='dot')))
-            
-            # 3. Incertidumbre
-            if 'yhat_upper' in df_fut.columns:
-                 fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_upper'], showlegend=False, line=dict(width=0)))
-                 fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(0,210,211,0.1)'))
-            
-            fig.update_layout(height=500, hovermode="x unified", title="Balance Hídrico Completo y Proyección", template="plotly_white")
-            
             # Configuración de descarga (Cámara de fotos)
             config_plotly = {
                 'toImageButtonOptions': {
