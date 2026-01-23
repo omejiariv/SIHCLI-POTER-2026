@@ -332,10 +332,31 @@ if gdf_zona is not None:
             except Exception as e:
                 print(f"Error isolíneas: {e}")
 
+            # 4. CONTORNO DE LA ZONA SELECCIONADA (Cuenca/Municipio)
+            # Esto dibuja el límite exacto de lo que estás analizando
+            if gdf_zona is not None:
+                # Asegurar proyección correcta
+                if gdf_zona.crs and gdf_zona.crs.to_string() != "EPSG:4326":
+                    gdf_boundary = gdf_zona.to_crs("EPSG:4326")
+                else:
+                    gdf_boundary = gdf_zona
 
-            # 2. SELECTOR DE CAPAS
+                folium.GeoJson(
+                    gdf_boundary,
+                    name=f"Límite: {nombre_zona}",
+                    style_function=lambda x: {
+                        'color': '#2c3e50',       # Color borde (Gris oscuro elegante)
+                        'weight': 2.5,            # Grosor
+                        'fillOpacity': 0.0,       # Relleno transparente (para ver el mapa debajo)
+                        'dashArray': '5, 5',      # Línea punteada para diferenciar de isolíneas
+                        'opacity': 1.0
+                    },
+                    tooltip=f"Zona: {nombre_zona}"
+                ).add_to(m_iso)
+
+            # 5. SELECTOR DE CAPAS
             folium.LayerControl(position='topright', collapsed=True).add_to(m_iso)
-
+            
             st_folium(m_iso, width=1400, height=600, key=f"iso_{nombre_zona}")
 
 
