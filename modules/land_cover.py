@@ -390,49 +390,90 @@ def get_infiltration_suggestion(stats):
 
 # --- FUNCIONES PARA INTEGRACIÓN CON HIDROLOGÍA (TURC) ---
 
+def calcular_estadisticas_zona(gdf_zona, raster_path):
+    """
+    Calcula estadísticas de cobertura para un polígono específico usando rasterio.mask.
+    """
+    # Verificación básica
+    if gdf_zona is None or gdf_zona.empty:
+        return {}
+    if not os.path.exists(raster_path):
+        # Si no encuentra el archivo, retorna vacío (evita error fatal)
+        print(f"Advertencia: No se encontró el raster en {raster_path}")
+        return {}
+
+    try:
+        with rasterio.open(raster_path) as src:
+            # 1. Asegurar proyecciones coincidentes (Raster manda)
+            if gdf_zona.crs != src.crs:
+                gdf_zona = gdf_zona.to_crs(src.crs)
+
+            # 2. Enmascarar (Recortar el raster con la geometría)
+            out_image, _ = mask(src, gdf_zona.geometry, crop=True)
+            data = out_image[0]
+            
+            # 3. Filtrar datos válidos (ignorar nodata y ceros)
+            valid_pixels = data[(data != src.nodata) & (data > 0)]
+            total_pixels = valid_pixels.size
+            
+            if total_pixels == 0: return {}
+
+            # 4. Contar frecuencias
+            unique, counts = np.unique(valid_pixels, return_counts=True)
+            
+            stats = {}
+            for val, count in zip(unique, counts):
+                # Usamos el diccionario de leyenda global
+                name = LAND_COVER_LEGEND.get(int(val), f"Clase {int(val)}")
+                pct = (count / total_pixels) * 100
+                stats[name] = pct
+                
+            return stats
+    except Exception as e:
+        print(f"Error calculando estadísticas cobertura: {e}")
+        return {}
+
 def agrupar_coberturas_turc(stats_dict):
     """
-    Agrupa las clases en 5 categorías: Bosque, Agrícola, Pecuario, Agua, Urbano.
+    Agrupa las clases en 5 categorías para el modelo: 
+    Bosque, Agrícola, Pecuario, Agua, Urbano.
     """
-    if not stats_dict: return 40.0, 20.0, 20.0, 5.0, 15.0 # Default
+    # Valores por defecto si no hay datos
+    if not stats_dict: return 40.0, 20.0, 30.0, 5.0, 5.0 
 
-    # 1. GRUPO URBANO / OTROS (Impermeable o muy baja infiltración)
-    # IDs: 1, 2, 3, 4
+    # --- DEFINICIÓN DE GRUPOS ---
+    
+    # 1. URBANO / OTROS
     grupo_urbano = [
         "Zonas Urbanas", "Zonas industriales", 
         "Zonas degradadas", "Zonas Verdes artificializadas"
     ]
 
-    # 2. GRUPO AGRÍCOLA (Cultivos)
-    # IDs: 5, 6, 8
+    # 2. AGRÍCOLA
     grupo_agricola = [
         "Cultivos transitorios", "Cultivos permanentes", 
         "Areas Agrícolas Heterogéneas"
     ]
 
-    # 3. GRUPO PECUARIO (Pastos y vegetación baja/abierta)
-    # IDs: 7, 10, 11
+    # 3. PECUARIO
     grupo_pecuario = [
         "Pastos", "Vegetación Herbácea", 
         "Areas abiertas sin o con poca cobertura"
     ]
 
-    # 4. GRUPO BOSQUE (Conservación)
-    # IDs: 9 (Solo Bosque denso)
+    # 4. BOSQUE
     grupo_bosque = ["Bosque"]
 
-    # 5. GRUPO AGUA (Humedales y Cuerpos de agua)
-    # IDs: 12, 13
+    # 5. AGUA
     grupo_agua = ["Humedales", "Agua"]
 
-    # Sumatorias
+    # --- SUMATORIAS ---
     sum_bosque = 0
     sum_agricola = 0
     sum_pecuario = 0
     sum_agua = 0
 
     for nombre, pct in stats_dict.items():
-        # Búsqueda flexible por nombre
         if any(g in nombre for g in grupo_bosque):
             sum_bosque += pct
         elif any(g in nombre for g in grupo_agricola):
@@ -442,8 +483,7 @@ def agrupar_coberturas_turc(stats_dict):
         elif any(g in nombre for g in grupo_agua):
             sum_agua += pct
             
-    # El resto se asigna a Urbano (o calculamos directo si preferimos)
-    # Usamos el residual para asegurar que sume 100%
+    # El resto se asigna a Urbano para completar 100%
     sum_urbano = max(0, 100 - (sum_bosque + sum_agricola + sum_pecuario + sum_agua))
     
     return sum_bosque, sum_agricola, sum_pecuario, sum_agua, sum_urbano
