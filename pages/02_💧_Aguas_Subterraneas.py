@@ -9,6 +9,7 @@ import geopandas as gpd
 from scipy.interpolate import griddata
 import folium
 from folium.features import DivIcon
+from folium import plugins
 from streamlit_folium import st_folium
 from branca.colormap import LinearColormap
 import matplotlib.pyplot as plt
@@ -362,9 +363,30 @@ if gdf_zona is not None:
             ).add_to(m)
 
         # Selector de Capas (Vital para activar/desactivar)
+        # 1. CONTROL DE CAPAS
         folium.LayerControl(position='topright', collapsed=True).add_to(m)
 
+        # 2. BOTÓN PANTALLA COMPLETA
+        plugins.Fullscreen(
+            position='topleft', 
+            title='Pantalla Completa', 
+            title_cancel='Salir', 
+            force_separate_button=True
+        ).add_to(m)
+
+        # 3. RENDERIZAR MAPA
         st_folium(m, width=1400, height=600, key=f"ctx_{nombre_zona}")
+
+        # 4. BOTÓN DE DESCARGA HTML
+        # Convertimos el objeto mapa a texto HTML
+        map_html = m.get_root().render()
+        st.download_button(
+            label="🌍 Descargar Mapa Contexto (HTML)",
+            data=map_html,
+            file_name=f"Contexto_{nombre_zona}.html",
+            mime="text/html",
+            help="Descarga este mapa interactivo para abrirlo en cualquier navegador."
+        )
 
     # --- TAB 3: RECARGA (BOTÓN + RASTER) ---
     with tab3:
@@ -493,11 +515,29 @@ if gdf_zona is not None:
                     name="Estaciones"
                 ).add_to(m_iso)
 
-            # 6. SELECTOR DE CAPAS (Asegúrate que esto esté AL FINAL)
+            # 6. CONTROL DE CAPAS
             folium.LayerControl(position='topright', collapsed=True).add_to(m_iso)
             
+            # 7. BOTÓN PANTALLA COMPLETA
+            plugins.Fullscreen(
+                position='topleft', 
+                title='Pantalla Completa', 
+                title_cancel='Salir', 
+                force_separate_button=True
+            ).add_to(m_iso)
+            
+            # 8. RENDERIZAR MAPA
             st_folium(m_iso, width=1400, height=600, key=f"iso_{nombre_zona}")
 
+            # 9. BOTÓN DE DESCARGA HTML
+            map_html_iso = m_iso.get_root().render()
+            st.download_button(
+                label="🌈 Descargar Mapa Recarga (HTML)",
+                data=map_html_iso,
+                file_name=f"Recarga_{nombre_zona}.html",
+                mime="text/html",
+                help="Descarga este mapa interactivo con isolíneas para compartir."
+            )
 
     # --- TAB 4: DESCARGAS (RASTER + CSV) ---
     with tab4:
