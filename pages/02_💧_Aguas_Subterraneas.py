@@ -13,6 +13,7 @@ from streamlit_folium import st_folium
 from branca.colormap import LinearColormap
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import os
 
 from modules import db_manager, hydrogeo_utils, selectors
 from modules import land_cover
