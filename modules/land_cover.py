@@ -488,7 +488,7 @@ def agrupar_coberturas_turc(stats_dict):
     
     return sum_bosque, sum_agricola, sum_pecuario, sum_agua, sum_urbano
 
-# --- OBTENER IMAGEN ---
+# --- OBTENER IMAGEN COBERTURAS---
 
 def obtener_imagen_folium_coberturas(gdf_zona, raster_path):
     """
@@ -513,6 +513,7 @@ def obtener_imagen_folium_coberturas(gdf_zona, raster_path):
             rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
 
             # 4. Colorear según diccionario LAND_COVER_COLORS
+            # Asegúrate que LAND_COVER_COLORS esté definido al inicio de este archivo
             for cat_id, hex_color in LAND_COVER_COLORS.items():
                 # Convertir Hex a RGB
                 h = hex_color.lstrip('#')
@@ -531,8 +532,6 @@ def obtener_imagen_folium_coberturas(gdf_zona, raster_path):
             rgba[(data == src.nodata) | (data == 0), 3] = 0
 
             # 5. Calcular Bounds para Folium (Lat/Lon)
-            # Necesitamos los bordes en el sistema de coordenadas original, luego transformar a WGS84
-            # Una forma rápida es usar los bounds de la zona recortada vectorial (aproximación segura)
             minx, miny, maxx, maxy = gdf_zona.to_crs("EPSG:4326").total_bounds
             # Folium usa [[LatMin, LonMin], [LatMax, LonMax]]
             bounds_folium = [[miny, minx], [maxy, maxx]]

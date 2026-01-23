@@ -33,7 +33,7 @@ st.sidebar.divider()
 st.sidebar.header("🎛️ Parámetros del Modelo")
 
 # RUTA AL RASTER (Asegúrate que existe en data/)
-RUTA_RASTER = "data/mapaCVENSO.tif" 
+RUTA_RASTER = "data/Cob25m_WGS84.tif"
 
 modo_params = st.sidebar.radio(
     "Fuente de Coberturas:", 
@@ -260,17 +260,16 @@ if gdf_zona is not None:
 
         # --- CAPA DE COBERTURAS VEGETALES ---
         # Solo intentamos cargar si estamos en modo automático o si existe la ruta
-        if 'mapaCVENSO' in RUTA_RASTER or os.path.exists(RUTA_RASTER):
-            # Llamamos a la función que acabamos de crear
+        # Cargar Coberturas si el archivo existe
+        if os.path.exists(RUTA_RASTER):
             img_cob, bounds_cob = land_cover.obtener_imagen_folium_coberturas(gdf_zona, RUTA_RASTER)
             
             if img_cob is not None:
                 folium.raster_layers.ImageOverlay(
                     image=img_cob,
                     bounds=bounds_cob,
-                    opacity=0.7,
+                    opacity=0.6,
                     name="Coberturas (Real)",
-                    # Z-index bajo para que bocatomas y estaciones queden encima
                     zindex=1
                 ).add_to(m)
         # -------------------------------------------
