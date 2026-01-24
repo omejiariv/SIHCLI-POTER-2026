@@ -116,7 +116,7 @@ def load_data_from_db():
                 SELECT 
                     p.id_estacion_fk as id_estacion,
                     e.nom_est as station_name, 
-                    p.fecha_mes_año as date,
+                    p.fecha as date,
                     p.precipitation as precipitation
                 FROM precipitacion_mensual p
                 JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
