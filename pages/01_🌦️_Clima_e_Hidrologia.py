@@ -41,19 +41,19 @@ except Exception as e:
     st.error(f"Error crítico importando módulos: {e}")
     st.stop()
 
-# --- FUNCIÓN BLINDADA CON AISLAMIENTO DE TRANSACCIONES ---
-@st.cache_data(show_spinner="Recuperando datos del sistema...", ttl=60)
+
+# --- FUNCIÓN DE CARGA FINAL (LIMPIA Y AJUSTADA A TU BD) ---
+@st.cache_data(show_spinner="Recuperando datos históricos...", ttl=60)
 def load_data_from_db():
-    import re
     engine = get_engine()
     
-    # Valores por defecto
+    # 1. VALORES POR DEFECTO (SEGURIDAD)
     gdf_municipios = None
     gdf_subcuencas = None
     gdf_predios_db = None
     gdf_stations_db = None
     
-    # DataFrames vacíos de seguridad
+    # DataFrames vacíos con las columnas necesarias para que no falle el visualizador
     df_long = pd.DataFrame(columns=[Config.STATION_NAME_COL, Config.PRECIPITATION_COL, Config.DATE_COL])
     df_enso = pd.DataFrame(columns=[Config.DATE_COL, Config.ENSO_ONI_COL, 'fecha_mes_año'])
     
@@ -64,7 +64,7 @@ def load_data_from_db():
         return None, None, df_long, df_enso, None, None
 
     # ---------------------------------------------------------
-    # 1. CARGA DE MAPAS (LÓGICA HUELLA DACTILAR)
+    # 2. CARGA DE MAPAS (HUELLA DACTILAR)
     # ---------------------------------------------------------
     try:
         spatial_results = load_spatial_data()
@@ -82,125 +82,123 @@ def load_data_from_db():
                     gdf_municipios = gdf.copy()
                     c_real = next((c for c in gdf.columns if c.upper() == 'MPIO_CNMBR'), None)
                     if c_real: gdf_municipios['MPIO_CNMBR'] = gdf_municipios[c_real]
-                    debug_msg.append(f"✅ Mapa {i}: Municipios detectado.")
 
-                # B. CUENCAS (Huella: N-NSS3, SUBC_LBL, NOMBRE_CUENCA)
-                elif any(c in cols for c in ['N-NSS3', 'SUBC_LBL', 'SZH', 'NOMBRE_CUENCA']):
+                # B. CUENCAS (Huella: N-NSS3, SUBC_LBL)
+                elif any(c in cols for c in ['N-NSS3', 'SUBC_LBL', 'SZH']):
                     gdf_subcuencas = gdf.copy()
-                    # Normalizar a 'nom_cuenca'
-                    target = next((c for c in gdf.columns if c.upper() in ['N-NSS3', 'SUBC_LBL', 'SZH', 'NOMBRE_CUENCA']), None)
+                    target = next((c for c in gdf.columns if c.upper() in ['N-NSS3', 'SUBC_LBL', 'SZH']), None)
                     if target:
                         gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[target]
                     else:
                         gdf_subcuencas['nom_cuenca'] = "Desconocido"
-                    debug_msg.append(f"✅ Mapa {i}: Cuencas detectado ({target}).")
 
                 # C. PREDIOS (Polígonos)
                 elif ('NOMBRE_PRE' in cols or 'PK_PREDIOS' in cols) and 'Polygon' in str(geom):
                     gdf_predios_db = gdf.copy()
-                    debug_msg.append(f"✅ Mapa {i}: Predios detectado.")
 
                 # D. BOCATOMAS (Puntos)
                 elif 'NOMBRE_ACU' in cols and 'Point' in str(geom):
                     if gdf_predios_db is None:
-                        gdf_predios_db = gdf.copy()
-                        debug_msg.append(f"✅ Mapa {i}: Bocatomas (Usado como puntos).")
+                        gdf_predios_db = gdf.copy() # Usar como capa de puntos si no hay polígonos
 
     except Exception as e:
         debug_msg.append(f"❌ Error mapas: {str(e)}")
 
     # ---------------------------------------------------------
-    # 2. ESTACIONES (Consulta Aislada)
+    # 3. ESTACIONES (Consulta Directa)
     # ---------------------------------------------------------
     try:
-        # Usamos 'engine' directo para evitar transacciones bloqueadas
+        # Usamos engine directo para evitar transacciones bloqueadas
         df_est = pd.read_sql("SELECT * FROM estaciones WHERE latitud != 0", engine)
         if not df_est.empty:
             gdf_stations_db = gpd.GeoDataFrame(
                 df_est, geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud), crs="EPSG:4326"
             )
+            # Normalizar nombres
             if 'nom_est' in gdf_stations_db.columns:
                 gdf_stations_db[Config.STATION_NAME_COL] = gdf_stations_db['nom_est']
+            
+            # Normalizar coordenadas
             for c in ['latitud', 'longitud']:
                 if c in gdf_stations_db.columns:
                     eng = 'latitude' if c=='latitud' else 'longitude'
                     gdf_stations_db[eng] = pd.to_numeric(gdf_stations_db[c], errors='coerce')
+                    
+            debug_msg.append(f"✅ Estaciones cargadas: {len(gdf_stations_db)}")
     except Exception as e:
         debug_msg.append(f"⚠️ Error estaciones: {e}")
 
     # ---------------------------------------------------------
-    # 3. LLUVIAS (Consultas Aisladas con Fallback)
+    # 4. LLUVIAS (SOLO TABLA VIEJA 'precipitacion_mensual')
     # ---------------------------------------------------------
     try:
-        # Intento 1: Tabla del Panel Admin ('precipitacion')
-        # Referencia PDF página 15
-        debug_msg.append("🔄 Intentando tabla 'precipitacion'...")
+        # Ya no intentamos la tabla 'precipitacion' porque sabemos que no existe
         df_long = pd.read_sql("""
             SELECT p.id_estacion_fk as id_estacion, e.nom_est as station_name,
-                   p.fecha, p.valor as precipitation
-            FROM precipitacion p 
+                   p.fecha_mes_año, p.precipitation
+            FROM precipitacion_mensual p 
             JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
         """, engine)
         
-        if 'fecha' in df_long.columns: 
-            df_long['fecha_mes_año'] = df_long['fecha']
-        debug_msg.append(f"✅ Lluvia cargada de 'precipitacion' ({len(df_long)} reg).")
-
-    except Exception as e1:
-        debug_msg.append(f"⚠️ Falló tabla nueva: {e1}")
-        try:
-            # Intento 2: Tabla antigua ('precipitacion_mensual')
-            # Referencia CSV antiguo
-            debug_msg.append("🔄 Intentando tabla 'precipitacion_mensual'...")
-            df_long = pd.read_sql("""
-                SELECT p.id_estacion_fk as id_estacion, e.nom_est as station_name,
-                       p.fecha_mes_año, p.precipitation
-                FROM precipitacion_mensual p 
-                JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-            """, engine)
-            debug_msg.append(f"✅ Lluvia cargada de 'precipitacion_mensual' ({len(df_long)} reg).")
-        except Exception as e2:
-            debug_msg.append(f"❌ Fallaron ambas tablas de lluvia. Último error: {e2}")
-
-    # Procesamiento Lluvia (Seguro)
-    date_col = 'fecha_mes_año' if 'fecha_mes_año' in df_long.columns else 'fecha'
-    if date_col in df_long.columns:
-        df_long[Config.DATE_COL] = pd.to_datetime(df_long[date_col], errors='coerce')
-        df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
-        df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
+        debug_msg.append(f"✅ Lluvia cargada ({len(df_long)} registros).")
         
-    # Airbags para columnas faltantes
-    if Config.STATION_NAME_COL not in df_long.columns: df_long[Config.STATION_NAME_COL] = ""
-    if Config.PRECIPITATION_COL not in df_long.columns: df_long[Config.PRECIPITATION_COL] = 0.0
+        # Procesamiento vital para que no salga "0 Registros"
+        if 'fecha_mes_año' in df_long.columns:
+            df_long[Config.DATE_COL] = pd.to_datetime(df_long['fecha_mes_año'], errors='coerce')
+            df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
+            df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
+        
+        # Asegurar columnas clave
+        if Config.STATION_NAME_COL not in df_long.columns: df_long[Config.STATION_NAME_COL] = "Desconocida"
+        if Config.PRECIPITATION_COL not in df_long.columns: df_long[Config.PRECIPITATION_COL] = 0.0
+
+    except Exception as e:
+        debug_msg.append(f"❌ Error cargando lluvia: {e}")
 
     # ---------------------------------------------------------
-    # 4. ENSO (Consulta Aislada + Parser Robusto)
+    # 5. ENSO (SOLUCIÓN AL ERROR DE CARACTERES)
     # ---------------------------------------------------------
     try:
-        # Usamos 'engine' directo para evitar heredar bloqueos
         df_enso_raw = pd.read_sql("SELECT * FROM indices_climaticos", engine)
+        
+        # Convertimos todo a minúsculas para facilitar
         df_enso_raw.columns = [c.lower().strip() for c in df_enso_raw.columns]
         
-        # Detectar columnas año/mes (incluso con caracteres raros)
-        c_anio = next((c for c in df_enso_raw.columns if re.search(r'^(a.o|year|anio)$', c)), None)
-        c_mes = next((c for c in df_enso_raw.columns if re.search(r'^(mes|month)$', c)), None)
+        # IDENTIFICACIÓN EXPLÍCITA DE LA COLUMNA DAÑADA
+        # Buscamos 'aã±o', 'año', 'anio', 'year'
+        col_anio = None
+        target_years = ['aã±o', 'año', 'anio', 'year'] # Lista de posibles nombres
         
-        if c_anio and c_mes:
+        for candidate in target_years:
+            # Buscamos coincidencia exacta o parcial
+            found = next((c for c in df_enso_raw.columns if candidate in c), None)
+            if found:
+                col_anio = found
+                break
+        
+        # Buscamos mes
+        col_mes = next((c for c in df_enso_raw.columns if 'mes' in c or 'month' in c), None)
+        
+        if col_anio and col_mes:
+            # Convertir a numérico forzoso
+            df_enso_raw[col_anio] = pd.to_numeric(df_enso_raw[col_anio], errors='coerce')
+            df_enso_raw[col_mes] = pd.to_numeric(df_enso_raw[col_mes], errors='coerce')
+            
+            # Construir fecha
             df_enso_raw['fecha_mes_año'] = pd.to_datetime(
-                dict(year=pd.to_numeric(df_enso_raw[c_anio], errors='coerce'), 
-                     month=pd.to_numeric(df_enso_raw[c_mes], errors='coerce'), 
-                     day=1), 
+                dict(year=df_enso_raw[col_anio], month=df_enso_raw[col_mes], day=1), 
                 errors='coerce'
             )
             df_enso = df_enso_raw
-            debug_msg.append("✅ ENSO: Fecha construida correctamente.")
+            debug_msg.append(f"✅ ENSO recuperado usando columna '{col_anio}'")
         else:
-            debug_msg.append(f"⚠️ ENSO: Faltan columnas año/mes. Vistas: {list(df_enso_raw.columns)}")
+            debug_msg.append(f"⚠️ ENSO: No se encontró columna año. Columnas: {list(df_enso_raw.columns)}")
 
-        # Mapeos finales ENSO
+        # Mapeos finales
         if 'fecha_mes_año' in df_enso.columns:
             df_enso[Config.DATE_COL] = df_enso['fecha_mes_año']
-            df_enso['date'] = df_enso['fecha_mes_año']
+            df_enso['date'] = df_enso['fecha_mes_año'] # Doble seguridad
+        
         if 'anomalia_oni' in df_enso.columns:
             df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
             
@@ -210,21 +208,17 @@ def load_data_from_db():
     except Exception as e:
         debug_msg.append(f"❌ Error ENSO: {e}")
 
-    # ---------------------------------------------------------
-    # 5. DIAGNÓSTICO EN PANTALLA
-    # ---------------------------------------------------------
-    # Solo mostramos si hay errores críticos o si faltan mapas
-    has_error = any("❌" in m for m in debug_msg)
-    missing_maps = gdf_subcuencas is None or gdf_municipios is None
-    
-    if has_error or missing_maps:
-        with st.expander("🕵️‍♂️ ESTADO DE CARGA DE DATOS (Ver Detalles)", expanded=True):
-            for msg in debug_msg:
-                if "❌" in msg: st.error(msg)
-                elif "⚠️" in msg: st.warning(msg)
-                else: st.success(msg)
+    # --- INFORME DE ESTADO (Solo si hay errores rojos) ---
+    has_errors = any("❌" in m for m in debug_msg)
+    if has_errors:
+        with st.expander("🚨 Estado de Carga (Errores Detectados)", expanded=True):
+            for m in debug_msg:
+                if "❌" in m: st.error(m)
+                elif "⚠️" in m: st.warning(m)
+                else: st.success(m)
 
     return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
+
 
 # --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
 def get_name_from_row_v2(row, type_layer):
