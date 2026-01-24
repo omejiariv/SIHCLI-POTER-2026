@@ -41,88 +41,102 @@ except Exception as e:
     st.error(f"Error crítico importando módulos: {e}")
     st.stop()
 
-# --- FUNCIÓN DE CARGA POR HUELLA DIGITAL (PREDIOS vs CUENCAS) ---
-@st.cache_data(show_spinner="Sincronizando...", ttl=60)
+# --- FUNCIÓN "DETECTIVE" (DIAGNÓSTICO + CARGA SEGURA) ---
+@st.cache_data(show_spinner="Analizando estructura de datos...", ttl=60)
 def load_data_from_db():
     import re
     engine = get_engine()
     if not engine:
         return None, None, None, None, None, None
 
-    # --- 1. CARGA DE MAPAS (IDENTIFICACIÓN POR COLUMNAS ÚNICAS) ---
+    # Variables de retorno
     gdf_municipios = None
     gdf_subcuencas = None
-    gdf_predios_db = None # Aquí irán las fincas/bocatomas
+    gdf_predios_db = None # Para polígonos de fincas
+    gdf_bocatomas_db = None # Para puntos de agua
     
-    debug_log = []
-
+    # Log para mostrar al usuario en pantalla
+    log_mapas = []
+    
     try:
+        # 1. CARGA ESPACIAL
         spatial_results = load_spatial_data()
         
         if isinstance(spatial_results, (tuple, list)):
             for i, gdf in enumerate(spatial_results):
                 if not isinstance(gdf, gpd.GeoDataFrame) or gdf.empty:
+                    log_mapas.append(f"Archivo {i}: Vacío o inválido.")
                     continue
                 
-                # Preparamos las columnas para búsqueda (todo minúscula string)
-                cols_str = " ".join([str(c).lower() for c in gdf.columns])
+                # Análisis Forense
+                cols = [str(c) for c in gdf.columns]
+                cols_upper = [c.upper() for c in cols]
                 geom_type = gdf.geom_type.iloc[0] if not gdf.empty else "Unknown"
                 
-                # --- A. IDENTIFICAR PREDIOS (FINCAS) ---
-                # Inventario: NOMBRE_PRE, PK_PREDIOS
-                if 'nombre_pre' in cols_str or 'pk_predios' in cols_str:
-                    gdf_predios_db = gdf.copy()
-                    debug_log.append(f"Archivo {i} identificado como: PREDIOS (Fincas)")
-                    continue # Importante: saltar al siguiente ciclo
-                
-                # --- B. IDENTIFICAR CUENCAS ---
-                # Inventario: SUBC_LBL, SZH, COD/OBJECTID
-                if 'subc_lbl' in cols_str or 'szh' in cols_str or 'nom_cuenca' in cols_str:
-                    gdf_subcuencas = gdf.copy()
-                    
-                    # Renombrar para que el selector funcione
-                    col_real = next((c for c in gdf_subcuencas.columns if c.lower() == 'subc_lbl'), None)
-                    if col_real:
-                        gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_real]
-                    else:
-                        # Intento con SZH o nombre genérico
-                        col_szh = next((c for c in gdf_subcuencas.columns if c.lower() == 'szh'), None)
-                        if col_szh: gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_szh]
-                    
-                    debug_log.append(f"Archivo {i} identificado como: CUENCAS")
-                    continue
+                assigned = "NO ASIGNADO"
 
-                # --- C. IDENTIFICAR MUNICIPIOS ---
-                # Inventario: MPIO_CNMBR, MPIO_CDPMP
-                if 'mpio_cnmbr' in cols_str or 'mpio_cdpmp' in cols_str:
-                    gdf_municipios = gdf.copy()
-                    # Normalizar nombre municipio
-                    col_nom = next((c for c in gdf_municipios.columns if 'cnmbr' in c.lower()), None)
-                    if col_nom: gdf_municipios['MPIO_CNMBR'] = gdf_municipios[col_nom]
-                    
-                    debug_log.append(f"Archivo {i} identificado como: MUNICIPIOS")
-                    continue
+                # --- LÓGICA DE ASIGNACIÓN (Basada en tus datos confirmados) ---
                 
-                # --- D. IDENTIFICAR BOCATOMAS (Si no se detectó como Predio arriba) ---
-                # Inventario: Nombre_Acu
-                if 'nombre_acu' in cols_str or 'bocat' in cols_str:
-                    # Si ya tenemos predios (fincas), podemos decidir qué hacer.
-                    # Por ahora, si gdf_predios_db está vacío, usamos bocatomas.
-                    if gdf_predios_db is None:
+                # A. CUENCAS (Confirmado: SUBC_LBL, N-NSS3, SZH)
+                if 'Polygon' in geom_type:
+                    if any(x in cols_upper for x in ['SUBC_LBL', 'N-NSS3', 'SZH']):
+                        gdf_subcuencas = gdf.copy()
+                        assigned = "CUENCAS"
+                        # Normalización para el selector
+                        if 'SUBC_LBL' in gdf_subcuencas.columns:
+                            gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['SUBC_LBL']
+                        elif 'N-NSS3' in gdf_subcuencas.columns:
+                            gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['N-NSS3']
+                    
+                    # B. MUNICIPIOS (Hipótesis: MPIO_CNMBR, MPIO_CDPMP)
+                    elif any(x in cols_upper for x in ['MPIO_CNMBR', 'MPIO_CDPMP', 'NOMBRE_MPIO', 'MPIO_NOMBRE']):
+                        gdf_municipios = gdf.copy()
+                        assigned = "MUNICIPIOS"
+                        # Normalización
+                        col_nom = next((c for c in gdf_municipios.columns if 'CNMBR' in c.upper() or 'NOMBRE' in c.upper()), None)
+                        if col_nom: gdf_municipios['MPIO_CNMBR'] = gdf_municipios[col_nom]
+
+                    # C. PREDIOS/FINCAS (Hipótesis: NOMBRE_PRE, PK_PREDIOS)
+                    elif any(x in cols_upper for x in ['NOMBRE_PRE', 'PK_PREDIOS', 'PROPIETARIO']):
                         gdf_predios_db = gdf.copy()
-                        debug_log.append(f"Archivo {i} identificado como: BOCATOMAS (Usado como Predios)")
-                    continue
+                        assigned = "PREDIOS (POLÍGONOS)"
+                    
+                    # D. FALLBACK POR DEFECTO (Si no detectamos columnas conocidas)
+                    elif assigned == "NO ASIGNADO":
+                        # Si es el primer polígono y no tenemos municipios, asumimos municipios
+                        if gdf_municipios is None and i == 2: # Asumiendo orden usual
+                             gdf_municipios = gdf.copy()
+                             assigned = "MUNICIPIOS (Por Orden)"
+
+                # E. BOCATOMAS (Confirmado: Nombre_Acu, Punto)
+                elif 'Point' in geom_type:
+                    if any(x in cols_upper for x in ['NOMBRE_ACU', 'BOCATOMA', 'COD_BOCAT']):
+                        gdf_bocatomas_db = gdf.copy()
+                        assigned = "BOCATOMAS (PUNTOS)"
+                
+                log_mapas.append(f"📂 Archivo {i} ({geom_type}): Cols {cols[:4]}... -> {assigned}")
 
         else:
-            st.warning("⚠️ load_spatial_data no devolvió una lista.")
+            log_mapas.append("⚠️ load_spatial_data devolvió un formato inesperado.")
             
     except Exception as e:
-        st.error(f"Error mapas: {e}")
+        log_mapas.append(f"❌ Error cargando mapas: {e}")
 
-    # --- 2. DATOS TABULARES Y DB ---
+    # --- REPORTE DE DIAGNÓSTICO EN PANTALLA ---
+    # Esto aparecerá en tu app para que me digas qué columnas ve realmente
+    if gdf_municipios is None or gdf_subcuencas is None:
+        with st.expander("🕵️‍♂️ REPORTE DETECTIVE (Copia esto si faltan mapas)", expanded=True):
+            for linea in log_mapas:
+                st.write(linea)
+            st.info("ℹ️ Si ves 'NO ASIGNADO', necesito que me digas las columnas de ese archivo.")
+
+    # --- 2. DATOS TABULARES ---
     df_long = pd.DataFrame()
-    df_enso = pd.DataFrame() 
+    df_enso = pd.DataFrame()
     gdf_stations_db = None
+    
+    # Si no hay predios polígonos, usamos bocatomas para que al menos salga algo
+    final_predios = gdf_predios_db if gdf_predios_db is not None else gdf_bocatomas_db
 
     try:
         with engine.connect() as conn:
@@ -133,62 +147,59 @@ def load_data_from_db():
                     gdf_stations_db = gpd.GeoDataFrame(
                         df_est, geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud), crs="EPSG:4326"
                     )
+                    # Fix Nombres
                     if 'nom_est' in gdf_stations_db.columns:
                         gdf_stations_db[Config.STATION_NAME_COL] = gdf_stations_db['nom_est']
+                    # Fix Coordenadas
                     for c in ['latitud', 'longitud']:
                         if c in gdf_stations_db.columns:
-                            eng = 'latitude' if c=='latitud' else 'longitude'
-                            gdf_stations_db[eng] = pd.to_numeric(gdf_stations_db[c], errors='coerce')
+                            gdf_stations_db['latitude' if c=='latitud' else 'longitude'] = pd.to_numeric(gdf_stations_db[c], errors='coerce')
             except: pass
 
-            # B. PREDIOS DESDE DB (Si existen, tienen prioridad sobre el archivo)
-            # Esto evita conflictos si tienes una tabla 'predios' y un archivo 'predios'
+            # B. LLUVIAS
             try:
-                df_pre = pd.read_sql("SELECT * FROM predios WHERE latitud != 0", conn)
-                if not df_pre.empty:
-                    gdf_predios_db = gpd.GeoDataFrame(
-                        df_pre, geometry=gpd.points_from_xy(df_pre.longitud, df_pre.latitud), crs="EPSG:4326"
-                    )
-            except: pass
-
-            # C. LLUVIAS (Doble vía: CSV original vs Panel Admin)
-            try:
+                # Intentamos leer la tabla del Panel de Admin que tiene 'fecha'
                 df_long = pd.read_sql("""
                     SELECT p.id_estacion_fk as id_estacion, e.nom_est as station_name,
-                           p.fecha_mes_año, p.precipitation
-                    FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+                           p.fecha, p.valor as precipitation
+                    FROM precipitacion p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
                 """, conn)
+                # Creamos el alias que usa visualizer.py
+                if 'fecha' in df_long.columns: df_long['fecha_mes_año'] = df_long['fecha']
             except:
                 try:
+                    # Fallback a tabla antigua
                     df_long = pd.read_sql("""
                         SELECT p.id_estacion_fk as id_estacion, e.nom_est as station_name,
-                               p.fecha, p.valor as precipitation
-                        FROM precipitacion p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+                               p.fecha_mes_año, p.precipitation
+                        FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
                     """, conn)
-                    if 'fecha' in df_long.columns: df_long['fecha_mes_año'] = df_long['fecha']
                 except: pass
 
-            # Estandarización
-            target_date_col = 'fecha_mes_año' if 'fecha_mes_año' in df_long.columns else 'fecha'
-            if target_date_col in df_long.columns:
-                df_long[Config.DATE_COL] = df_long[target_date_col]
+            # Estandarización Lluvia
+            if 'fecha_mes_año' in df_long.columns:
+                df_long[Config.DATE_COL] = df_long['fecha_mes_año']
+            elif 'fecha' in df_long.columns:
+                df_long[Config.DATE_COL] = df_long['fecha']
             
             df_long = df_long.rename(columns={"station_name": Config.STATION_NAME_COL, "precipitation": Config.PRECIPITATION_COL})
             df_long[Config.DATE_COL] = pd.to_datetime(df_long[Config.DATE_COL], errors='coerce')
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
-            # D. ENSO (Construcción forzada)
+            # C. ENSO (INDICES CLIMÁTICOS) - BLINDAJE TOTAL
             try:
                 df_enso = pd.read_sql("SELECT * FROM indices_climaticos", conn)
                 df_enso.columns = [c.lower().strip() for c in df_enso.columns]
                 
-                c_anio = next((c for c in df_enso.columns if re.search(r'^(a.o|year|anio)$', c)), None)
-                c_mes = next((c for c in df_enso.columns if re.search(r'^(mes|month)$', c)), None)
+                # Búsqueda laxa de columnas año/mes (contiene 'a', 'o', 'year'...)
+                c_anio = next((c for c in df_enso.columns if 'year' in c or 'año' in c or 'anio' in c or ('a' in c and 'o' in c and len(c)<=5)), None)
+                c_mes = next((c for c in df_enso.columns if 'mes' in c or 'month' in c), None)
                 
                 if c_anio and c_mes:
                     df_enso[c_anio] = pd.to_numeric(df_enso[c_anio], errors='coerce')
                     df_enso[c_mes] = pd.to_numeric(df_enso[c_mes], errors='coerce')
+                    
                     df_enso['fecha_mes_año'] = pd.to_datetime(
                         dict(year=df_enso[c_anio], month=df_enso[c_mes], day=1), errors='coerce'
                     )
@@ -199,18 +210,21 @@ def load_data_from_db():
                     df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
                 
                 df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
-            except: pass
 
-            # GARANTÍA ANTI-CRASH
+            except Exception as e:
+                print(f"Error ENSO: {e}")
+
+            # GARANTÍA FINAL ANTI-PANTALLA ROJA
+            # Si no se creó la fecha, creamos la columna con vacíos
             for col in ['fecha_mes_año', Config.DATE_COL]:
                 if col not in df_enso.columns: df_enso[col] = pd.NaT
             if Config.ENSO_ONI_COL not in df_enso.columns: df_enso[Config.ENSO_ONI_COL] = None
 
     except Exception as e:
-        st.error(f"Error BD: {e}")
+        st.error(f"Error BD General: {e}")
         return None, None, None, None, None, None
 
-    return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
+    return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, final_predios
 
 
 # --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
