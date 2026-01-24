@@ -42,13 +42,13 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN DE CARGA HÍBRIDA (TABLAS REALES + GEOMETRÍA WKT) ---
-@st.cache_data(show_spinner="Cargando sistema espacial...", ttl=60)
+# --- FUNCIÓN DE CARGA MAESTRA (WKT + ALIAS + SEGURIDAD UI) ---
+@st.cache_data(show_spinner="Sincronizando capas geográficas...", ttl=60)
 def load_data_from_db():
     from shapely import wkt
     from sqlalchemy import text
     
-    # Intentar importar motor de forma robusta
+    # Intentar obtener el motor de BD
     try:
         engine = get_engine()
     except:
@@ -58,13 +58,13 @@ def load_data_from_db():
         except:
             engine = None
 
-    # Inicialización
-    gdf_municipios = None
-    gdf_subcuencas = None
-    gdf_predios_db = None
-    gdf_stations_db = None
+    # Inicialización de Objetos Vacíos (Vital para que no desaparezca el Sidebar)
+    # Si la carga falla, estos objetos vacíos permiten que el código siga corriendo.
+    gdf_municipios = gpd.GeoDataFrame(columns=['MPIO_CNMBR', 'geometry'])
+    gdf_subcuencas = gpd.GeoDataFrame(columns=['nom_cuenca', 'geometry'])
+    gdf_predios_db = gpd.GeoDataFrame(columns=['NOMBRE_PRE', 'geometry'])
+    gdf_stations_db = gpd.GeoDataFrame(columns=[Config.STATION_NAME_COL, 'geometry'])
     
-    # DataFrames base
     df_long = pd.DataFrame(columns=[Config.STATION_NAME_COL, Config.PRECIPITATION_COL, Config.DATE_COL])
     df_enso = pd.DataFrame(columns=[Config.DATE_COL, Config.ENSO_ONI_COL, 'fecha_mes_año'])
     
@@ -73,28 +73,29 @@ def load_data_from_db():
         return None, None, df_long, df_enso, None, None
 
     # ==============================================================================
-    # 1. CARGA ESPACIAL SEGURA (USANDO WKT COMO data_processor.py)
+    # 1. CARGA ESPACIAL (USANDO WKT - INFALIBLE PARA GEOMETRÍAS)
     # ==============================================================================
     
-    def cargar_capa_wkt(query_sql):
-        """Helper para cargar geometría WKT y convertirla a GeoDataFrame."""
+    def sql_to_gdf(query):
+        """Convierte consulta SQL con WKT a GeoDataFrame."""
         try:
-            df = pd.read_sql(text(query_sql), engine)
+            df = pd.read_sql(text(query), engine)
             if not df.empty and 'wkt' in df.columns:
                 df['geometry'] = df['wkt'].apply(lambda x: wkt.loads(x) if x else None)
                 return gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
         except Exception as e:
-            print(f"Error WKT: {e}")
-        return None
+            print(f"Error cargando capa: {e}")
+        return gpd.GeoDataFrame() # Retorno vacío seguro
 
     try:
-        # A. CUENCAS (Tabla: cuencas, Geom: geometry)
-        # Traemos 'n_nss3' que es el nombre real según tu imagen
-        sql_cuencas = "SELECT objectid, n_nss3, nombre_cuenca, ST_AsText(geometry) as wkt FROM cuencas"
-        gdf_subcuencas = cargar_capa_wkt(sql_cuencas)
+        # A. CUENCAS (Tabla: cuencas) -> Clave para Modo Cuenca y Selectores
+        # Solicitamos n_nss3 explícitamente porque vimos en tus fotos que ahí están los nombres reales
+        q_cuencas = "SELECT objectid, n_nss3, nombre_cuenca, ST_AsText(geometry) as wkt FROM cuencas"
+        temp_cuencas = sql_to_gdf(q_cuencas)
         
-        if gdf_subcuencas is not None:
-            # Prioridad de nombres para el selector
+        if not temp_cuencas.empty:
+            gdf_subcuencas = temp_cuencas
+            # ALIAS OBLIGATORIO: La App espera 'nom_cuenca'
             if 'n_nss3' in gdf_subcuencas.columns:
                 gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['n_nss3']
             elif 'nombre_cuenca' in gdf_subcuencas.columns:
@@ -102,30 +103,29 @@ def load_data_from_db():
             else:
                 gdf_subcuencas['nom_cuenca'] = "Cuenca " + gdf_subcuencas.index.astype(str)
 
-        # B. MUNICIPIOS (Tabla: municipios, Geom: geometry o geom)
-        # Intentamos primero geometry
-        sql_mun = "SELECT nombre_municipio, ST_AsText(geometry) as wkt FROM municipios"
-        gdf_municipios = cargar_capa_wkt(sql_mun)
+        # B. MUNICIPIOS (Tabla: municipios) -> Clave para Filtros Geográficos
+        q_munis = "SELECT nombre_municipio, ST_AsText(geometry) as wkt FROM municipios"
+        temp_munis = sql_to_gdf(q_munis)
         
-        # Fallback por si la columna se llama 'geom'
-        if gdf_municipios is None:
-            sql_mun = "SELECT nombre_municipio, ST_AsText(geom) as wkt FROM municipios"
-            gdf_municipios = cargar_capa_wkt(sql_mun)
+        # Fallback si la tabla usa 'geom' en lugar de 'geometry'
+        if temp_munis.empty:
+            q_munis = "SELECT nombre_municipio, ST_AsText(geom) as wkt FROM municipios"
+            temp_munis = sql_to_gdf(q_munis)
 
-        if gdf_municipios is not None:
+        if not temp_munis.empty:
+            gdf_municipios = temp_munis
+            # ALIAS OBLIGATORIO: La App espera 'MPIO_CNMBR'
             if 'nombre_municipio' in gdf_municipios.columns:
                 gdf_municipios['MPIO_CNMBR'] = gdf_municipios['nombre_municipio']
 
-        # C. PREDIOS (Tabla: predios, Geom: geom - Visto en imagen)
-        sql_pre = "SELECT nombre_predio, ST_AsText(geom) as wkt FROM predios"
-        gdf_predios_db = cargar_capa_wkt(sql_pre)
+        # C. PREDIOS (Tabla: predios) -> Clave para Mapa Distribución
+        # Tu imagen mostraba la columna 'geom'
+        q_predios = "SELECT nombre_predio, ST_AsText(geom) as wkt FROM predios"
+        temp_predios = sql_to_gdf(q_predios)
         
-        # Fallback geometry
-        if gdf_predios_db is None:
-            sql_pre = "SELECT nombre_predio, ST_AsText(geometry) as wkt FROM predios"
-            gdf_predios_db = cargar_capa_wkt(sql_pre)
-            
-        if gdf_predios_db is not None:
+        if not temp_predios.empty:
+            gdf_predios_db = temp_predios
+            # ALIAS OBLIGATORIO: La App espera 'NOMBRE_PRE'
             if 'nombre_predio' in gdf_predios_db.columns:
                 gdf_predios_db['NOMBRE_PRE'] = gdf_predios_db['nombre_predio']
 
@@ -133,16 +133,16 @@ def load_data_from_db():
         st.error(f"Error GIS General: {e}")
 
     # ==============================================================================
-    # 2. CARGA TABULAR (LLUVIA & ENSO)
+    # 2. CARGA TABULAR (DATOS CLIMÁTICOS)
     # ==============================================================================
     try:
         with engine.connect() as conn:
             # A. ESTACIONES
             try:
-                # Carga simple y rápida
+                # Consulta ligera
                 df_est = pd.read_sql(text("SELECT id_estacion, nom_est, latitud, longitud FROM estaciones WHERE latitud != 0"), conn)
                 
-                # Normalización de coordenadas (coma por punto)
+                # Limpieza de coordenadas (coma por punto)
                 for c in ['latitud', 'longitud']:
                     if df_est[c].dtype == object:
                         df_est[c] = df_est[c].astype(str).str.replace(',', '.').astype(float)
@@ -154,14 +154,14 @@ def load_data_from_db():
                         crs="EPSG:4326"
                     )
                     gdf_stations_db[Config.STATION_NAME_COL] = gdf_stations_db['nom_est']
-                    # Columnas auxiliares para visualizer
+                    # Campos auxiliares para visualizer.py
                     gdf_stations_db['latitude'] = gdf_stations_db['latitud']
                     gdf_stations_db['longitude'] = gdf_stations_db['longitud']
             except: pass
 
             # B. LLUVIA (precipitacion_mensual)
             try:
-                # Usamos text() para seguridad
+                # Ya sabemos que esta tabla funciona y tiene 277k registros
                 q_rain = text("""
                     SELECT p.id_estacion_fk, e.nom_est as station_name,
                            p.fecha_mes_año, p.precipitation
@@ -181,7 +181,7 @@ def load_data_from_db():
                 })
             except: pass
 
-            # Airbags
+            # Airbags para visualizer.py
             if Config.STATION_NAME_COL not in df_long.columns: df_long[Config.STATION_NAME_COL] = "Estación"
             if Config.PRECIPITATION_COL not in df_long.columns: df_long[Config.PRECIPITATION_COL] = 0.0
 
@@ -190,7 +190,7 @@ def load_data_from_db():
                 df_enso_raw = pd.read_sql(text("SELECT * FROM indices_climaticos"), conn)
                 df_enso_raw.columns = [c.lower().strip() for c in df_enso_raw.columns]
                 
-                # Búsqueda flexible de 'año'
+                # Búsqueda flexible de columnas año/mes (incluso corruptas)
                 col_anio = next((c for c in df_enso_raw.columns if 'a' in c and 'o' in c and len(c)<=5 and 'id' not in c), None)
                 col_mes = next((c for c in df_enso_raw.columns if 'mes' in c or 'month' in c), None)
                 
@@ -211,7 +211,7 @@ def load_data_from_db():
                     df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
             except: pass
             
-            # Garantía ENSO
+            # Garantía final ENSO
             if 'fecha_mes_año' not in df_enso.columns: df_enso['fecha_mes_año'] = pd.NaT
             if Config.DATE_COL not in df_enso.columns: df_enso[Config.DATE_COL] = pd.NaT
 
