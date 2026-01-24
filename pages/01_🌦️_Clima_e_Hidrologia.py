@@ -41,37 +41,36 @@ except Exception as e:
     st.error(f"Error crítico importando módulos: {e}")
     st.stop()
 
-# --- FUNCIÓN DE CARGA HÍBRIDA MEJORADA (DB + ARCHIVOS)
+# --- FUNCIÓN DE CARGA HÍBRIDA MEJORADA (DB + ARCHIVOS) ---
 @st.cache_data(show_spinner="Sincronizando con Base de Datos...", ttl=60)
 def load_data_from_db():
     """
-    Carga híbrida inteligente:
-    1. Geometrías complejas -> Desde Archivos locales
-    2. Datos dinámicos -> Desde BASE DE DATOS
+    Carga híbrida inteligente A PRUEBA DE FALLOS:
+    1. Geometrías: Maneja retorno variable de mapas.
+    2. Datos: Garantiza columnas duplicadas (legacy + new) para evitar KeyErrors.
     """
     engine = get_engine()
     if not engine:
         return None, None, None, None, None, None
 
-    # 1. CARGA BASE DESDE ARCHIVOS (Corrección "Too many values")
+    # --- 1. CARGA DE MAPAS (BLINDADA) ---
     gdf_municipios = None
     gdf_subcuencas = None
     
     try:
-        # Cargamos todo lo que devuelva la función en una variable genérica
-        spatial_res = load_spatial_data()
+        # Cargamos todo en una tupla genérica para no sufrir por "too many values"
+        spatial_results = load_spatial_data()
         
-        # Verificamos qué devolvió y tomamos solo lo que necesitamos
-        if isinstance(spatial_res, (tuple, list)) and len(spatial_res) >= 2:
-            gdf_municipios = spatial_res[0]
-            gdf_subcuencas = spatial_res[1]
+        # Tomamos solo los dos primeros, sin importar cuántos lleguen (3, 4, 5...)
+        if isinstance(spatial_results, (tuple, list)) and len(spatial_results) >= 2:
+            gdf_municipios = spatial_results[0]
+            gdf_subcuencas = spatial_results[1]
         else:
-            st.warning("Advertencia: load_spatial_data no devolvió los mapas esperados.")
-            
+            st.warning("⚠️ Estructura de mapas inesperada, se continuará sin mapas base.")
     except Exception as e:
-        st.warning(f"Advertencia: No se pudieron cargar mapas base. {e}")
+        st.warning(f"Advertencia menor: No se pudieron cargar mapas base ({e})")
 
-    # Variables para datos DB
+    # --- 2. PREPARACIÓN DE VARIABLES ---
     df_long = pd.DataFrame()
     df_enso = pd.DataFrame()
     gdf_stations_db = None
@@ -80,19 +79,22 @@ def load_data_from_db():
     try:
         with engine.connect() as conn:
             # A. CARGAR ESTACIONES
-            q_est = text("SELECT * FROM estaciones WHERE latitud != 0")
-            df_est = pd.read_sql(q_est, conn)
-            if not df_est.empty:
-                gdf_stations_db = gpd.GeoDataFrame(
-                    df_est,
-                    geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud),
-                    crs="EPSG:4326"
-                )
-                # Compatibilidad de nombres
-                if 'latitud' in gdf_stations_db.columns:
-                    gdf_stations_db['latitude'] = pd.to_numeric(gdf_stations_db['latitud'], errors='coerce')
-                if 'longitud' in gdf_stations_db.columns:
-                    gdf_stations_db['longitude'] = pd.to_numeric(gdf_stations_db['longitud'], errors='coerce')
+            try:
+                q_est = text("SELECT * FROM estaciones WHERE latitud != 0")
+                df_est = pd.read_sql(q_est, conn)
+                if not df_est.empty:
+                    gdf_stations_db = gpd.GeoDataFrame(
+                        df_est,
+                        geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud),
+                        crs="EPSG:4326"
+                    )
+                    # Asegurar tipos numéricos
+                    if 'latitud' in gdf_stations_db.columns:
+                        gdf_stations_db['latitude'] = pd.to_numeric(gdf_stations_db['latitud'], errors='coerce')
+                    if 'longitud' in gdf_stations_db.columns:
+                        gdf_stations_db['longitude'] = pd.to_numeric(gdf_stations_db['longitud'], errors='coerce')
+            except Exception:
+                pass # Si fallan las estaciones, seguimos con lo demás
 
             # B. CARGAR PREDIOS (Opcional)
             try:
@@ -107,53 +109,59 @@ def load_data_from_db():
             except Exception:
                 pass 
 
-            # C. CARGAR LLUVIAS (Corrección SQL y Columnas)
+            # C. CARGAR LLUVIAS (EL PUNTO CRÍTICO)
+            # Solicitamos la columna con su nombre REAL en BD: 'fecha_mes_año'
             query_rain = text("""
                 SELECT 
                     p.id_estacion_fk as id_estacion,
                     e.nom_est as station_name,
-                    p.fecha_mes_año as date,
-                    p.precipitation as precipitation
+                    p.fecha_mes_año,              
+                    p.precipitation
                 FROM precipitacion_mensual p
                 JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
             """)
             df_long = pd.read_sql(query_rain, conn)
 
-            # --- Estandarización y Puente de Compatibilidad ---
-            # 1. Renombrar a los nombres que usa el sistema nuevo (Config)
+            # --- D. PUENTE DE COMPATIBILIDAD (EL FIX DEFINITIVO) ---
+            # 1. Si existe 'fecha_mes_año', creamos 'date' (para el código nuevo)
+            if 'fecha_mes_año' in df_long.columns:
+                df_long[Config.DATE_COL] = df_long['fecha_mes_año']
+            # 2. Si por alguna razón vino como 'date', creamos 'fecha_mes_año' (para el código viejo)
+            elif Config.DATE_COL in df_long.columns:
+                df_long['fecha_mes_año'] = df_long[Config.DATE_COL]
+            
+            # 3. Renombramos columnas restantes usando Config
             df_long = df_long.rename(columns={
                 "station_name": Config.STATION_NAME_COL,
-                "date": Config.DATE_COL,
                 "precipitation": Config.PRECIPITATION_COL
+                # No renombramos fecha aquí para no perder la referencia original
             })
-            
-            # 2. PARCHE CRÍTICO: Crear copia 'fecha_mes_año' para código antiguo
-            # Si el código viejo busca 'fecha_mes_año', se lo damos duplicando la columna date
-            if Config.DATE_COL in df_long.columns:
-                 df_long['fecha_mes_año'] = df_long[Config.DATE_COL]
 
-            # 3. Conversión de fechas
+            # 4. Procesamiento final de fechas
             df_long[Config.DATE_COL] = pd.to_datetime(df_long[Config.DATE_COL], errors='coerce')
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
-            # D. CARGAR ENSO
-            query_enso = text("SELECT * FROM indices_climaticos")
-            df_enso = pd.read_sql(query_enso, conn)
-            df_enso.columns = [c.lower() for c in df_enso.columns]
-            
-            if 'año' in df_enso.columns and 'mes' in df_enso.columns:
-                df_enso[Config.DATE_COL] = pd.to_datetime(
-                    df_enso['año'].astype(str) + '-' + df_enso['mes'].astype(str) + '-01'
-                )
-            
-            df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
-            if 'anomalia_oni' in df_enso.columns:
-                df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
+            # E. CARGAR ENSO
+            try:
+                query_enso = text("SELECT * FROM indices_climaticos")
+                df_enso = pd.read_sql(query_enso, conn)
+                df_enso.columns = [c.lower() for c in df_enso.columns]
+                
+                if 'año' in df_enso.columns and 'mes' in df_enso.columns:
+                    df_enso[Config.DATE_COL] = pd.to_datetime(
+                        df_enso['año'].astype(str) + '-' + df_enso['mes'].astype(str) + '-01'
+                    )
+                
+                df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
+                if 'anomalia_oni' in df_enso.columns:
+                    df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
+            except Exception:
+                pass # Si falla ENSO, no bloqueamos la app
 
     except Exception as e:
+        # Captura cualquier error de conexión, pero devuelve Nones seguros
         st.error(f"Error crítico conectando a BD: {e}")
-        # Retornamos Nones para que no explote, pero mostramos el error
         return None, None, None, None, None, None
 
     return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
