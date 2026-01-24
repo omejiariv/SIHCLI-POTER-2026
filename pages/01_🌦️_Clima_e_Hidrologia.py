@@ -42,18 +42,19 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN DE CARGA BASADA EN CONTEO DE REGISTROS (INFALIBLE) ---
-@st.cache_data(show_spinner="Identificando mapas por tamaño...", ttl=60)
+# --- FUNCIÓN DE CARGA PROFESIONAL (CONECTADA AL INVENTARIO REAL) ---
+@st.cache_data(show_spinner="Consultando tablas maestras...", ttl=60)
 def load_data_from_db():
+    import re
     engine = get_engine()
     
-    # Inicialización
+    # Inicialización de vacíos
     gdf_municipios = None
     gdf_subcuencas = None
     gdf_predios_db = None
     gdf_stations_db = None
     
-    # DataFrames base
+    # DataFrames base (Airbags)
     df_long = pd.DataFrame(columns=[Config.STATION_NAME_COL, Config.PRECIPITATION_COL, Config.DATE_COL])
     df_enso = pd.DataFrame(columns=[Config.DATE_COL, Config.ENSO_ONI_COL, 'fecha_mes_año'])
     
@@ -62,57 +63,71 @@ def load_data_from_db():
         return None, None, df_long, df_enso, None, None
 
     # ---------------------------------------------------------
-    # 1. CARGA DE MAPAS (LÓGICA MATEMÁTICA)
+    # 1. CARGA ESPACIAL (DIRECTO A LA FUENTE)
     # ---------------------------------------------------------
     try:
-        spatial_results = load_spatial_data()
-        
-        if isinstance(spatial_results, (tuple, list)):
-            for gdf in spatial_results:
-                if not isinstance(gdf, gpd.GeoDataFrame) or gdf.empty:
-                    continue
-                
-                # Identificación por NÚMERO DE FILAS (Datos de tu Panel de Admin)
-                num_filas = len(gdf)
-                
-                # Buscar primera columna de texto para usarla como nombre
-                col_nombre = None
-                for c in gdf.columns:
-                    if pd.api.types.is_string_dtype(gdf[c]):
-                        col_nombre = c
-                        break
-                if col_nombre is None: col_nombre = gdf.columns[0] # Fallback
+        # A. CUENCAS (Tabla 'cuencas')
+        # Buscamos 'nombre_cuenca' (Nombre en BD según tus imágenes)
+        try:
+            sql = "SELECT * FROM cuencas"
+            gdf_subcuencas = gpd.read_postgis(sql, engine, geom_col='geometry')
+            
+            # Estandarizar para la App
+            if 'nombre_cuenca' in gdf_subcuencas.columns:
+                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
+            elif 'subc_lbl' in gdf_subcuencas.columns: # Fallback al nombre del archivo
+                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['subc_lbl']
+            else:
+                gdf_subcuencas['nom_cuenca'] = "Sin Nombre"
+        except Exception as e:
+            print(f"Error tabla cuencas: {e}")
 
-                # A. MUNICIPIOS (Aprox 125 registros)
-                if 120 <= num_filas <= 130: 
-                    gdf_municipios = gdf.copy()
-                    gdf_municipios['MPIO_CNMBR'] = gdf_municipios[col_nombre] # Estandarizar
-                    continue # Siguiente archivo
-
-                # B. CUENCAS (Aprox 171 registros)
-                if 160 <= num_filas <= 180:
-                    gdf_subcuencas = gdf.copy()
-                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_nombre] # Estandarizar
-                    continue
-
-                # C. PREDIOS (Más de 600 registros)
-                if num_filas > 500:
-                    gdf_predios_db = gdf.copy()
-                    continue
+        # B. MUNICIPIOS (Tabla 'municipios')
+        # Buscamos 'nombre_municipio' (Nombre en BD)
+        try:
+            sql = "SELECT * FROM municipios"
+            try:
+                gdf_municipios = gpd.read_postgis(sql, engine, geom_col='geometry')
+            except:
+                # A veces la geometría se llama 'geom'
+                gdf_municipios = gpd.read_postgis(sql, engine, geom_col='geom')
                 
-                # D. BOCATOMAS/PUNTOS (Si no cae en los rangos anteriores y es punto)
-                if 'Point' in str(gdf.geom_type.iloc[0]):
-                     # Evitar archivo de estaciones
-                     if 'id_estacion' not in gdf.columns:
-                         # Si no tenemos predios, usamos este como capa de puntos
-                         if gdf_predios_db is None:
-                             gdf_predios_db = gdf.copy()
+            # Estandarizar
+            if 'nombre_municipio' in gdf_municipios.columns:
+                gdf_municipios['MPIO_CNMBR'] = gdf_municipios['nombre_municipio']
+            elif 'mpio_cnmbr' in gdf_municipios.columns:
+                gdf_municipios['MPIO_CNMBR'] = gdf_municipios['mpio_cnmbr']
+        except Exception as e:
+            print(f"Error tabla municipios: {e}")
+
+        # C. PREDIOS (Tabla 'predios')
+        # Buscamos 'nombre_predio' y ojo: columna 'geom' (visto en tu imagen)
+        try:
+            sql = "SELECT * FROM predios"
+            try:
+                gdf_predios_db = gpd.read_postgis(sql, engine, geom_col='geom')
+            except:
+                gdf_predios_db = gpd.read_postgis(sql, engine, geom_col='geometry')
+            
+            # Estandarizar
+            if 'nombre_predio' in gdf_predios_db.columns:
+                gdf_predios_db['NOMBRE_PRE'] = gdf_predios_db['nombre_predio']
+        except Exception as e:
+            print(f"Error tabla predios: {e}")
+
+        # D. BOCATOMAS (Tabla 'bocatomas')
+        # Si no hay predios, intentamos bocatomas
+        if gdf_predios_db is None or gdf_predios_db.empty:
+            try:
+                sql = "SELECT * FROM bocatomas"
+                gdf_predios_db = gpd.read_postgis(sql, engine, geom_col='geometry')
+            except: pass
 
     except Exception as e:
-        st.warning(f"Mapas Warning: {e}")
+        st.error(f"Error crítico GIS: {e}")
 
     # ---------------------------------------------------------
-    # 2. CARGA TABULAR (ESTACIONES, LLUVIA, ENSO)
+    # 2. CARGA TABULAR (LLUVIA & ENSO)
     # ---------------------------------------------------------
     try:
         with engine.connect() as conn:
@@ -131,7 +146,7 @@ def load_data_from_db():
                             gdf_stations_db[eng] = pd.to_numeric(gdf_stations_db[c], errors='coerce')
             except: pass
 
-            # B. LLUVIA (Tabla 'precipitacion_mensual')
+            # B. LLUVIA (Tabla 'precipitacion_mensual' verificada)
             try:
                 df_long = pd.read_sql("""
                     SELECT p.id_estacion_fk as id_estacion, e.nom_est as station_name,
@@ -146,23 +161,16 @@ def load_data_from_db():
                     df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
             except: pass
 
-            # Airbags Lluvia
+            # Rellenar para evitar crash
             if Config.STATION_NAME_COL not in df_long.columns: df_long[Config.STATION_NAME_COL] = "Estación"
             if Config.PRECIPITATION_COL not in df_long.columns: df_long[Config.PRECIPITATION_COL] = 0.0
 
-            # C. ENSO (Con corrección de nombres de columna)
+            # C. ENSO (Con corrección de caracteres)
             try:
                 df_enso_raw = pd.read_sql("SELECT * FROM indices_climaticos", conn)
                 df_enso_raw.columns = [c.lower().strip() for c in df_enso_raw.columns]
                 
-                # Buscar columna 'año' corrupta o normal
-                col_anio = None
-                for c in df_enso_raw.columns:
-                    # Busca 'año', 'aÃ±o', 'year', etc.
-                    if ('a' in c and 'o' in c and len(c) <= 5 and 'id' not in c) or 'year' in c:
-                        col_anio = c
-                        break
-                
+                col_anio = next((c for c in df_enso_raw.columns if 'a' in c and 'o' in c and len(c)<=5 and 'id' not in c), None)
                 col_mes = next((c for c in df_enso_raw.columns if 'mes' in c or 'month' in c), None)
                 
                 if col_anio and col_mes:
@@ -181,7 +189,7 @@ def load_data_from_db():
                     df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
             except: pass
             
-            # Garantía final ENSO
+            # Garantía ENSO
             if 'fecha_mes_año' not in df_enso.columns: df_enso['fecha_mes_año'] = pd.NaT
             if Config.DATE_COL not in df_enso.columns: df_enso[Config.DATE_COL] = pd.NaT
 
