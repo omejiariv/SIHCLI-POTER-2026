@@ -2738,7 +2738,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             st.warning("⚠️ No se ha cargado la capa de Cuencas.")
             return
 
-        col_name = next((c for c in gdf_subcuencas.columns if "nombre" in c.lower() or "cuenca" in c.lower()), gdf_subcuencas.columns[0])
+        # Intentar obtener columna de nombre de cuenca
+        col_name = next((c for c in gdf_subcuencas.columns if "nombre" in c.lower() or "cuenca" in c.lower() or "nom_cuenca" in c.lower()), gdf_subcuencas.columns[0])
+        
         default_cuencas = st.session_state.get("last_sel_cuencas", [])
         avail_opts = sorted(gdf_subcuencas[col_name].unique().astype(str))
         valid_defaults = [x for x in default_cuencas if x in avail_opts]
@@ -2781,37 +2783,45 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         df_raw = df_long[mask].copy()
                         df_avg = calcular_promedios_reales(df_raw)
                         
-                        if Config.STATION_NAME_COL not in df_avg.columns: df_avg = df_avg.reset_index()
+                        # --- 🛡️ PARCHE DE SEGURIDAD (MODO CUENCA) ---
+                        # Recuperar la columna 'nom_est' si se perdió en el cálculo de promedios
+                        if Config.STATION_NAME_COL not in df_avg.columns:
+                            if df_avg.index.name == Config.STATION_NAME_COL:
+                                df_avg = df_avg.reset_index()
+                            elif 'station_name' in df_avg.columns:
+                                df_avg = df_avg.rename(columns={'station_name': Config.STATION_NAME_COL})
+                            else:
+                                df_avg[Config.STATION_NAME_COL] = df_avg.index
+
+                        # MERGE SEGURO
                         df_int = pd.merge(df_avg, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
-                        if Config.ALTITUDE_COL not in df_int.columns: df_int[Config.ALTITUDE_COL] = 1500
+                        
+                        if Config.ALTITUDE_COL not in df_int.columns: 
+                            df_int[Config.ALTITUDE_COL] = 1500
+                        
                         gdf_pts = gpd.GeoDataFrame(df_int, geometry=gpd.points_from_xy(df_int.longitude, df_int.latitude), crs=gdf_stations.crs)
 
                         if len(df_int) >= 3:
-                            # 3. Malla Base e Interpolación (CORREGIDO)
-                            # Usamos los límites del buffer para asegurar cobertura total
+                            # 3. Malla Base e Interpolación
                             minx, miny, maxx, maxy = gdf_buf.total_bounds
                             
                             # A. Interpolación de PRECIPITACIÓN (gz)
-                            # Llamamos al helper run_interp que ya incluye Extrapolación (relleno de bordes)
                             gx, gy, gz = run_interp(df_int, meth_c, [minx, maxx, miny, maxy])
                             
                             # B. Interpolación de ALTITUD (gz_alt)
-                            # Necesaria para el cálculo de IVC. La hacemos sobre la misma malla gx, gy.
                             gz_alt = None
                             if gx is not None:
-                                # Definimos los puntos y valores aquí para evitar errores de variables no definidas
                                 pts = df_int[["longitude", "latitude"]].values
                                 vals_alt = df_int[Config.ALTITUDE_COL].values
                                 
-                                # 1. Interpolación Lineal (precisa adentro)
+                                # 1. Interpolación Lineal
                                 gz_alt = griddata(pts, vals_alt, (gx, gy), method='linear')
                                 
-                                # 2. Extrapolación Nearest (para rellenar los bordes vacíos NaN)
+                                # 2. Extrapolación Nearest (relleno de bordes)
                                 mask_nan_alt = np.isnan(gz_alt)
                                 if np.any(mask_nan_alt):
                                     gz_alt_near = griddata(pts, vals_alt, (gx, gy), method='nearest')
-                                    gz_alt[mask_nan_alt] = gz_alt_near[mask_nan_alt]
-                            
+                                    gz_alt[mask_nan_alt] = gz_alt_near[mask_nan_alt]                            
                             # B. IVC (Física y Normalización)
                             gz_t = np.maximum(28 - (0.006 * gz_alt), 0)
                             l_t = 300 + (25 * gz_t) + (0.05 * gz_t**3)
