@@ -142,22 +142,41 @@ def load_data_from_db():
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
-            # E. CARGAR ENSO
+            # E. CARGAR ENSO (CORREGIDO Y BLINDADO)
             try:
                 query_enso = text("SELECT * FROM indices_climaticos")
                 df_enso = pd.read_sql(query_enso, conn)
                 df_enso.columns = [c.lower() for c in df_enso.columns]
                 
+                # Construcción robusta de la fecha
                 if 'año' in df_enso.columns and 'mes' in df_enso.columns:
-                    df_enso[Config.DATE_COL] = pd.to_datetime(
-                        df_enso['año'].astype(str) + '-' + df_enso['mes'].astype(str) + '-01'
+                    # 1. Creamos la fecha matemática
+                    series_fecha = pd.to_datetime(
+                        df_enso['año'].astype(str) + '-' + df_enso['mes'].astype(str) + '-01',
+                        errors='coerce'
                     )
+                    
+                    # 2. Asignamos a Config.DATE_COL (lo que diga la configuración)
+                    df_enso[Config.DATE_COL] = series_fecha
+                    
+                    # 3. PUENTE DE SEGURIDAD: Creamos explícitamente 'fecha_mes_año'
+                    # Esto evita el KeyError si visualizer.py lo busca con ese nombre específico
+                    df_enso['fecha_mes_año'] = series_fecha
+                    
+                    # 4. Puente extra 'date' (por si acaso)
+                    df_enso['date'] = series_fecha
                 
-                df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
+                # Limpieza
+                # Usamos 'fecha_mes_año' aquí para estar seguros que no falle el dropna
+                df_enso = df_enso.dropna(subset=['fecha_mes_año']).sort_values('fecha_mes_año')
+                
                 if 'anomalia_oni' in df_enso.columns:
                     df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
-            except Exception:
-                pass # Si falla ENSO, no bloqueamos la app
+
+            except Exception as e:
+                # Si falla ENSO, imprimimos error pero no detenemos la app (creamos df vacío)
+                print(f"Error cargando ENSO: {e}")
+                df_enso = pd.DataFrame(columns=['fecha_mes_año', Config.DATE_COL, Config.ENSO_ONI_COL])
 
     except Exception as e:
         # Captura cualquier error de conexión, pero devuelve Nones seguros
