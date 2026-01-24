@@ -45,9 +45,10 @@ except Exception as e:
 @st.cache_data(show_spinner="Sincronizando con Base de Datos...", ttl=60)
 def load_data_from_db():
     """
-    Carga híbrida inteligente A PRUEBA DE FALLOS:
-    1. Geometrías: Maneja retorno variable de mapas.
-    2. Datos: Garantiza columnas duplicadas (legacy + new) para evitar KeyErrors.
+    Carga híbrida inteligente SINTONIZADA:
+    1. Geometrías: Blindada contra retornos variables.
+    2. Estaciones: Renombra 'nom_est' a 'station_name' para que funcionen los popups.
+    3. ENSO: Detecta automáticamente columnas de fecha (año/mes/fecha).
     """
     engine = get_engine()
     if not engine:
@@ -58,10 +59,7 @@ def load_data_from_db():
     gdf_subcuencas = None
     
     try:
-        # Cargamos todo en una tupla genérica para no sufrir por "too many values"
         spatial_results = load_spatial_data()
-        
-        # Tomamos solo los dos primeros, sin importar cuántos lleguen (3, 4, 5...)
         if isinstance(spatial_results, (tuple, list)) and len(spatial_results) >= 2:
             gdf_municipios = spatial_results[0]
             gdf_subcuencas = spatial_results[1]
@@ -78,7 +76,7 @@ def load_data_from_db():
 
     try:
         with engine.connect() as conn:
-            # A. CARGAR ESTACIONES
+            # A. CARGAR ESTACIONES (FIX POPUPS)
             try:
                 q_est = text("SELECT * FROM estaciones WHERE latitud != 0")
                 df_est = pd.read_sql(q_est, conn)
@@ -88,15 +86,21 @@ def load_data_from_db():
                         geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud),
                         crs="EPSG:4326"
                     )
-                    # Asegurar tipos numéricos
+                    # --- FIX POPUPS MAPA ---
+                    # El visualizador espera Config.STATION_NAME_COL (usualmente 'station_name')
+                    # Pero la BD trae 'nom_est'. Hacemos el mapeo explícito:
+                    if 'nom_est' in gdf_stations_db.columns:
+                        gdf_stations_db[Config.STATION_NAME_COL] = gdf_stations_db['nom_est']
+                    
+                    # Aseguramos lat/lon numéricos
                     if 'latitud' in gdf_stations_db.columns:
                         gdf_stations_db['latitude'] = pd.to_numeric(gdf_stations_db['latitud'], errors='coerce')
                     if 'longitud' in gdf_stations_db.columns:
                         gdf_stations_db['longitude'] = pd.to_numeric(gdf_stations_db['longitud'], errors='coerce')
             except Exception:
-                pass # Si fallan las estaciones, seguimos con lo demás
+                pass 
 
-            # B. CARGAR PREDIOS (Opcional)
+            # B. CARGAR PREDIOS
             try:
                 q_pre = text("SELECT * FROM predios WHERE latitud != 0")
                 df_pre = pd.read_sql(q_pre, conn)
@@ -109,8 +113,7 @@ def load_data_from_db():
             except Exception:
                 pass 
 
-            # C. CARGAR LLUVIAS (EL PUNTO CRÍTICO)
-            # Solicitamos la columna con su nombre REAL en BD: 'fecha_mes_año'
+            # C. CARGAR LLUVIAS
             query_rain = text("""
                 SELECT 
                     p.id_estacion_fk as id_estacion,
@@ -122,64 +125,65 @@ def load_data_from_db():
             """)
             df_long = pd.read_sql(query_rain, conn)
 
-            # --- D. PUENTE DE COMPATIBILIDAD (EL FIX DEFINITIVO) ---
-            # 1. Si existe 'fecha_mes_año', creamos 'date' (para el código nuevo)
+            # --- PUENTE COMPATIBILIDAD LLUVIAS ---
             if 'fecha_mes_año' in df_long.columns:
                 df_long[Config.DATE_COL] = df_long['fecha_mes_año']
-            # 2. Si por alguna razón vino como 'date', creamos 'fecha_mes_año' (para el código viejo)
             elif Config.DATE_COL in df_long.columns:
                 df_long['fecha_mes_año'] = df_long[Config.DATE_COL]
             
-            # 3. Renombramos columnas restantes usando Config
             df_long = df_long.rename(columns={
                 "station_name": Config.STATION_NAME_COL,
                 "precipitation": Config.PRECIPITATION_COL
-                # No renombramos fecha aquí para no perder la referencia original
             })
 
-            # 4. Procesamiento final de fechas
             df_long[Config.DATE_COL] = pd.to_datetime(df_long[Config.DATE_COL], errors='coerce')
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
-            # E. CARGAR ENSO (CORREGIDO Y BLINDADO)
+            # E. CARGAR ENSO (FIX DATOS VACÍOS)
             try:
                 query_enso = text("SELECT * FROM indices_climaticos")
                 df_enso = pd.read_sql(query_enso, conn)
+                # Convertimos columnas a minúsculas para estandarizar
                 df_enso.columns = [c.lower() for c in df_enso.columns]
                 
-                # Construcción robusta de la fecha
-                if 'año' in df_enso.columns and 'mes' in df_enso.columns:
-                    # 1. Creamos la fecha matemática
+                series_fecha = None
+                
+                # Opción 1: Columnas Año y Mes (Español o Inglés)
+                col_anio = next((c for c in ['año', 'year', 'anio'] if c in df_enso.columns), None)
+                col_mes = next((c for c in ['mes', 'month'] if c in df_enso.columns), None)
+                
+                if col_anio and col_mes:
                     series_fecha = pd.to_datetime(
-                        df_enso['año'].astype(str) + '-' + df_enso['mes'].astype(str) + '-01',
+                        df_enso[col_anio].astype(str) + '-' + df_enso[col_mes].astype(str) + '-01',
                         errors='coerce'
                     )
-                    
-                    # 2. Asignamos a Config.DATE_COL (lo que diga la configuración)
+                # Opción 2: Columna única de fecha
+                elif 'fecha' in df_enso.columns:
+                     series_fecha = pd.to_datetime(df_enso['fecha'], errors='coerce')
+                elif 'date' in df_enso.columns:
+                     series_fecha = pd.to_datetime(df_enso['date'], errors='coerce')
+
+                # Si logramos construir la fecha, la asignamos
+                if series_fecha is not None:
                     df_enso[Config.DATE_COL] = series_fecha
+                    df_enso['fecha_mes_año'] = series_fecha # Puente legacy
+                    df_enso['date'] = series_fecha          # Puente nuevo
                     
-                    # 3. PUENTE DE SEGURIDAD: Creamos explícitamente 'fecha_mes_año'
-                    # Esto evita el KeyError si visualizer.py lo busca con ese nombre específico
-                    df_enso['fecha_mes_año'] = series_fecha
+                    # Filtramos nulos y ordenamos
+                    df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
                     
-                    # 4. Puente extra 'date' (por si acaso)
-                    df_enso['date'] = series_fecha
-                
-                # Limpieza
-                # Usamos 'fecha_mes_año' aquí para estar seguros que no falle el dropna
-                df_enso = df_enso.dropna(subset=['fecha_mes_año']).sort_values('fecha_mes_año')
-                
-                if 'anomalia_oni' in df_enso.columns:
-                    df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
+                    if 'anomalia_oni' in df_enso.columns:
+                        df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
+                else:
+                    # Si no pudimos armar fechas, avisamos (pero no rompemos la app)
+                    print("Advertencia: No se encontraron columnas de fecha válidas en indices_climaticos")
 
             except Exception as e:
-                # Si falla ENSO, imprimimos error pero no detenemos la app (creamos df vacío)
                 print(f"Error cargando ENSO: {e}")
                 df_enso = pd.DataFrame(columns=['fecha_mes_año', Config.DATE_COL, Config.ENSO_ONI_COL])
 
     except Exception as e:
-        # Captura cualquier error de conexión, pero devuelve Nones seguros
         st.error(f"Error crítico conectando a BD: {e}")
         return None, None, None, None, None, None
 
