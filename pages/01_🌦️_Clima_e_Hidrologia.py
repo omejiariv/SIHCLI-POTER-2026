@@ -45,10 +45,10 @@ except Exception as e:
 @st.cache_data(show_spinner="Sincronizando con Base de Datos...", ttl=60)
 def load_data_from_db():
     """
-    Carga híbrida inteligente SINTONIZADA:
-    1. Geometrías: Detección INTELIGENTE de cuál es Municipio y cuál Cuenca por columnas.
+    Carga híbrida inteligente SINTONIZADA (VERSION FINAL):
+    1. Geometrías: Detección INTELIGENTE de cuál es Municipio y cuál Cuenca inspeccionando columnas.
     2. Estaciones: Fix Popups (renombra 'nom_est').
-    3. ENSO: Detección flexible de fechas.
+    3. ENSO: Detección flexible de fechas y creación FORZADA de columnas de compatibilidad.
     """
     engine = get_engine()
     if not engine:
@@ -61,28 +61,28 @@ def load_data_from_db():
     try:
         spatial_results = load_spatial_data()
         
+        # Estrategia: No confiar en el orden [0] o [1]. Inspeccionar contenido.
         if isinstance(spatial_results, (tuple, list)):
-            # Iteramos sobre los resultados para identificar qué es qué
             for gdf in spatial_results:
                 if not isinstance(gdf, gpd.GeoDataFrame) or gdf.empty:
                     continue
                 
-                cols_lower = [c.lower() for c in gdf.columns]
+                # Normalizamos columnas para buscar pistas
+                cols_lower = [str(c).lower() for c in gdf.columns]
                 
-                # Heurística para identificar Municipios
-                # Busca columnas típicas como 'mpio_cnmbr', 'nombre_mpio', 'municipio'
-                if any(c in cols_lower for c in ['mpio_cnmbr', 'nombre_mpio', 'municipio', 'muni_nomb']):
-                    if gdf_municipios is None: # Tomamos el primero que coincida
+                # PISTAS PARA MUNICIPIOS (Buscamos 'mpio_cnmbr', 'nombre_mpio', etc.)
+                if any(k in cols_lower for k in ['mpio_cnmbr', 'nombre_mpio', 'municipio', 'muni_nomb', 'mpio_cdpmp']):
+                    if gdf_municipios is None: 
                         gdf_municipios = gdf
+                        continue # Ya lo identificamos, pasamos al siguiente
                 
-                # Heurística para identificar Cuencas
-                # Busca columnas típicas como 'nom_cuenca', 'sub_cuenca', 'nomb_subc'
-                elif any(c in cols_lower for c in ['nom_cuenca', 'sub_cuenca', 'nomb_subc', 'cuenca']):
+                # PISTAS PARA CUENCAS (Buscamos 'nom_cuenca', 'sub_cuenca', etc.)
+                if any(k in cols_lower for k in ['nom_cuenca', 'sub_cuenca', 'nomb_subc', 'cuenca', 'subc_lbl']):
                     if gdf_subcuencas is None:
                         gdf_subcuencas = gdf
-            
-            # Si después de la búsqueda inteligente no encontramos algo,
-            # usamos el fallback del orden (solo si hay suficientes elementos)
+                        continue
+
+            # Fallback (Plan B): Si la inteligencia falla, usar orden por defecto
             if gdf_municipios is None and len(spatial_results) >= 1:
                  gdf_municipios = spatial_results[0]
             if gdf_subcuencas is None and len(spatial_results) >= 2:
@@ -113,8 +113,10 @@ def load_data_from_db():
                         crs="EPSG:4326"
                     )
                     # --- FIX POPUPS MAPA ---
+                    # Duplicamos la columna para que 'Config.STATION_NAME_COL' siempre exista
                     if 'nom_est' in gdf_stations_db.columns:
                         gdf_stations_db[Config.STATION_NAME_COL] = gdf_stations_db['nom_est']
+                        gdf_stations_db['station_name'] = gdf_stations_db['nom_est'] # Redundancia segura
                     
                     if 'latitud' in gdf_stations_db.columns:
                         gdf_stations_db['latitude'] = pd.to_numeric(gdf_stations_db['latitud'], errors='coerce')
@@ -137,6 +139,7 @@ def load_data_from_db():
                 pass 
 
             # C. CARGAR LLUVIAS
+            # Pedimos explícitamente fecha_mes_año
             query_rain = text("""
                 SELECT 
                     p.id_estacion_fk as id_estacion,
@@ -149,6 +152,7 @@ def load_data_from_db():
             df_long = pd.read_sql(query_rain, conn)
 
             # --- PUENTE COMPATIBILIDAD LLUVIAS ---
+            # Aseguramos que existan AMBOS nombres: 'date' y 'fecha_mes_año'
             if 'fecha_mes_año' in df_long.columns:
                 df_long[Config.DATE_COL] = df_long['fecha_mes_año']
             elif Config.DATE_COL in df_long.columns:
@@ -163,7 +167,7 @@ def load_data_from_db():
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
-            # E. CARGAR ENSO (FIX DATOS VACÍOS FLEXIBLE)
+            # E. CARGAR ENSO (FIX CRASH & DATOS VACÍOS)
             try:
                 query_enso = text("SELECT * FROM indices_climaticos")
                 df_enso = pd.read_sql(query_enso, conn)
@@ -171,7 +175,7 @@ def load_data_from_db():
                 
                 series_fecha = None
                 
-                # Opción 1: Columnas Año y Mes (Español o Inglés)
+                # 1. Intentar armar fecha desde Año/Mes
                 col_anio = next((c for c in ['año', 'year', 'anio'] if c in df_enso.columns), None)
                 col_mes = next((c for c in ['mes', 'month'] if c in df_enso.columns), None)
                 
@@ -180,18 +184,20 @@ def load_data_from_db():
                         df_enso[col_anio].astype(str) + '-' + df_enso[col_mes].astype(str) + '-01',
                         errors='coerce'
                     )
-                # Opción 2: Columna única de fecha
+                # 2. Intentar buscar columna fecha única
                 elif 'fecha' in df_enso.columns:
                      series_fecha = pd.to_datetime(df_enso['fecha'], errors='coerce')
                 elif 'date' in df_enso.columns:
                      series_fecha = pd.to_datetime(df_enso['date'], errors='coerce')
 
                 if series_fecha is not None:
-                    df_enso[Config.DATE_COL] = series_fecha
-                    df_enso['fecha_mes_año'] = series_fecha 
-                    df_enso['date'] = series_fecha          
+                    # ASIGNACIÓN TRIPLE: Para blindar contra cualquier nombre que use visualizer.py
+                    df_enso[Config.DATE_COL] = series_fecha  # Nombre configurado (date)
+                    df_enso['fecha_mes_año'] = series_fecha  # Nombre legacy (EL QUE CAUSABA EL ERROR)
+                    df_enso['date'] = series_fecha           # Nombre estándar
                     
-                    df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
+                    # Limpiamos usando la columna legacy para asegurar consistencia
+                    df_enso = df_enso.dropna(subset=['fecha_mes_año']).sort_values('fecha_mes_año')
                     
                     if 'anomalia_oni' in df_enso.columns:
                         df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
@@ -200,6 +206,7 @@ def load_data_from_db():
 
             except Exception as e:
                 print(f"Error cargando ENSO: {e}")
+                # En caso de error, devolvemos un DataFrame vacío pero con las columnas esperadas
                 df_enso = pd.DataFrame(columns=['fecha_mes_año', Config.DATE_COL, Config.ENSO_ONI_COL])
 
     except Exception as e:
