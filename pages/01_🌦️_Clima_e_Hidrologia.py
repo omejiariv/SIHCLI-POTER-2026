@@ -42,13 +42,13 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN DE FUERZA BRUTA (GARANTIZA SIDEBAR Y MAPAS) ---
-@st.cache_data(show_spinner="Recuperando sistema a la fuerza...", ttl=60)
+# --- FUNCIÓN "ROMPE-PUERTAS" (ADAPTACIÓN TOTAL) ---
+@st.cache_data(show_spinner="Forzando estructura de datos...", ttl=60)
 def load_data_from_db():
+    from shapely import wkt
     from sqlalchemy import text
     import geopandas as gpd
     import pandas as pd
-    from shapely import wkt, wkb
     
     # 1. Conexión
     try:
@@ -57,139 +57,157 @@ def load_data_from_db():
         from modules.db_manager import get_engine
         engine = get_engine()
 
-    # Objetos vacíos por seguridad
-    gdf_stations = gpd.GeoDataFrame()
+    # Objetos vacíos (Airbags)
     gdf_municipios = gpd.GeoDataFrame()
     gdf_subcuencas = gpd.GeoDataFrame()
-    gdf_predios = gpd.GeoDataFrame()
+    gdf_predios_db = gpd.GeoDataFrame()
+    gdf_stations_db = gpd.GeoDataFrame()
     df_long = pd.DataFrame()
     df_enso = pd.DataFrame()
 
     if not engine:
-        st.error("❌ Sin Engine de BD")
+        st.error("❌ Sin Engine BD")
         return None, None, df_long, df_enso, None, None
 
     # ==============================================================================
-    # 1. ESTACIONES (CRÍTICO PARA SIDEBAR) - ESTRATEGIA: DUPLICAR NOMBRES
+    # 1. CARGA ESPACIAL (SQL DURO CON TRANSFORMACIÓN)
+    # ==============================================================================
+    
+    def cargar_capa_sql_dura(query_sql):
+        """Ejecuta SQL directo, transforma coords y crea GeoDataFrame."""
+        try:
+            df = pd.read_sql(text(query_sql), engine)
+            if not df.empty and 'wkt' in df.columns:
+                df['geometry'] = df['wkt'].apply(lambda x: wkt.loads(x) if x else None)
+                return gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
+        except Exception as e:
+            # print(f"Error capa: {e}") 
+            pass
+        return gpd.GeoDataFrame()
+
+    try:
+        # A. CUENCAS -> ALIAS OBLIGATORIO: "SUBC_LBL"
+        # El selector busca 'SUBC_LBL'. Usamos n_nss3 que tiene los nombres reales.
+        # ST_Transform(geometry, 4326) convierte a Lat/Lon para que se vea en el mapa.
+        q_cuencas = """
+            SELECT n_nss3 as "SUBC_LBL", 
+                   tipo_cuenca,
+                   ST_AsText(ST_Transform(geometry, 4326)) as wkt 
+            FROM cuencas
+        """
+        gdf_subcuencas = cargar_capa_sql_dura(q_cuencas)
+        # Doble seguridad para el selector
+        if not gdf_subcuencas.empty:
+            gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['SUBC_LBL']
+
+        # B. MUNICIPIOS -> ALIAS OBLIGATORIO: "MPIO_CNMBR"
+        # Probamos geometría 'geometry' primero
+        q_mun = """
+            SELECT nombre_municipio as "MPIO_CNMBR", 
+                   ST_AsText(ST_Transform(geometry, 4326)) as wkt 
+            FROM municipios
+        """
+        gdf_municipios = cargar_capa_sql_dura(q_mun)
+        
+        # Fallback: Si falla, probamos con columna 'geom'
+        if gdf_municipios.empty:
+            q_mun_b = """
+                SELECT nombre_municipio as "MPIO_CNMBR", 
+                       ST_AsText(ST_Transform(geom, 4326)) as wkt 
+                FROM municipios
+            """
+            gdf_municipios = cargar_capa_sql_dura(q_mun_b)
+
+        # C. PREDIOS -> ALIAS OBLIGATORIO: "NOMBRE_PRE"
+        # Tu imagen mostraba que predios usa 'geom'
+        q_pre = """
+            SELECT nombre_predio as "NOMBRE_PRE", 
+                   ST_AsText(ST_Transform(geom, 4326)) as wkt 
+            FROM predios
+        """
+        gdf_predios_db = cargar_capa_sql_dura(q_pre)
+
+    except Exception as e:
+        st.error(f"Error GIS Crítico: {e}")
+
+    # ==============================================================================
+    # 2. ESTACIONES (CRÍTICO PARA FILTROS LATERALES)
     # ==============================================================================
     try:
         with engine.connect() as conn:
-            # Traemos TODO. No filtramos columnas.
-            df_est = pd.read_sql(text("SELECT * FROM estaciones WHERE latitud != 0"), conn)
+            # Traemos todo y renombramos para que Sidebar.py encuentre lo que busca
+            sql_est = """
+                SELECT id_estacion, nom_est, latitud, longitud, alt_est, municipio, depto_region 
+                FROM estaciones 
+                WHERE latitud != 0
+            """
+            df_est = pd.read_sql(text(sql_est), conn)
             
-            # Limpieza de coordenadas
-            cols_to_clean = ['latitud', 'longitud', 'lat', 'lon']
-            for c in cols_to_clean:
-                if c in df_est.columns and df_est[c].dtype == object:
+            # Limpiar coordenadas
+            for c in ['latitud', 'longitud']:
+                if df_est[c].dtype == object:
                     df_est[c] = df_est[c].astype(str).str.replace(',', '.').astype(float)
 
-            # --- FUERZA BRUTA DE NOMBRES PARA EL SIDEBAR ---
-            # Creamos copias de las columnas con TODOS los nombres posibles que pueda tener Config
             if not df_est.empty:
-                # Municipio
-                if 'municipio' in df_est.columns:
-                    df_est['Municipio'] = df_est['municipio']
-                    df_est['municipality'] = df_est['municipio']
-                    df_est['MPIO_CNMBR'] = df_est['municipio']
-                
-                # Región / Departamento
-                if 'depto_region' in df_est.columns:
-                    df_est['Region'] = df_est['depto_region']
-                    df_est['region'] = df_est['depto_region']
-                    df_est['Departamento'] = df_est['depto_region']
-                
-                # Altitud
-                if 'alt_est' in df_est.columns:
-                    df_est['Altitud'] = pd.to_numeric(df_est['alt_est'], errors='coerce')
-                    df_est['altitude'] = df_est['Altitud']
-
-                # Nombre Estación
-                if 'nom_est' in df_est.columns:
-                    df_est[Config.STATION_NAME_COL] = df_est['nom_est']
-                    df_est['station_name'] = df_est['nom_est']
-
-                # Convertir a GeoDataFrame
-                gdf_stations = gpd.GeoDataFrame(
+                gdf_stations_db = gpd.GeoDataFrame(
                     df_est, 
                     geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud), 
                     crs="EPSG:4326"
                 )
-                # Asegurar lat/lon explícitas para visualizer
-                gdf_stations['latitude'] = gdf_stations['latitud']
-                gdf_stations['longitude'] = gdf_stations['longitud']
+                
+                # --- ALIAS MASIVOS PARA SATISFACER CONFIG ---
+                # Nombre
+                gdf_stations_db[Config.STATION_NAME_COL] = gdf_stations_db['nom_est']
+                
+                # Municipio (Sidebar busca MUNICIPALITY_COL)
+                gdf_stations_db['Municipio'] = gdf_stations_db['municipio']
+                gdf_stations_db['municipality'] = gdf_stations_db['municipio']
+                # Si Config.MUNICIPALITY_COL es otra cosa, lo cubrimos:
+                if hasattr(Config, 'MUNICIPALITY_COL'):
+                     gdf_stations_db[Config.MUNICIPALITY_COL] = gdf_stations_db['municipio']
+
+                # Region
+                gdf_stations_db['Region'] = gdf_stations_db['depto_region']
+                if hasattr(Config, 'REGION_COL'):
+                    gdf_stations_db[Config.REGION_COL] = gdf_stations_db['depto_region']
+
+                # Altitud
+                gdf_stations_db['Altitud'] = pd.to_numeric(gdf_stations_db['alt_est'], errors='coerce')
+                if hasattr(Config, 'ALTITUDE_COL'):
+                    gdf_stations_db[Config.ALTITUDE_COL] = gdf_stations_db['Altitud']
 
     except Exception as e:
-        st.error(f"Error Estaciones: {e}")
+        pass
 
     # ==============================================================================
-    # 2. MAPAS (SOLUCIÓN HÍBRIDA WKB/WKT)
-    # ==============================================================================
-    def load_poly(table_name, name_col_db, alias_app):
-        """Carga una tabla espacial intentando todas las formas de geometría."""
-        try:
-            # Intento 1: Leer directo con GeoPandas (Mejor caso)
-            try:
-                sql = f"SELECT * FROM {table_name}"
-                gdf = gpd.read_postgis(sql, engine, geom_col='geometry')
-            except:
-                # Intento 2: Si falla (ej. columna se llama 'geom'), probamos 'geom'
-                gdf = gpd.read_postgis(sql, engine, geom_col='geom')
-            
-            # Reproyección forzosa a WGS84 (Lat/Lon) si no lo está
-            if gdf.crs and gdf.crs.to_epsg() != 4326:
-                gdf = gdf.to_crs(epsg=4326)
-            
-            # Renombrado de columna nombre para la App
-            if name_col_db in gdf.columns:
-                gdf[alias_app] = gdf[name_col_db]
-            
-            return gdf
-        except:
-            return gpd.GeoDataFrame() # Falló todo, devolver vacío
-
-    # A. CUENCAS
-    # Tu imagen dice: tabla 'cuencas', nombre 'n_nss3'
-    gdf_subcuencas = load_poly('cuencas', 'n_nss3', 'nom_cuenca')
-    if gdf_subcuencas.empty: # Fallback manual
-         gdf_subcuencas = load_poly('cuencas', 'nombre_cuenca', 'nom_cuenca')
-
-    # B. MUNICIPIOS
-    # Tu imagen dice: tabla 'municipios', nombre 'nombre_municipio'
-    gdf_municipios = load_poly('municipios', 'nombre_municipio', 'MPIO_CNMBR')
-
-    # C. PREDIOS
-    # Tu imagen dice: tabla 'predios', nombre 'nombre_predio', columna geom 'geom'
-    # Esta función load_poly maneja 'geom' automáticamente en el Intento 2
-    gdf_predios = load_poly('predios', 'nombre_predio', 'NOMBRE_PRE')
-
-    # ==============================================================================
-    # 3. DATOS TABULARES (LLUVIA & ENSO)
+    # 3. DATOS TABULARES
     # ==============================================================================
     try:
         with engine.connect() as conn:
             # Lluvia
-            df_long = pd.read_sql("""
+            q_rain = text("""
                 SELECT p.id_estacion_fk, e.nom_est as station_name,
                        p.fecha_mes_año, p.precipitation
                 FROM precipitacion_mensual p 
                 JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-            """, conn)
+            """)
+            df_long = pd.read_sql(q_rain, conn)
             
             if 'fecha_mes_año' in df_long.columns:
                 df_long[Config.DATE_COL] = pd.to_datetime(df_long['fecha_mes_año'])
                 df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
                 df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
             
-            # Renombres clave
             df_long = df_long.rename(columns={
                 "station_name": Config.STATION_NAME_COL,
                 "precipitation": Config.PRECIPITATION_COL
             })
 
             # ENSO
-            df_enso = pd.read_sql("SELECT * FROM indices_climaticos", conn)
-            # Limpieza rápida de columnas ENSO
+            df_enso = pd.read_sql(text("SELECT * FROM indices_climaticos"), conn)
             df_enso.columns = [c.lower().strip() for c in df_enso.columns]
+            
+            # Buscar columna año flexible
             c_anio = next((c for c in df_enso.columns if 'year' in c or 'año' in c or 'aÃ±o' in c or ('a' in c and 'o' in c and len(c)<6)), None)
             c_mes = next((c for c in df_enso.columns if 'mes' in c or 'month' in c), None)
             
@@ -201,15 +219,14 @@ def load_data_from_db():
             
             df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
 
-    except Exception: pass
+    except: pass
 
     # Airbags Finales
     if Config.STATION_NAME_COL not in df_long.columns: df_long[Config.STATION_NAME_COL] = "Estación"
     if Config.PRECIPITATION_COL not in df_long.columns: df_long[Config.PRECIPITATION_COL] = 0.0
     if 'fecha_mes_año' not in df_enso.columns: df_enso['fecha_mes_año'] = pd.NaT
 
-    return gdf_stations, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios
-
+    return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
 
 # --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
 def get_name_from_row_v2(row, type_layer):
