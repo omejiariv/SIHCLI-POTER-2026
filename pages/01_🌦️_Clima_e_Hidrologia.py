@@ -46,27 +46,53 @@ except Exception as e:
 def load_data_from_db():
     """
     Carga híbrida inteligente SINTONIZADA:
-    1. Geometrías: Blindada contra retornos variables.
-    2. Estaciones: Renombra 'nom_est' a 'station_name' para que funcionen los popups.
-    3. ENSO: Detecta automáticamente columnas de fecha (año/mes/fecha).
+    1. Geometrías: Detección INTELIGENTE de cuál es Municipio y cuál Cuenca por columnas.
+    2. Estaciones: Fix Popups (renombra 'nom_est').
+    3. ENSO: Detección flexible de fechas.
     """
     engine = get_engine()
     if not engine:
         return None, None, None, None, None, None
 
-    # --- 1. CARGA DE MAPAS (BLINDADA) ---
+    # --- 1. CARGA DE MAPAS INTELIGENTE ---
     gdf_municipios = None
     gdf_subcuencas = None
     
     try:
         spatial_results = load_spatial_data()
-        if isinstance(spatial_results, (tuple, list)) and len(spatial_results) >= 2:
-            gdf_municipios = spatial_results[0]
-            gdf_subcuencas = spatial_results[1]
+        
+        if isinstance(spatial_results, (tuple, list)):
+            # Iteramos sobre los resultados para identificar qué es qué
+            for gdf in spatial_results:
+                if not isinstance(gdf, gpd.GeoDataFrame) or gdf.empty:
+                    continue
+                
+                cols_lower = [c.lower() for c in gdf.columns]
+                
+                # Heurística para identificar Municipios
+                # Busca columnas típicas como 'mpio_cnmbr', 'nombre_mpio', 'municipio'
+                if any(c in cols_lower for c in ['mpio_cnmbr', 'nombre_mpio', 'municipio', 'muni_nomb']):
+                    if gdf_municipios is None: # Tomamos el primero que coincida
+                        gdf_municipios = gdf
+                
+                # Heurística para identificar Cuencas
+                # Busca columnas típicas como 'nom_cuenca', 'sub_cuenca', 'nomb_subc'
+                elif any(c in cols_lower for c in ['nom_cuenca', 'sub_cuenca', 'nomb_subc', 'cuenca']):
+                    if gdf_subcuencas is None:
+                        gdf_subcuencas = gdf
+            
+            # Si después de la búsqueda inteligente no encontramos algo,
+            # usamos el fallback del orden (solo si hay suficientes elementos)
+            if gdf_municipios is None and len(spatial_results) >= 1:
+                 gdf_municipios = spatial_results[0]
+            if gdf_subcuencas is None and len(spatial_results) >= 2:
+                 gdf_subcuencas = spatial_results[1]
+
         else:
-            st.warning("⚠️ Estructura de mapas inesperada, se continuará sin mapas base.")
+            st.warning("⚠️ Estructura de mapas inesperada.")
+            
     except Exception as e:
-        st.warning(f"Advertencia menor: No se pudieron cargar mapas base ({e})")
+        st.warning(f"Advertencia menor: Error analizando mapas base ({e})")
 
     # --- 2. PREPARACIÓN DE VARIABLES ---
     df_long = pd.DataFrame()
@@ -87,12 +113,9 @@ def load_data_from_db():
                         crs="EPSG:4326"
                     )
                     # --- FIX POPUPS MAPA ---
-                    # El visualizador espera Config.STATION_NAME_COL (usualmente 'station_name')
-                    # Pero la BD trae 'nom_est'. Hacemos el mapeo explícito:
                     if 'nom_est' in gdf_stations_db.columns:
                         gdf_stations_db[Config.STATION_NAME_COL] = gdf_stations_db['nom_est']
                     
-                    # Aseguramos lat/lon numéricos
                     if 'latitud' in gdf_stations_db.columns:
                         gdf_stations_db['latitude'] = pd.to_numeric(gdf_stations_db['latitud'], errors='coerce')
                     if 'longitud' in gdf_stations_db.columns:
@@ -140,11 +163,10 @@ def load_data_from_db():
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
-            # E. CARGAR ENSO (FIX DATOS VACÍOS)
+            # E. CARGAR ENSO (FIX DATOS VACÍOS FLEXIBLE)
             try:
                 query_enso = text("SELECT * FROM indices_climaticos")
                 df_enso = pd.read_sql(query_enso, conn)
-                # Convertimos columnas a minúsculas para estandarizar
                 df_enso.columns = [c.lower() for c in df_enso.columns]
                 
                 series_fecha = None
@@ -164,19 +186,16 @@ def load_data_from_db():
                 elif 'date' in df_enso.columns:
                      series_fecha = pd.to_datetime(df_enso['date'], errors='coerce')
 
-                # Si logramos construir la fecha, la asignamos
                 if series_fecha is not None:
                     df_enso[Config.DATE_COL] = series_fecha
-                    df_enso['fecha_mes_año'] = series_fecha # Puente legacy
-                    df_enso['date'] = series_fecha          # Puente nuevo
+                    df_enso['fecha_mes_año'] = series_fecha 
+                    df_enso['date'] = series_fecha          
                     
-                    # Filtramos nulos y ordenamos
                     df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
                     
                     if 'anomalia_oni' in df_enso.columns:
                         df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
                 else:
-                    # Si no pudimos armar fechas, avisamos (pero no rompemos la app)
                     print("Advertencia: No se encontraron columnas de fecha válidas en indices_climaticos")
 
             except Exception as e:
@@ -188,6 +207,7 @@ def load_data_from_db():
         return None, None, None, None, None, None
 
     return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
+
 
 
 # --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
