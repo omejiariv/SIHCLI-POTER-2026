@@ -110,19 +110,26 @@ def load_data_from_db():
                 pass # Si falla predios, no es crítico
 
             # ---------------------------------------------------------
-            # C. CARGAR LLUVIAS (Igual que antes)
-            # ---------------------------------------------------------
-            query_rain = text("""
-                SELECT 
-                    p.id_estacion_fk as id_estacion,
-                    e.nom_est as station_name, 
-                    p.fecha as date,
-                    p.precipitation as precipitation
-                FROM precipitacion_mensual p
-                JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-            """)
-            df_long = pd.read_sql(query_rain, conn)
-            
+
+    # C. CARGAR LLUVIAS (Consulta CORREGIDA)
+    query_rain = text("""
+        SELECT 
+            p.id_estacion_fk as id_estacion,
+            e.nom_est as station_name,
+            p.fecha_mes_año as date,      -- <--- VOLVEMOS AL NOMBRE ORIGINAL DE LA BD
+            p.precipitation as precipitation
+        FROM precipitacion_mensual p
+        JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+    """)
+    df_long = pd.read_sql(query_rain, conn)
+
+    # --- 🚑 PUENTE DE COMPATIBILIDAD (Para evitar el KeyError) ---
+    # Esto soluciona el primer error que tuviste hoy. 
+    # Crea una copia de la columna para que el código antiguo la encuentre.
+    if 'date' in df_long.columns:
+        df_long['fecha_mes_año'] = df_long['date']
+    # ------------------------------------------------------------- 
+           
             # Estandarización
             df_long = df_long.rename(columns={
                 "station_name": Config.STATION_NAME_COL,
