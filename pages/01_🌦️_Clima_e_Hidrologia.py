@@ -41,26 +41,37 @@ except Exception as e:
     st.error(f"Error crítico importando módulos: {e}")
     st.stop()
 
-# --- FUNCIÓN DE CARGA HÍBRIDA MEJORADA (DB + ARCHIVOS) ---
+# --- FUNCIÓN DE CARGA HÍBRIDA MEJORADA (DB + ARCHIVOS)
 @st.cache_data(show_spinner="Sincronizando con Base de Datos...", ttl=60)
 def load_data_from_db():
     """
     Carga híbrida inteligente:
-    1. Geometrías complejas (Municipios/Cuencas) -> Desde Archivos locales
-    2. Puntos dinámicos (Estaciones/Predios) -> Desde BASE DE DATOS
-    3. Series de Tiempo (Lluvias/ENSO) -> Desde BASE DE DATOS
+    1. Geometrías complejas -> Desde Archivos locales
+    2. Datos dinámicos -> Desde BASE DE DATOS
     """
     engine = get_engine()
     if not engine:
         return None, None, None, None, None, None
 
-    # 1. CARGA BASE DESDE ARCHIVOS (Polígonos)
+    # 1. CARGA BASE DESDE ARCHIVOS (Corrección "Too many values")
+    gdf_municipios = None
+    gdf_subcuencas = None
+    
     try:
-        gdf_municipios, gdf_subcuencas, _ = load_spatial_data()
+        # Cargamos todo lo que devuelva la función en una variable genérica
+        spatial_res = load_spatial_data()
+        
+        # Verificamos qué devolvió y tomamos solo lo que necesitamos
+        if isinstance(spatial_res, (tuple, list)) and len(spatial_res) >= 2:
+            gdf_municipios = spatial_res[0]
+            gdf_subcuencas = spatial_res[1]
+        else:
+            st.warning("Advertencia: load_spatial_data no devolvió los mapas esperados.")
+            
     except Exception as e:
         st.warning(f"Advertencia: No se pudieron cargar mapas base. {e}")
-        gdf_municipios, gdf_subcuencas = None, None
 
+    # Variables para datos DB
     df_long = pd.DataFrame()
     df_enso = pd.DataFrame()
     gdf_stations_db = None
@@ -78,10 +89,12 @@ def load_data_from_db():
                     crs="EPSG:4326"
                 )
                 # Compatibilidad de nombres
-                gdf_stations_db['latitude'] = pd.to_numeric(gdf_stations_db['latitud'], errors='coerce')
-                gdf_stations_db['longitude'] = pd.to_numeric(gdf_stations_db['longitud'], errors='coerce')
+                if 'latitud' in gdf_stations_db.columns:
+                    gdf_stations_db['latitude'] = pd.to_numeric(gdf_stations_db['latitud'], errors='coerce')
+                if 'longitud' in gdf_stations_db.columns:
+                    gdf_stations_db['longitude'] = pd.to_numeric(gdf_stations_db['longitud'], errors='coerce')
 
-            # B. CARGAR PREDIOS
+            # B. CARGAR PREDIOS (Opcional)
             try:
                 q_pre = text("SELECT * FROM predios WHERE latitud != 0")
                 df_pre = pd.read_sql(q_pre, conn)
@@ -92,10 +105,9 @@ def load_data_from_db():
                         crs="EPSG:4326"
                     )
             except Exception:
-                pass # Si falla predios, no es crítico
+                pass 
 
-            # C. CARGAR LLUVIAS (CORREGIDO Y PUENTEADO)
-            # Usamos fecha_mes_año tal como está en la BD
+            # C. CARGAR LLUVIAS (Corrección SQL y Columnas)
             query_rain = text("""
                 SELECT 
                     p.id_estacion_fk as id_estacion,
@@ -108,18 +120,19 @@ def load_data_from_db():
             df_long = pd.read_sql(query_rain, conn)
 
             # --- Estandarización y Puente de Compatibilidad ---
-            # Renombramos para el sistema nuevo
+            # 1. Renombrar a los nombres que usa el sistema nuevo (Config)
             df_long = df_long.rename(columns={
                 "station_name": Config.STATION_NAME_COL,
                 "date": Config.DATE_COL,
                 "precipitation": Config.PRECIPITATION_COL
             })
             
-            # PARCHE VITAL: Creamos la copia 'fecha_mes_año' para que el código viejo no falle
+            # 2. PARCHE CRÍTICO: Crear copia 'fecha_mes_año' para código antiguo
+            # Si el código viejo busca 'fecha_mes_año', se lo damos duplicando la columna date
             if Config.DATE_COL in df_long.columns:
                  df_long['fecha_mes_año'] = df_long[Config.DATE_COL]
 
-            # Conversión de fechas
+            # 3. Conversión de fechas
             df_long[Config.DATE_COL] = pd.to_datetime(df_long[Config.DATE_COL], errors='coerce')
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
@@ -140,9 +153,11 @@ def load_data_from_db():
 
     except Exception as e:
         st.error(f"Error crítico conectando a BD: {e}")
+        # Retornamos Nones para que no explote, pero mostramos el error
         return None, None, None, None, None, None
 
     return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
+
 
 # --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
 def get_name_from_row_v2(row, type_layer):
