@@ -46,21 +46,19 @@ except Exception as e:
 def load_data_from_db():
     """
     Carga híbrida inteligente:
-    1. Geometrías complejas (Municipios/Cuencas) -> Desde Archivos locales (load_spatial_data) para mantener polígonos.
-    2. Puntos dinámicos (Estaciones/Predios) -> Desde BASE DE DATOS (PostgreSQL) para tener coordenadas corregidas.
-    3. Series de Tiempo (Lluvias/ENSO) -> Desde BASE DE DATOS.
+    1. Geometrías complejas (Municipios/Cuencas) -> Desde Archivos locales
+    2. Puntos dinámicos (Estaciones/Predios) -> Desde BASE DE DATOS
+    3. Series de Tiempo (Lluvias/ENSO) -> Desde BASE DE DATOS
     """
     engine = get_engine()
     if not engine:
         return None, None, None, None, None, None
 
-    # 1. CARGA BASE DESDE ARCHIVOS (Para obtener Polígonos de Municipios y Cuencas)
-    #    Usamos load_spatial_data como base, pero luego sobrescribiremos Estaciones y Predios.
+    # 1. CARGA BASE DESDE ARCHIVOS (Polígonos)
     try:
-        # gdf_stations_file y gdf_predios_file se ignorarán en favor de la DB
-        _, gdf_municipios, gdf_subcuencas, _ = load_spatial_data()
+        gdf_municipios, gdf_subcuencas, _ = load_spatial_data()
     except Exception as e:
-        st.warning(f"⚠️ Advertencia: No se pudieron cargar mapas base (Municipios/Cuencas). {e}")
+        st.warning(f"Advertencia: No se pudieron cargar mapas base. {e}")
         gdf_municipios, gdf_subcuencas = None, None
 
     df_long = pd.DataFrame()
@@ -70,33 +68,20 @@ def load_data_from_db():
 
     try:
         with engine.connect() as conn:
-            # ---------------------------------------------------------
-            # A. CARGAR ESTACIONES DESDE DB (CORREGIDO)
-            # ---------------------------------------------------------
+            # A. CARGAR ESTACIONES
             q_est = text("SELECT * FROM estaciones WHERE latitud != 0")
             df_est = pd.read_sql(q_est, conn)
-            
             if not df_est.empty:
-                # Convertir a GeoDataFrame
                 gdf_stations_db = gpd.GeoDataFrame(
-                    df_est, 
+                    df_est,
                     geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud),
                     crs="EPSG:4326"
                 )
-                
-                # 🆕 TRUCO DE COMPATIBILIDAD:
-                # Creamos copias de las columnas con nombres en inglés
-                # para que 'visualizer.py' no falle.
-                gdf_stations_db['latitude'] = gdf_stations_db['latitud']
-                gdf_stations_db['longitude'] = gdf_stations_db['longitud']
-                
-                # Asegurar que los números sean flotantes (a veces llegan como texto)
-                gdf_stations_db['latitude'] = pd.to_numeric(gdf_stations_db['latitude'], errors='coerce')
-                gdf_stations_db['longitude'] = pd.to_numeric(gdf_stations_db['longitude'], errors='coerce')
+                # Compatibilidad de nombres
+                gdf_stations_db['latitude'] = pd.to_numeric(gdf_stations_db['latitud'], errors='coerce')
+                gdf_stations_db['longitude'] = pd.to_numeric(gdf_stations_db['longitud'], errors='coerce')
 
-            # ---------------------------------------------------------
-            # B. CARGAR PREDIOS DESDE DB
-            # ---------------------------------------------------------
+            # B. CARGAR PREDIOS
             try:
                 q_pre = text("SELECT * FROM predios WHERE latitud != 0")
                 df_pre = pd.read_sql(q_pre, conn)
@@ -109,51 +94,46 @@ def load_data_from_db():
             except Exception:
                 pass # Si falla predios, no es crítico
 
-            # ---------------------------------------------------------
+            # C. CARGAR LLUVIAS (CORREGIDO Y PUENTEADO)
+            # Usamos fecha_mes_año tal como está en la BD
+            query_rain = text("""
+                SELECT 
+                    p.id_estacion_fk as id_estacion,
+                    e.nom_est as station_name,
+                    p.fecha_mes_año as date,
+                    p.precipitation as precipitation
+                FROM precipitacion_mensual p
+                JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+            """)
+            df_long = pd.read_sql(query_rain, conn)
 
-    # C. CARGAR LLUVIAS (Consulta CORREGIDA)
-    query_rain = text("""
-        SELECT 
-            p.id_estacion_fk as id_estacion,
-            e.nom_est as station_name,
-            p.fecha_mes_año as date,      -- <--- VOLVEMOS AL NOMBRE ORIGINAL DE LA BD
-            p.precipitation as precipitation
-        FROM precipitacion_mensual p
-        JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-    """)
-    df_long = pd.read_sql(query_rain, conn)
-
-    # --- 🚑 PUENTE DE COMPATIBILIDAD (Para evitar el KeyError) ---
-    # Esto soluciona el primer error que tuviste hoy. 
-    # Crea una copia de la columna para que el código antiguo la encuentre.
-    if 'date' in df_long.columns:
-        df_long['fecha_mes_año'] = df_long['date']
-    # ------------------------------------------------------------- 
-           
-            # Estandarización
+            # --- Estandarización y Puente de Compatibilidad ---
+            # Renombramos para el sistema nuevo
             df_long = df_long.rename(columns={
                 "station_name": Config.STATION_NAME_COL,
-                "date": Config.DATE_COL, 
+                "date": Config.DATE_COL,
                 "precipitation": Config.PRECIPITATION_COL
             })
+            
+            # PARCHE VITAL: Creamos la copia 'fecha_mes_año' para que el código viejo no falle
+            if Config.DATE_COL in df_long.columns:
+                 df_long['fecha_mes_año'] = df_long[Config.DATE_COL]
+
+            # Conversión de fechas
             df_long[Config.DATE_COL] = pd.to_datetime(df_long[Config.DATE_COL], errors='coerce')
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
-            # ---------------------------------------------------------
-            # D. CARGAR ENSO (Igual que antes)
-            # ---------------------------------------------------------
+            # D. CARGAR ENSO
             query_enso = text("SELECT * FROM indices_climaticos")
             df_enso = pd.read_sql(query_enso, conn)
             df_enso.columns = [c.lower() for c in df_enso.columns]
             
-            # Lógica de fechas ENSO
             if 'año' in df_enso.columns and 'mes' in df_enso.columns:
-                 df_enso[Config.DATE_COL] = pd.to_datetime(
-                     df_enso['año'].astype(str) + '-' + df_enso['mes'].astype(str) + '-01'
-                 )
+                df_enso[Config.DATE_COL] = pd.to_datetime(
+                    df_enso['año'].astype(str) + '-' + df_enso['mes'].astype(str) + '-01'
+                )
             
-            # Limpieza ENSO
             df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
             if 'anomalia_oni' in df_enso.columns:
                 df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
@@ -162,11 +142,7 @@ def load_data_from_db():
         st.error(f"Error crítico conectando a BD: {e}")
         return None, None, None, None, None, None
 
-    # RETORNO FINAL:
-    # Devolvemos las estaciones y predios DE LA DB (gdf_stations_db), 
-    # pero mantenemos municipios y cuencas DE ARCHIVO (gdf_municipios).
     return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
-
 
 # --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
 def get_name_from_row_v2(row, type_layer):
