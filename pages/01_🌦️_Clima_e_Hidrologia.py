@@ -41,15 +41,15 @@ except Exception as e:
     st.error(f"Error crítico importando módulos: {e}")
     st.stop()
 
-# --- FUNCIÓN DE CARGA BLINDADA CON DIAGNÓSTICO VISUAL ---
+# --- FUNCIÓN DE CARGA BLINDADA (BASADA EN EL PANEL DE ADMINISTRACIÓN) ---
 @st.cache_data(show_spinner="Sincronizando con Base de Datos...", ttl=60)
 def load_data_from_db():
-    import re
+    import re # Importante para búsquedas flexibles
     engine = get_engine()
     if not engine:
         return None, None, None, None, None, None
 
-    # --- 1. CARGA DE MAPAS (MODO DETECTIVE) ---
+    # --- 1. CARGA DE MAPAS (MODO DETECTIVE DE COLUMNAS) ---
     gdf_municipios = None
     gdf_subcuencas = None
     gdf_bocatomas_file = None 
@@ -57,79 +57,62 @@ def load_data_from_db():
     try:
         spatial_results = load_spatial_data()
         
-        # --- DIAGNÓSTICO EN PANTALLA (SOLO PARA DEBUG) ---
-        # Esto te mostrará en la app qué está llegando realmente
-        debug_info = []
-        
+        # Analizamos cada archivo que devuelve la función
         if isinstance(spatial_results, (tuple, list)):
-            for i, gdf in enumerate(spatial_results):
+            for gdf in spatial_results:
                 if not isinstance(gdf, gpd.GeoDataFrame) or gdf.empty:
                     continue
                 
-                # Detectar tipo de geometría (Punto o Polígono)
+                # Convertimos columnas a string minúsculas para buscar
+                cols_str = " ".join([str(c).lower() for c in gdf.columns])
                 geom_type = gdf.geom_type.iloc[0] if not gdf.empty else "Unknown"
-                cols_str = " | ".join([str(c) for c in gdf.columns])
-                cols_lower = cols_str.lower()
+
+                # A. IDENTIFICAR CUENCAS
+                # El archivo real tiene 'SUBC_LBL' (Visto en tu JSON de Cuencas)
+                if 'subc_lbl' in cols_str or 'szh' in cols_str:
+                    gdf_subcuencas = gdf.copy()
+                    
+                    # Renombrar para que el selector funcione (necesita 'nom_cuenca')
+                    col_real = next((c for c in gdf_subcuencas.columns if c.lower() == 'subc_lbl'), None)
+                    if col_real:
+                        gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_real]
+                    else:
+                        # Intento con SZH o nombre genérico
+                        col_szh = next((c for c in gdf_subcuencas.columns if c.lower() == 'szh'), None)
+                        if col_szh: gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_szh]
+                    continue 
                 
-                debug_info.append(f"Archivo {i}: Tipo={geom_type} | Cols: {str(gdf.columns[:5])}...")
-
-                # --- LÓGICA DE ASIGNACIÓN POR GEOMETRÍA Y COLUMNAS ---
+                # B. IDENTIFICAR MUNICIPIOS
+                # El archivo real tiene 'MPIO_CNMBR' (Visto en Inventario)
+                # IMPORTANTE: Verificamos que sea Polígono para no confundir con Bocatomas
+                if ('mpio' in cols_str or 'dane' in cols_str) and geom_type in ['Polygon', 'MultiPolygon']:
+                    gdf_municipios = gdf
+                    continue
                 
-                # 1. BOCATOMAS (Debe ser Puntos y tener 'Nombre_Acu' o 'Bocat')
-                if (geom_type == 'Point' or geom_type == 'MultiPoint'):
-                    if 'nombre_acu' in cols_lower or 'bocat' in cols_lower or 'cód_bocat' in cols_lower:
-                        gdf_bocatomas_file = gdf
-                        continue
-                    # Si es punto y tiene "Municipio", sigue siendo punto (no es el mapa de municipios)
-                    if 'municipio' in cols_lower:
-                         gdf_bocatomas_file = gdf # Asumimos que es otro archivo de puntos
-                         continue
+                # C. IDENTIFICAR BOCATOMAS
+                # El archivo real tiene 'Nombre_Acu' y 'Municipio' pero es PUNTO
+                if ('nombre_acu' in cols_str or 'bocat' in cols_str) or (geom_type in ['Point', 'MultiPoint'] and 'municipio' in cols_str):
+                    gdf_bocatomas_file = gdf
+                    continue
 
-                # 2. CUENCAS (Debe ser Polígono y tener 'SUBC_LBL' o 'SZH')
-                if (geom_type == 'Polygon' or geom_type == 'MultiPolygon'):
-                    if 'subc_lbl' in cols_lower or 'szh' in cols_lower or 'nom_cuenca' in cols_lower:
-                        gdf_subcuencas = gdf.copy()
-                        # Normalizar nombre
-                        col_real = next((c for c in gdf_subcuencas.columns if c.lower() == 'subc_lbl'), None)
-                        if col_real:
-                            gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_real]
-                        else:
-                             # Intento secundario
-                             col_sub = next((c for c in gdf_subcuencas.columns if 'sub' in c.lower()), None)
-                             if col_sub: gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_sub]
-                        continue
-
-                # 3. MUNICIPIOS (Debe ser Polígono y tener 'MPIO_CNMBR' o 'Municipio')
-                if (geom_type == 'Polygon' or geom_type == 'MultiPolygon'):
-                    # Ojo: Excluimos si ya fue identificado como cuenca
-                    if gdf_subcuencas is not None and gdf.equals(gdf_subcuencas):
-                        continue
-                        
-                    if 'mpio' in cols_lower or 'municipio' in cols_lower or 'dane' in cols_lower:
-                        gdf_municipios = gdf
-                        continue
-
-            # --- MUESTRA EL DIAGNÓSTICO EN LA APP SI ALGO FALTA ---
-            if gdf_municipios is None or gdf_subcuencas is None:
-                with st.expander("🕵️‍♂️ DETECTIVE DE MAPAS (Diagnóstico)", expanded=True):
-                    st.write("Se cargaron los siguientes archivos espaciales:")
-                    for info in debug_info:
-                        st.code(info)
-                    st.warning(f"Asignados -> Munis: {gdf_municipios is not None}, Cuencas: {gdf_subcuencas is not None}")
-
+            # Fallback (Plan B) solo si no detectamos nada
+            if gdf_municipios is None and len(spatial_results) >= 1:
+                 gdf_municipios = spatial_results[0]
+            if gdf_subcuencas is None and len(spatial_results) >= 2:
+                 gdf_subcuencas = spatial_results[1]
         else:
-            st.warning("⚠️ load_spatial_data no devolvió una lista.")
+            st.warning("⚠️ Estructura de mapas inesperada.")
             
     except Exception as e:
-        st.error(f"Error analizando mapas: {e}")
+        st.warning(f"Advertencia menor: Error mapas ({e})")
 
     # --- 2. DATOS TABULARES ---
     df_long = pd.DataFrame()
-    df_enso = pd.DataFrame() 
+    df_enso = pd.DataFrame()
     gdf_stations_db = None
     gdf_predios_db = None 
 
-    # Si load_spatial_data trajo bocatomas, úsalas como capa de predios/puntos
+    # Si encontramos Bocatomas, las usamos como capa de puntos (Predios)
     if gdf_bocatomas_file is not None:
         gdf_predios_db = gdf_bocatomas_file
 
@@ -145,16 +128,18 @@ def load_data_from_db():
                         geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud),
                         crs="EPSG:4326"
                     )
+                    # Fix para Popups: Duplicar columna nombre
                     if 'nom_est' in gdf_stations_db.columns:
                         gdf_stations_db[Config.STATION_NAME_COL] = gdf_stations_db['nom_est']
                     
+                    # Asegurar lat/lon numéricos
                     for col in ['latitud', 'longitud']:
                         if col in gdf_stations_db.columns:
                             eng_col = 'latitude' if col == 'latitud' else 'longitude'
                             gdf_stations_db[eng_col] = pd.to_numeric(gdf_stations_db[col], errors='coerce')
             except Exception: pass
 
-            # B. CARGAR PREDIOS (Prioridad a DB)
+            # B. CARGAR PREDIOS (Prioridad a la BD si existe tabla 'predios')
             try:
                 q_pre = text("SELECT * FROM predios WHERE latitud != 0")
                 df_pre = pd.read_sql(q_pre, conn)
@@ -166,20 +151,35 @@ def load_data_from_db():
                     )
             except Exception: pass
 
-            # C. CARGAR LLUVIAS
-            query_rain = text("""
-                SELECT 
-                    p.id_estacion_fk as id_estacion,
-                    e.nom_est as station_name,
-                    p.fecha_mes_año,              
-                    p.precipitation
-                FROM precipitacion_mensual p
-                JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-            """)
-            df_long = pd.read_sql(query_rain, conn)
+            # C. CARGAR LLUVIAS (Adaptado al Panel de Admin)
+            # El Panel crea la columna 'fecha' o sube CSV con 'fecha_mes_año'. Soportamos ambos.
+            try:
+                # Intentamos primero con fecha_mes_año (nombre CSV original)
+                query_rain = text("""
+                    SELECT p.id_estacion_fk as id_estacion, e.nom_est as station_name,
+                           p.fecha_mes_año, p.precipitation
+                    FROM precipitacion_mensual p
+                    JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+                """)
+                df_long = pd.read_sql(query_rain, conn)
+            except:
+                # Si falla, intentamos con 'fecha' (nombre generado por el Panel)
+                query_rain = text("""
+                    SELECT p.id_estacion_fk as id_estacion, e.nom_est as station_name,
+                           p.fecha, p.valor as precipitation
+                    FROM precipitacion p
+                    JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+                """)
+                df_long = pd.read_sql(query_rain, conn)
+                # Renombramos para estandarizar
+                if 'fecha' in df_long.columns:
+                    df_long['fecha_mes_año'] = df_long['fecha']
 
+            # Puente de compatibilidad vital
             if 'fecha_mes_año' in df_long.columns:
                 df_long[Config.DATE_COL] = df_long['fecha_mes_año']
+            elif 'fecha' in df_long.columns:
+                df_long[Config.DATE_COL] = df_long['fecha']
             
             df_long = df_long.rename(columns={
                 "station_name": Config.STATION_NAME_COL,
@@ -190,23 +190,25 @@ def load_data_from_db():
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
-            # D. CARGAR ENSO (BLINDADO)
+            # D. CARGAR ENSO (LA SOLUCIÓN AL KEY ERROR)
             try:
                 query_enso = text("SELECT * FROM indices_climaticos")
                 df_enso = pd.read_sql(query_enso, conn)
                 df_enso.columns = [c.lower().strip() for c in df_enso.columns]
                 
+                # 1. Buscamos columnas de Año y Mes (incluso con caracteres raros en año)
                 col_anio = next((c for c in df_enso.columns if re.search(r'^(a.o|year|anio)$', c)), None)
                 col_mes = next((c for c in df_enso.columns if re.search(r'^(mes|month)$', c)), None)
                 
                 fechas_ok = False
                 if col_anio and col_mes:
                     try:
-                        # Construir fecha
+                        # CONSTRUIMOS LA FECHA MANUALMENTE
                         series_fecha = pd.to_datetime(
                             df_enso[col_anio].astype(str) + '-' + df_enso[col_mes].astype(str) + '-01',
                             errors='coerce'
                         )
+                        # Creamos TODAS las variaciones para que visualizer.py la encuentre
                         df_enso['fecha_mes_año'] = series_fecha 
                         df_enso[Config.DATE_COL] = series_fecha
                         df_enso['date'] = series_fecha
@@ -215,17 +217,19 @@ def load_data_from_db():
                         fechas_ok = True
                     except: pass
 
+                # 2. Si no pudimos construirla, buscamos si ya existe
                 if not fechas_ok:
                     if 'fecha_mes_año' in df_enso.columns:
                         df_enso[Config.DATE_COL] = pd.to_datetime(df_enso['fecha_mes_año'])
                     elif 'date' in df_enso.columns:
                         df_enso['fecha_mes_año'] = pd.to_datetime(df_enso['date'])
                         df_enso[Config.DATE_COL] = df_enso['fecha_mes_año']
-                
+
+                # Renombrar ONI
                 if 'anomalia_oni' in df_enso.columns:
                     df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
 
-                # GARANTÍA FINAL
+                # GARANTÍA FINAL: Columnas vacías si todo falla (Evita Pantalla Roja)
                 if 'fecha_mes_año' not in df_enso.columns:
                     df_enso['fecha_mes_año'] = pd.NaT
                 if Config.DATE_COL not in df_enso.columns:
@@ -234,6 +238,8 @@ def load_data_from_db():
                     df_enso[Config.ENSO_ONI_COL] = None
 
             except Exception as e:
+                print(f"Error cargando ENSO tabla: {e}")
+                # Dataframe de seguridad vacío
                 df_enso = pd.DataFrame(columns=['fecha_mes_año', Config.DATE_COL, Config.ENSO_ONI_COL])
 
     except Exception as e:
