@@ -41,22 +41,23 @@ except Exception as e:
     st.error(f"Error crítico importando módulos: {e}")
     st.stop()
 
-# --- FUNCIÓN DE CARGA HÍBRIDA (CORREGIDA SEGÚN TUS CSV) ---
+# --- FUNCIÓN DE CARGA HÍBRIDA (CORREGIDA CON TUS CAMPOS REALES) ---
 @st.cache_data(show_spinner="Sincronizando con Base de Datos...", ttl=60)
 def load_data_from_db():
     """
-    Carga de datos basada en la estructura real de los CSVs:
-    1. ENSO: Construye 'fecha_mes_año' usando 'año' y 'mes' (Indices_Globales.csv).
-    2. Mapas: Identificación robusta de Cuencas vs Municipios.
-    3. Estaciones: Mapeo correcto de nombres para Popups.
+    Carga híbrida inteligente ADAPTADA A TUS ARCHIVOS:
+    1. Cuencas: Detecta campo 'SUBC_LBL' y lo renombra a 'nom_cuenca' para que funcione el selector.
+    2. Bocatomas: Detecta 'Nombre_Acu' para diferenciarlas.
+    3. ENSO: Construye fechas faltantes.
     """
     engine = get_engine()
     if not engine:
         return None, None, None, None, None, None
 
-    # --- 1. CARGA DE MAPAS (IDENTIFICACIÓN ROBUSTA) ---
+    # --- 1. CARGA DE MAPAS (IDENTIFICACIÓN EXACTA) ---
     gdf_municipios = None
     gdf_subcuencas = None
+    gdf_bocatomas_file = None # Variable temporal por si load_spatial_data trae bocatomas
     
     try:
         spatial_results = load_spatial_data()
@@ -66,24 +67,36 @@ def load_data_from_db():
                 if not isinstance(gdf, gpd.GeoDataFrame) or gdf.empty:
                     continue
                 
+                # Normalizamos nombres de columnas para búsqueda
                 cols_str = " ".join([str(c).lower() for c in gdf.columns])
                 
-                # CRITERIOS DE IDENTIFICACIÓN:
-                # Municipios suelen tener: mpio_cnmbr, nombre_mpio, cod_dane
-                if any(x in cols_str for x in ['mpio', 'dane', 'municipio']):
-                    if gdf_municipios is None: 
-                        gdf_municipios = gdf
-                        continue 
+                # A. IDENTIFICAR CUENCAS (Usando tu campo real: SUBC_LBL)
+                if 'subc_lbl' in cols_str or 'szh' in cols_str:
+                    gdf_subcuencas = gdf.copy()
+                    # CRÍTICO: Renombrar para que el resto de la app entienda
+                    # La app espera 'nom_cuenca' para los selectores, tu archivo tiene 'SUBC_LBL'
+                    if 'SUBC_LBL' in gdf_subcuencas.columns:
+                        gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['SUBC_LBL']
+                    elif 'subc_lbl' in gdf_subcuencas.columns:
+                        gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['subc_lbl']
+                    continue 
                 
-                # Cuencas suelen tener: cuenca, sub_cuenca, area_ha, cod_cuenca
-                if any(x in cols_str for x in ['cuenca', 'sub_cuenca', 'nomb_subc', 'szh', 'area']):
-                    if gdf_subcuencas is None:
-                        gdf_subcuencas = gdf
-                        continue
+                # B. IDENTIFICAR MUNICIPIOS
+                # Buscamos 'mpio_cnmbr' (común en IGAC/DANE) o 'municipio' PERO verificamos geometría polígono
+                if ('mpio' in cols_str or 'municipio' in cols_str) and gdf.geom_type.iloc[0] in ['Polygon', 'MultiPolygon']:
+                    # Ojo: Bocatomas tiene campo "Municipio" pero es Puntos. Esta lógica evita confundirlos.
+                    gdf_municipios = gdf
+                    continue
+                
+                # C. IDENTIFICAR BOCATOMAS (Usando tu campo real: Nombre_Acu)
+                if 'nombre_acu' in cols_str or 'cód_bocat' in cols_str:
+                    gdf_bocatomas_file = gdf
+                    continue
 
-            # Fallback por posición (si la detección falla)
+            # Fallback seguro
             if gdf_municipios is None and len(spatial_results) >= 1:
                  gdf_municipios = spatial_results[0]
+            # Solo asignamos subcuencas por posición si NO encontramos las etiquetas
             if gdf_subcuencas is None and len(spatial_results) >= 2:
                  gdf_subcuencas = spatial_results[1]
         else:
@@ -96,7 +109,11 @@ def load_data_from_db():
     df_long = pd.DataFrame()
     df_enso = pd.DataFrame()
     gdf_stations_db = None
-    gdf_predios_db = None
+    gdf_predios_db = None 
+
+    # Si encontramos Bocatomas en los archivos y no hay predios de BD, las usamos
+    if gdf_bocatomas_file is not None:
+        gdf_predios_db = gdf_bocatomas_file
 
     try:
         with engine.connect() as conn:
@@ -110,23 +127,21 @@ def load_data_from_db():
                         geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud),
                         crs="EPSG:4326"
                     )
-                    # FIX POPUPS: Duplicar nom_est a station_name
                     if 'nom_est' in gdf_stations_db.columns:
                         gdf_stations_db[Config.STATION_NAME_COL] = gdf_stations_db['nom_est']
                     
-                    # Convertir coordenadas
                     for col in ['latitud', 'longitud']:
                         if col in gdf_stations_db.columns:
-                             # Mapeo a inglés (latitude/longitude)
                             eng_col = 'latitude' if col == 'latitud' else 'longitude'
                             gdf_stations_db[eng_col] = pd.to_numeric(gdf_stations_db[col], errors='coerce')
             except Exception: pass
 
-            # B. CARGAR PREDIOS
+            # B. CARGAR PREDIOS (O mantener Bocatomas si ya se cargaron)
             try:
                 q_pre = text("SELECT * FROM predios WHERE latitud != 0")
                 df_pre = pd.read_sql(q_pre, conn)
                 if not df_pre.empty:
+                    # Damos prioridad a la BD si existe
                     gdf_predios_db = gpd.GeoDataFrame(
                         df_pre,
                         geometry=gpd.points_from_xy(df_pre.longitud, df_pre.latitud),
@@ -135,7 +150,6 @@ def load_data_from_db():
             except Exception: pass
 
             # C. CARGAR LLUVIAS
-            # DatosPptnmes_ENSO.csv SÍ tiene fecha_mes_año, así que lo pedimos directo
             query_rain = text("""
                 SELECT 
                     p.id_estacion_fk as id_estacion,
@@ -147,52 +161,40 @@ def load_data_from_db():
             """)
             df_long = pd.read_sql(query_rain, conn)
 
-            # Puente de compatibilidad
             if 'fecha_mes_año' in df_long.columns:
-                df_long[Config.DATE_COL] = df_long['fecha_mes_año'] # date = fecha_mes_año
+                df_long[Config.DATE_COL] = df_long['fecha_mes_año']
             
             df_long = df_long.rename(columns={
                 "station_name": Config.STATION_NAME_COL,
                 "precipitation": Config.PRECIPITATION_COL
             })
             
-            # Asegurar formato fecha
             df_long[Config.DATE_COL] = pd.to_datetime(df_long[Config.DATE_COL], errors='coerce')
             df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
             df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
 
-            # D. CARGAR ENSO (LA CORRECCIÓN CRÍTICA)
+            # D. CARGAR ENSO (FIX FECHAS)
             try:
                 query_enso = text("SELECT * FROM indices_climaticos")
                 df_enso = pd.read_sql(query_enso, conn)
                 df_enso.columns = [c.lower() for c in df_enso.columns]
                 
-                # DIAGNÓSTICO: Indices_Globales.csv tiene 'año' y 'mes'. NO tiene fecha completa.
-                # SOLUCIÓN: Construirla obligatoriamente.
-                
-                # 1. Detectar columnas de año y mes
                 col_anio = next((c for c in ['año', 'year', 'anio'] if c in df_enso.columns), None)
                 col_mes = next((c for c in ['mes', 'month'] if c in df_enso.columns), None)
                 
                 if col_anio and col_mes:
-                    # Construir fecha día 1 de cada mes
                     fechas_construidas = pd.to_datetime(
                         df_enso[col_anio].astype(str) + '-' + df_enso[col_mes].astype(str) + '-01',
                         errors='coerce'
                     )
+                    df_enso['fecha_mes_año'] = fechas_construidas 
+                    df_enso[Config.DATE_COL] = fechas_construidas
                     
-                    # 2. ASIGNAR A TODAS LAS VARIABLES ESPERADAS
-                    # Esto evita el KeyError: ['fecha_mes_año']
-                    df_enso['fecha_mes_año'] = fechas_construidas  # <--- CRÍTICO
-                    df_enso[Config.DATE_COL] = fechas_construidas  # <--- CRÍTICO
-                    
-                    # Limpieza
                     df_enso = df_enso.dropna(subset=['fecha_mes_año']).sort_values('fecha_mes_año')
                     
                     if 'anomalia_oni' in df_enso.columns:
                         df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
                 else:
-                    # Si no hay año/mes, intentar buscar columna 'fecha'
                     if 'fecha_mes_año' in df_enso.columns:
                         df_enso[Config.DATE_COL] = pd.to_datetime(df_enso['fecha_mes_año'])
                     elif 'date' in df_enso.columns:
@@ -201,7 +203,7 @@ def load_data_from_db():
 
             except Exception as e:
                 print(f"Error ENSO: {e}")
-                df_enso = pd.DataFrame() # Vacío seguro
+                df_enso = pd.DataFrame() 
 
     except Exception as e:
         st.error(f"Error conexión BD: {e}")
