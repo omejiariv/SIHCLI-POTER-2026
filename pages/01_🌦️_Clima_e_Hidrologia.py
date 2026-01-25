@@ -97,46 +97,51 @@ def load_data_from_db():
         return gpd.GeoDataFrame()
 
         # ==========================================
-        # A. CUENCAS (CONFIGURACIÓN EXACTA SEGÚN TU NUEVA TABLA)
+        # A. CUENCAS (ADAPTADO A NUEVA ESTRUCTURA DB)
         # ==========================================
         try:
-            # 1. Carga Geométrica Robusta (GeoJSON)
-            q_cuencas = text("SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas")
+            # 1. Consulta SQL explícita y limpia
+            # Pedimos SOLO lo que existe según tus imágenes del Detective
+            q_str = """
+                SELECT nombre_cuenca, subcuenca, ST_AsGeoJSON(geometry) as geometry_json
+                FROM cuencas
+            """
+            q_cuencas = text(q_str)
+
+            # 2. Ejecutar consulta
             df_c = pd.read_sql(q_cuencas, engine)
-            
-            if not df_c.empty:
+
+            if df_c.empty:
+                # Si la tabla está vacía en BD, avisamos
+                st.warning("⚠️ La tabla 'cuencas' existe pero no devolvió filas.")
+            else:
+                # 3. Procesar geometría (Importamos aquí para asegurar que no falte nada)
                 import json
                 from shapely.geometry import shape
-                
-                # Convertir JSON a Geometría
+
                 df_c['geometry'] = df_c['geometry_json'].apply(
                     lambda x: shape(json.loads(x)) if x else None
                 )
-                
-                gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
-                
-                # 2. MAPEO DE COLUMNAS (Basado en tus imágenes: 'nombre_cuenca' y 'subcuenca')
-                
-                # CAMPO DE NOMBRE VISIBLE (Ej: Doña Maria, La Iguana)
-                if 'nombre_cuenca' in gdf_subcuencas.columns:
-                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
-                else:
-                    # Fallback por si acaso
-                    gdf_subcuencas['nom_cuenca'] = "Cuenca " + gdf_subcuencas.index.astype(str)
 
-                # CAMPO DE ID INTERNO (Ej: rioaburra_donamaria)
-                if 'subcuenca' in gdf_subcuencas.columns:
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['subcuenca']
-                else:
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.index.astype(str)
+                # 4. Crear GeoDataFrame
+                gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
+
+                # 5. Mapeo Directo (Sin adivinar)
+                # Tu columna 'nombre_cuenca' -> 'nom_cuenca' (Lo que la App espera)
+                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
                 
-                # 3. LIMPIEZA
-                # Eliminamos columnas pesadas o temporales para liberar memoria
-                cols_drop = ['geometry_json', 'geom', 'wkt']
-                gdf_subcuencas = gdf_subcuencas.drop(columns=[c for c in cols_drop if c in gdf_subcuencas.columns], errors='ignore')
-                    
+                # Tu columna 'subcuenca' -> 'SUBC_LBL' (ID interno)
+                gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['subcuenca']
+
+                # Limpieza final de memoria
+                if 'geometry_json' in gdf_subcuencas.columns:
+                    gdf_subcuencas.drop(columns=['geometry_json'], inplace=True)
+
         except Exception as e:
-            print(f"!!! Error Carga Cuencas: {e}")
+            # ESTO ES VITAL: Si falla, te mostrará un cuadro ROJO con el error real
+            st.error(f"❌ ERROR CRÍTICO CARGANDO CUENCAS: {str(e)}")
+            print(f"Error Cuencas: {e}")
+
 
 
     # B. MUNICIPIOS (Tu tabla 'municipios', nombre 'nombre_municipio')
