@@ -97,19 +97,14 @@ def load_data_from_db():
         return gpd.GeoDataFrame()
 
         # ==========================================
-        # A. CUENCAS (VERSIÓN BLINDADA Y LIGERA)
+        # A. CUENCAS (CARGA DIRECTA - SIN SIMPLIFICAR EN SQL)
         # ==========================================
         try:
-            # 1. Intentamos cargar simplificando la geometría (0.001 grados ~ 100m)
-            # Esto evita que polígonos gigantes rompan la memoria.
-            # Probamos primero con 'geometry' (visto en tu panel admin)
-            try:
-                q_cuencas = text("SELECT *, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geometry, 0.001)) as geometry_json FROM cuencas")
-                df_c = pd.read_sql(q_cuencas, engine)
-            except Exception:
-                # Si falla, probamos con 'geom' (estándar PostGIS)
-                q_cuencas = text("SELECT *, ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, 0.001)) as geometry_json FROM cuencas")
-                df_c = pd.read_sql(q_cuencas, engine)
+            # 1. Traemos TODO (*) para tener 'nombre_cuenca', 'n_nss3', etc.
+            # 2. Usamos ST_AsGeoJSON puro. A veces ST_Simplify falla si la proyección no coincide.
+            #    Al ser solo 171 cuencas (según tu panel), podemos cargarlas completas sin miedo.
+            q_cuencas = text("SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas")
+            df_c = pd.read_sql(q_cuencas, engine)
             
             if not df_c.empty:
                 import json
@@ -120,33 +115,27 @@ def load_data_from_db():
                     lambda x: shape(json.loads(x)) if x else None
                 )
                 
+                # Crear GeoDataFrame
                 gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
                 
-                # --- MAPEO INTELIGENTE DE COLUMNAS ---
-                # Normalizamos nombres de columnas para evitar errores por guiones o mayúsculas
-                # Creamos un diccionario {nombre_limpio: nombre_real}
-                cols_map = {c.lower().replace('-', '_'): c for c in gdf_subcuencas.columns}
+                # --- MAPEO EXACTO SEGÚN TU PANEL DE ADMINISTRACIÓN ---
+                # Tu panel muestra: 'nombre_cuenca' y 'n_nss3'
                 
-                # Buscamos las columnas clave usando el mapa limpio
-                # Prioridad para nombre: 'nombre_cuenca' > 'n_nss3' > 'n_nss1'
-                col_nom = cols_map.get('nombre_cuenca', cols_map.get('n_nss3', cols_map.get('n_nss1')))
-                # Prioridad para ID: 'n_nss3' > 'id_cuenca'
-                col_id = cols_map.get('n_nss3', cols_map.get('id_cuenca'))
-                
-                # Asignamos las columnas que espera el Visualizador
-                if col_nom: gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_nom]
-                if col_id: gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas[col_id]
-                
-                # Fallback de seguridad: Si no encontró columnas, usar índice para que no salga vacío
-                if 'nom_cuenca' not in gdf_subcuencas.columns:
-                    gdf_subcuencas['nom_cuenca'] = "Cuenca " + gdf_subcuencas.index.astype(str)
-                if 'SUBC_LBL' not in gdf_subcuencas.columns:
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.index.astype(str)
+                # 1. Asignar Nombre Humano (Para el selector del menú)
+                if 'nombre_cuenca' in gdf_subcuencas.columns:
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
+                else:
+                    # Fallback si no encuentra la columna exacta
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas.get('n_nss3', 'Cuenca Desconocida')
 
+                # 2. Asignar ID de Enlace (Para filtrar datos)
+                if 'n_nss3' in gdf_subcuencas.columns:
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['n_nss3']
+                else:
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.get('id_cuenca', gdf_subcuencas.index.astype(str))
+                
         except Exception as e:
-            print(f"!!! Error Crítico Cargando Cuencas: {e}")
-            # Tip: Si estás en modo debug, puedes descomentar la siguiente línea para ver el error en pantalla:
-            # st.error(f"Error Cuencas: {e}")
+            print(f"!!! Error Carga Cuencas: {e}")
 
 
     # B. MUNICIPIOS (Tu tabla 'municipios', nombre 'nombre_municipio')
