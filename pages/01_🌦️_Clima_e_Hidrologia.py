@@ -42,20 +42,16 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN DE CARGA FORENSE (FORCE 2D + VALIDACIÓN) ---
-@st.cache_data(show_spinner="Ejecutando limpieza espacial profunda...", ttl=60)
+# --- FUNCIÓN DE CARGA VALIDADA POR EL DETECTIVE (DATOS LIMPIOS) ---
+@st.cache_data(show_spinner="Cargando cartografía validada...", ttl=60)
 def load_data_from_db():
     from shapely import wkt
     from sqlalchemy import text
     import geopandas as gpd
     import pandas as pd
     
-    # 1. Conexión
-    try:
-        engine = get_engine()
-    except:
-        from modules.db_manager import get_engine
-        engine = get_engine()
+    try: engine = get_engine()
+    except: from modules.db_manager import get_engine; engine = get_engine()
 
     # Inicialización de Emergencia
     gdf_municipios = gpd.GeoDataFrame(columns=['MPIO_CNMBR', 'geometry'])
@@ -65,163 +61,112 @@ def load_data_from_db():
     df_long = pd.DataFrame(columns=[Config.STATION_NAME_COL, Config.PRECIPITATION_COL, Config.DATE_COL])
     df_enso = pd.DataFrame(columns=[Config.DATE_COL, Config.ENSO_ONI_COL, 'fecha_mes_año'])
 
-    if not engine:
-        st.error("❌ Sin conexión a BD")
-        return None, None, df_long, df_enso, None, None
+    if not engine: return None, None, df_long, df_enso, None, None
 
     # ==============================================================================
-    # 1. CARGA ESPACIAL: LA CURA (FORCE 2D + MAKE VALID)
+    # 1. CARGA ESPACIAL: DIRECTA (SIN REPROYECCIÓN)
     # ==============================================================================
-    
-    def cargar_capa_blindada(query_sql, alias_col_db, alias_col_app):
+    def cargar_capa_simple(query_sql, alias_col_db, alias_col_app):
         """
-        Carga geometría aplicando:
-        1. ST_MakeValid: Arregla polígonos rotos.
-        2. ST_Force2D: Elimina la altura Z que hace invisibles los mapas.
-        3. ST_Transform: Asegura GPS (4326).
+        Carga WKT directo. Asume que la BD ya tiene EPSG:4326 (Confirmado por Detective).
+        Solo aplicamos Force2D por seguridad.
         """
         try:
             df = pd.read_sql(text(query_sql), engine)
             if not df.empty and 'wkt' in df.columns:
                 df['geometry'] = df['wkt'].apply(lambda x: wkt.loads(x) if x else None)
+                # Asignamos CRS 4326 directo (Lat/Lon)
                 gdf = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
                 
-                # Alias Obligatorio
+                # Alias de Nombre (Vital para el Selector)
                 if alias_col_db in gdf.columns:
                     gdf[alias_col_app] = gdf[alias_col_db]
                 return gdf
         except: pass
         return gpd.GeoDataFrame()
 
-    # A. CUENCAS 
-    # Usamos n_nss3 (nombres reales) y forzamos 2D
+    # A. CUENCAS (geometry)
+    # Usamos n_nss3 (Q. De Las Animas) mapeado a SUBC_LBL
     q_cuencas = """
         SELECT n_nss3, tipo_cuenca, 
-               ST_AsText(ST_Force2D(ST_Transform(ST_MakeValid(geometry), 4326))) as wkt 
+               ST_AsText(ST_Force2D(geometry)) as wkt 
         FROM cuencas
     """
-    gdf_temp = cargar_capa_blindada(q_cuencas, 'n_nss3', 'SUBC_LBL')
+    gdf_temp = cargar_capa_simple(q_cuencas, 'n_nss3', 'SUBC_LBL')
     if not gdf_temp.empty:
         gdf_subcuencas = gdf_temp
         gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['SUBC_LBL']
 
-    # B. MUNICIPIOS
-    # Probamos geometry con Force2D
+    # B. MUNICIPIOS (geometry)
     q_mun = """
         SELECT nombre_municipio, 
-               ST_AsText(ST_Force2D(ST_Transform(ST_MakeValid(geometry), 4326))) as wkt 
+               ST_AsText(ST_Force2D(geometry)) as wkt 
         FROM municipios
     """
-    gdf_temp = cargar_capa_blindada(q_mun, 'nombre_municipio', 'MPIO_CNMBR')
-    
-    # Fallback a 'geom' si falla
-    if gdf_temp.empty:
-        q_mun = """
-            SELECT nombre_municipio, 
-                   ST_AsText(ST_Force2D(ST_Transform(ST_MakeValid(geom), 4326))) as wkt 
-            FROM municipios
-        """
-        gdf_temp = cargar_capa_blindada(q_mun, 'nombre_municipio', 'MPIO_CNMBR')
-    
-    if not gdf_temp.empty:
-        gdf_municipios = gdf_temp
+    gdf_municipios = cargar_capa_simple(q_mun, 'nombre_municipio', 'MPIO_CNMBR')
+    # Fallback 'geom'
+    if gdf_municipios.empty:
+        q_mun_b = "SELECT nombre_municipio, ST_AsText(ST_Force2D(geom)) as wkt FROM municipios"
+        gdf_municipios = cargar_capa_simple(q_mun_b, 'nombre_municipio', 'MPIO_CNMBR')
 
-    # C. PREDIOS (Crítico: Usar Force2D en 'geom')
+    # C. PREDIOS (geom)
     q_pre = """
         SELECT nombre_predio, 
-               ST_AsText(ST_Force2D(ST_Transform(ST_MakeValid(geom), 4326))) as wkt 
+               ST_AsText(ST_Force2D(geom)) as wkt 
         FROM predios
     """
-    gdf_temp = cargar_capa_blindada(q_pre, 'nombre_predio', 'NOMBRE_PRE')
-    if not gdf_temp.empty:
-        gdf_predios_db = gdf_temp
+    gdf_predios_db = cargar_capa_simple(q_pre, 'nombre_predio', 'NOMBRE_PRE')
 
     # ==============================================================================
-    # 2. ESTACIONES (PARCHE PARA SIDEBAR)
+    # 2. ESTACIONES (YA FUNCIONA, NO TOCAR)
     # ==============================================================================
     try:
         with engine.connect() as conn:
-            # Traemos explícitamente las columnas para filtros
             df_est = pd.read_sql(text("SELECT * FROM estaciones"), conn)
-            
-            # Limpieza numérica robusta
             for c in ['latitud', 'longitud', 'alt_est']:
-                if c in df_est.columns:
-                    # Convierte a string, reemplaza comas, convierte a número, fuerza NaN si falla
-                    df_est[c] = pd.to_numeric(
-                        df_est[c].astype(str).str.replace(',', '.'), 
-                        errors='coerce'
-                    )
+                if c in df_est.columns and df_est[c].dtype == object:
+                    df_est[c] = pd.to_numeric(df_est[c].astype(str).str.replace(',', '.'), errors='coerce')
             
-            # Filtro de validez
             if 'latitud' in df_est.columns:
-                df_est = df_est.dropna(subset=['latitud', 'longitud'])
                 df_est = df_est[df_est['latitud'].abs() > 0.0001]
 
             if not df_est.empty:
                 gdf_stations_db = gpd.GeoDataFrame(
-                    df_est, 
-                    geometry=gpd.points_from_xy(df_est['longitud'], df_est['latitud']), 
-                    crs="EPSG:4326"
+                    df_est, geometry=gpd.points_from_xy(df_est['longitud'], df_est['latitud']), crs="EPSG:4326"
                 )
-                
-                # --- MAPEO EXPLÍCITO PARA SIDEBAR.PY ---
-                # El sidebar busca Config.REGION_COL. Le damos todas las opciones.
-                gdf_stations_db['Region'] = df_est.get('depto_region', 'Sin Región')
-                gdf_stations_db['region'] = df_est.get('depto_region', 'Sin Región')
-                
-                gdf_stations_db['Municipio'] = df_est.get('municipio', 'Sin Municipio')
-                gdf_stations_db['municipality'] = df_est.get('municipio', 'Sin Municipio')
-                
-                gdf_stations_db['Altitud'] = df_est.get('alt_est', 0)
+                gdf_stations_db[Config.STATION_NAME_COL] = df_est['nom_est']
+                # Alias Sidebar
+                gdf_stations_db['municipality'] = df_est.get('municipio', '')
+                gdf_stations_db['Municipio'] = df_est.get('municipio', '')
+                gdf_stations_db['region'] = df_est.get('depto_region', '')
+                gdf_stations_db['Region'] = df_est.get('depto_region', '')
                 gdf_stations_db['altitude'] = df_est.get('alt_est', 0)
-                
-                gdf_stations_db[Config.STATION_NAME_COL] = df_est.get('nom_est', 'Estación')
-                
-                # Para Visualizer
+                gdf_stations_db['Altitud'] = df_est.get('alt_est', 0)
                 gdf_stations_db['latitude'] = df_est['latitud']
                 gdf_stations_db['longitude'] = df_est['longitud']
-
-    except Exception as e: pass
+    except: pass
 
     # ==============================================================================
-    # 3. DATOS TABULARES
+    # 3. DATOS TABULARES (YA FUNCIONA)
     # ==============================================================================
     try:
         with engine.connect() as conn:
-            # Lluvia
-            df_long = pd.read_sql(text("""
-                SELECT p.id_estacion_fk, e.nom_est as station_name,
-                       p.fecha_mes_año, p.precipitation
-                FROM precipitacion_mensual p 
-                JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-            """), conn)
-            
+            df_long = pd.read_sql(text("SELECT p.id_estacion_fk, e.nom_est as station_name, p.fecha_mes_año, p.precipitation FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion"), conn)
             if 'fecha_mes_año' in df_long.columns:
                 df_long[Config.DATE_COL] = pd.to_datetime(df_long['fecha_mes_año'])
                 df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
                 df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
-            
-            df_long = df_long.rename(columns={
-                "station_name": Config.STATION_NAME_COL,
-                "precipitation": Config.PRECIPITATION_COL
-            })
+            df_long = df_long.rename(columns={"station_name": Config.STATION_NAME_COL, "precipitation": Config.PRECIPITATION_COL})
 
-            # ENSO
             df_enso = pd.read_sql(text("SELECT * FROM indices_climaticos"), conn)
             df_enso.columns = [c.lower().strip() for c in df_enso.columns]
-            
-            c_anio = next((c for c in df_enso.columns if 'year' in c or 'año' in c or 'aÃ±o' in c or ('a' in c and 'o' in c and len(c)<6)), None)
+            c_anio = next((c for c in df_enso.columns if 'year' in c or 'año' in c or 'aÃ±o' in c), None)
             c_mes = next((c for c in df_enso.columns if 'mes' in c or 'month' in c), None)
-            
             if c_anio and c_mes:
                 df_enso['fecha_mes_año'] = pd.to_datetime(dict(year=df_enso[c_anio], month=df_enso[c_mes], day=1), errors='coerce')
                 df_enso[Config.DATE_COL] = df_enso['fecha_mes_año']
-                if 'anomalia_oni' in df_enso.columns:
-                    df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
-            
+                if 'anomalia_oni' in df_enso.columns: df_enso = df_enso.rename(columns={'anomalia_oni': Config.ENSO_ONI_COL})
             df_enso = df_enso.dropna(subset=[Config.DATE_COL]).sort_values(Config.DATE_COL)
-
     except: pass
 
     # Airbags
