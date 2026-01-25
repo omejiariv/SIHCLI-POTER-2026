@@ -96,11 +96,11 @@ def load_data_from_db():
             pass
         return gpd.GeoDataFrame()
 
-        # ==========================================
+# ==========================================
         # A. CUENCAS (CORREGIDO: 'n-nss3' con guion medio)
         # ==========================================
         try:
-            # 1. Carga robusta con GeoJSON
+            # 1. Carga robusta con GeoJSON (Garantiza que el mapa azul aparezca)
             q_cuencas = text("SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas")
             df_c = pd.read_sql(q_cuencas, engine)
             
@@ -126,15 +126,18 @@ def load_data_from_db():
                     # Plan B: nombre_cuenca
                     gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
                     gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['nombre_cuenca']
+                else:
+                    # Fallback de emergencia
+                    gdf_subcuencas['nom_cuenca'] = "Cuenca " + gdf_subcuencas.index.astype(str)
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.index.astype(str)
                 
                 # 3. ELIMINACIÓN DE LA COLUMNA CONFUSA
-                # Borramos 'tipo_cuenca' para que el visualizador NO pueda equivocarse.
+                # Borramos 'tipo_cuenca' para que el visualizador NO pueda mostrar "Cuenca/Intercuenca"
                 if 'tipo_cuenca' in gdf_subcuencas.columns:
                     gdf_subcuencas = gdf_subcuencas.drop(columns=['tipo_cuenca'])
                     
         except Exception as e:
             print(f"!!! Error Carga Cuencas: {e}")
-
 
     # B. MUNICIPIOS (Tu tabla 'municipios', nombre 'nombre_municipio')
     sql_mun = "SELECT nombre_municipio, ST_AsText(geometry) as wkt FROM municipios"
