@@ -97,10 +97,10 @@ def load_data_from_db():
         return gpd.GeoDataFrame()
 
         # ==========================================
-        # A. CUENCAS (CORREGIDO: NOMBRES REALES)
+        # A. CUENCAS (CORREGIDO: 'n-nss3' con guion medio)
         # ==========================================
         try:
-            # 1. Carga Geométrica Robusta (GeoJSON)
+            # 1. Carga robusta con GeoJSON
             q_cuencas = text("SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas")
             df_c = pd.read_sql(q_cuencas, engine)
             
@@ -108,30 +108,29 @@ def load_data_from_db():
                 import json
                 from shapely.geometry import shape
                 
-                # Convertir geometría
+                # Procesar Geometría
                 df_c['geometry'] = df_c['geometry_json'].apply(
                     lambda x: shape(json.loads(x)) if x else None
                 )
                 
                 gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
                 
-                # --- CORRECCIÓN DE NOMBRES PARA EL SELECTOR ---
+                # 2. ASIGNACIÓN EXACTA DE NOMBRES (Usando n-nss3)
                 
-                # PASO 1: "Esconder" la columna 'tipo_cuenca' para que el selector no se confunda.
-                # Al cambiarle el nombre a 'categoria', el sistema buscará otra opción mejor.
-                if 'tipo_cuenca' in gdf_subcuencas.columns:
-                    gdf_subcuencas.rename(columns={'tipo_cuenca': 'categoria_hidro'}, inplace=True)
-
-                # PASO 2: Asignar explícitamente los nombres reales a la columna 'nom_cuenca'
-                # Prioridad: 'n_nss3' (ej: Q. De Las Animas) > 'nombre_cuenca' (ej: R. Chico)
-                if 'n_nss3' in gdf_subcuencas.columns:
-                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['n_nss3']
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['n_nss3']
+                # Buscamos explícitamente la columna con guion medio 'n-nss3'
+                if 'n-nss3' in gdf_subcuencas.columns:
+                    # Usamos n-nss3 como el nombre principal
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['n-nss3']
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['n-nss3']
                 elif 'nombre_cuenca' in gdf_subcuencas.columns:
+                    # Plan B: nombre_cuenca
                     gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
                     gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['nombre_cuenca']
-                else:
-                    gdf_subcuencas['nom_cuenca'] = "Cuenca " + gdf_subcuencas.index.astype(str)
+                
+                # 3. ELIMINACIÓN DE LA COLUMNA CONFUSA
+                # Borramos 'tipo_cuenca' para que el visualizador NO pueda equivocarse.
+                if 'tipo_cuenca' in gdf_subcuencas.columns:
+                    gdf_subcuencas = gdf_subcuencas.drop(columns=['tipo_cuenca'])
                     
         except Exception as e:
             print(f"!!! Error Carga Cuencas: {e}")
