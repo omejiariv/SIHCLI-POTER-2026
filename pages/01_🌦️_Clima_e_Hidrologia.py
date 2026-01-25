@@ -96,15 +96,51 @@ def load_data_from_db():
             pass
         return gpd.GeoDataFrame()
 
-    # A. CUENCAS (Tu tabla 'cuencas', nombre 'n_nss3')
-    # Pedimos solo lo necesario.
-    sql_cuencas = "SELECT n_nss3, ST_AsText(geometry) as wkt FROM cuencas"
-    gdf_temp = cargar_capa_simple(sql_cuencas, 'n_nss3', 'SUBC_LBL')
-    
-    if not gdf_temp.empty:
-        gdf_subcuencas = gdf_temp
-        # Doble alias para asegurar compatibilidad con todo el código
-        gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['SUBC_LBL']
+        # ==========================================
+        # A. CUENCAS (CORREGIDO Y ROBUSTO)
+        # ==========================================
+        try:
+            # 1. Usamos SELECT * para traer id_cuenca, nombre_cuenca, n_nss3, etc.
+            # 2. Usamos ST_AsGeoJSON que es más seguro para polígonos grandes que ST_AsText
+            q_cuencas = text("""
+                SELECT *, ST_AsGeoJSON(geometry) as geometry_json 
+                FROM cuencas
+            """)
+            df_c = pd.read_sql(q_cuencas, engine)
+            
+            if not df_c.empty:
+                # Importamos librerías necesarias dentro de la función cacheada
+                import json
+                from shapely.geometry import shape
+                
+                # Convertimos JSON a Geometría
+                df_c['geometry'] = df_c['geometry_json'].apply(
+                    lambda x: shape(json.loads(x)) if x else None
+                )
+                
+                gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
+                
+                # --- MAPEO DE COLUMNAS CRÍTICO PARA EL VISUALIZADOR ---
+                # El visualizador busca 'SUBC_LBL' o 'nom_cuenca'. 
+                # Tu tabla tiene 'n_nss3' y 'nombre_cuenca'. Hacemos el puente aquí:
+                
+                # 1. Alias para ID único (usamos n_nss3 o id_cuenca)
+                if 'n_nss3' in gdf_subcuencas.columns:
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['n_nss3']
+                
+                # 2. Alias para Nombre Humano (Para el selector del menú)
+                if 'nombre_cuenca' in gdf_subcuencas.columns:
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
+                elif 'n_nss3' in gdf_subcuencas.columns:
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['n_nss3'] # Fallback
+                    
+                # Limpieza de columnas pesadas que ya no sirven
+                cols_drop = ['geometry_json', 'wkt', 'geom']
+                gdf_subcuencas = gdf_subcuencas.drop(columns=[c for c in cols_drop if c in gdf_subcuencas.columns], errors='ignore')
+                
+        except Exception as e:
+            print(f"Error cargando Cuencas: {e}")
+            # Si falla, gdf_subcuencas sigue siendo el DataFrame vacío inicializado arriba
 
     # B. MUNICIPIOS (Tu tabla 'municipios', nombre 'nombre_municipio')
     sql_mun = "SELECT nombre_municipio, ST_AsText(geometry) as wkt FROM municipios"
