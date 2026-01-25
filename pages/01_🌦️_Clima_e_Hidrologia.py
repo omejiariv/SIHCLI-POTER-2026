@@ -97,51 +97,51 @@ def load_data_from_db():
         return gpd.GeoDataFrame()
 
         # ==========================================
-        # A. CUENCAS (ADAPTADO A NUEVA ESTRUCTURA DB)
+        # A. CUENCAS (ADAPTADO A NUEVA ESTRUCTURA 2026)
         # ==========================================
         try:
-            # 1. Consulta SQL explícita y limpia
-            # Pedimos SOLO lo que existe según tus imágenes del Detective
+            # 1. Consulta SQL Exacta (Basada en tus imágenes del Detective)
+            # Pedimos solo: nombre_cuenca, subcuenca y la geometría como JSON
             q_str = """
-                SELECT nombre_cuenca, subcuenca, ST_AsGeoJSON(geometry) as geometry_json
+                SELECT nombre_cuenca, subcuenca, ST_AsGeoJSON(geometry) as geometry_json 
                 FROM cuencas
             """
             q_cuencas = text(q_str)
-
-            # 2. Ejecutar consulta
             df_c = pd.read_sql(q_cuencas, engine)
-
-            if df_c.empty:
-                # Si la tabla está vacía en BD, avisamos
-                st.warning("⚠️ La tabla 'cuencas' existe pero no devolvió filas.")
-            else:
-                # 3. Procesar geometría (Importamos aquí para asegurar que no falte nada)
+            
+            if not df_c.empty:
                 import json
                 from shapely.geometry import shape
-
+                
+                # 2. Convertir JSON a Geometría (Shapely)
                 df_c['geometry'] = df_c['geometry_json'].apply(
                     lambda x: shape(json.loads(x)) if x else None
                 )
-
-                # 4. Crear GeoDataFrame
-                gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
-
-                # 5. Mapeo Directo (Sin adivinar)
-                # Tu columna 'nombre_cuenca' -> 'nom_cuenca' (Lo que la App espera)
-                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
                 
-                # Tu columna 'subcuenca' -> 'SUBC_LBL' (ID interno)
-                gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['subcuenca']
+                # 3. Crear GeoDataFrame
+                gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
+                
+                # 4. Mapeo de Nombres (Crucial para el Visualizador)
+                # El visualizador busca 'nom_cuenca'. Le damos tu columna 'nombre_cuenca'.
+                if 'nombre_cuenca' in gdf_subcuencas.columns:
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
+                else:
+                    gdf_subcuencas['nom_cuenca'] = "Cuenca Desconocida"
 
-                # Limpieza final de memoria
+                # Asignamos el ID único
+                if 'subcuenca' in gdf_subcuencas.columns:
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['subcuenca']
+                else:
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.index.astype(str)
+                
+                # 5. Limpieza (Borrar columna JSON pesada)
                 if 'geometry_json' in gdf_subcuencas.columns:
                     gdf_subcuencas.drop(columns=['geometry_json'], inplace=True)
 
         except Exception as e:
-            # ESTO ES VITAL: Si falla, te mostrará un cuadro ROJO con el error real
+            # Si falla, mostramos el error en rojo en la pantalla
             st.error(f"❌ ERROR CRÍTICO CARGANDO CUENCAS: {str(e)}")
             print(f"Error Cuencas: {e}")
-
 
 
     # B. MUNICIPIOS (Tu tabla 'municipios', nombre 'nombre_municipio')
