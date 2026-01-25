@@ -97,56 +97,54 @@ def load_data_from_db():
         return gpd.GeoDataFrame()
 
         # ==========================================
-        # A. CUENCAS (CARGA ROBUSTA + DEBUG)
+        # A. CUENCAS (MODO DIAGNÓSTICO Y CARGA SEGURA)
         # ==========================================
         try:
-            # 1. Carga Geométrica (Sabemos que esto funciona)
-            q_cuencas = text("SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas")
+            # 1. Consulta SQL explícita
+            # Usamos comillas dobles en "n-nss3" para que SQL no piense que es una resta
+            q_cuencas = text('SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas')
             df_c = pd.read_sql(q_cuencas, engine)
             
             if not df_c.empty:
                 import json
                 from shapely.geometry import shape
                 
-                # Convertir JSON a Geometría
+                # 2. Conversión Geométrica
                 df_c['geometry'] = df_c['geometry_json'].apply(
                     lambda x: shape(json.loads(x)) if x else None
                 )
-                
                 gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
                 
-                # 2. BÚSQUEDA INTELIGENTE DE COLUMNAS
-                # Buscamos la columna 'n-nss3' o 'nombre_cuenca' sin importar mayúsculas
-                cols_disponibles = list(gdf_subcuencas.columns)
+                # 3. Asignación de Nombres (Buscando la columna exacta)
+                # Buscamos 'n-nss3' (con guion medio) o 'nombre_cuenca'
                 
-                # Función para encontrar columna ignorando mayúsculas
-                def get_col(target):
-                    return next((c for c in cols_disponibles if target.lower() in c.lower()), None)
-
-                col_nss3 = get_col('n-nss3')      # Busca n-nss3, N-NSS3, etc.
-                col_nombre = get_col('nombre_cuenca')
-                col_tipo = get_col('tipo_cuenca')
-
-                # 3. ASIGNACIÓN DE NOMBRES
-                # Usamos la columna que hayamos encontrado
-                if col_nss3:
-                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_nss3]
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas[col_nss3]
-                elif col_nombre:
-                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_nombre]
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas[col_nombre]
+                # Normalizamos columnas del DF a minúsculas para encontrarla fácil
+                cols_lower = {c.lower(): c for c in gdf_subcuencas.columns}
+                
+                # Buscamos la columna ID (n-nss3)
+                col_id = cols_lower.get('n-nss3') or cols_lower.get('n_nss3') or 'id_cuenca'
+                # Buscamos la columna Nombre
+                col_nom = cols_lower.get('nombre_cuenca') or col_id
+                
+                # Asignamos
+                if col_id in gdf_subcuencas.columns:
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas[col_id]
+                else:
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.index.astype(str)
+                    
+                if col_nom in gdf_subcuencas.columns:
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_nom]
                 else:
                     gdf_subcuencas['nom_cuenca'] = "Cuenca " + gdf_subcuencas.index.astype(str)
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.index.astype(str)
 
-                # 4. ELIMINAR TIPO_CUENCA (Para evitar confusión en el visualizador)
-                if col_tipo:
-                    gdf_subcuencas = gdf_subcuencas.drop(columns=[col_tipo])
+                # 4. Limpieza final (Para evitar conflicto en visualizador)
+                if 'tipo_cuenca' in gdf_subcuencas.columns:
+                    gdf_subcuencas = gdf_subcuencas.drop(columns=['tipo_cuenca'])
                     
         except Exception as e:
-            print(f"!!! Error Carga Cuencas: {e}")
-            # Muestra el error en pantalla para que sepamos qué pasa
-            st.error(f"⚠️ Error cargando Cuencas: {str(e)}")
+            # ESTO ES LO VITAL: Mostrar el error en pantalla
+            st.error(f"❌ ERROR CRÍTICO CARGANDO CUENCAS: {str(e)}")
+            print(f"Error Cuencas: {e}")
 
 
     # B. MUNICIPIOS (Tu tabla 'municipios', nombre 'nombre_municipio')
