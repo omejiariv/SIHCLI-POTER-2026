@@ -96,46 +96,45 @@ def load_data_from_db():
             pass
         return gpd.GeoDataFrame()
 
-# ==========================================
-    # A. CUENCAS (CORREGIDO - Carga Robusta)
-    # ==========================================
-    try:
-        # 1. Usamos SELECT * para traer 'nombre_cuenca' y 'n_nss3' (vistos en tu Admin Panel)
-        # 2. Usamos ST_AsGeoJSON porque es seguro para geometrías complejas
-        q_cuencas = text("SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas")
-        df_c = pd.read_sql(q_cuencas, engine)
-        
-        if not df_c.empty:
-            import json
-            from shapely.geometry import shape
+        # ==========================================
+        # A. CUENCAS (CORREGIDO: NOMBRES REALES)
+        # ==========================================
+        try:
+            # 1. Carga Geométrica Robusta (GeoJSON)
+            q_cuencas = text("SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas")
+            df_c = pd.read_sql(q_cuencas, engine)
             
-            # Convertimos el JSON a Geometría real
-            df_c['geometry'] = df_c['geometry_json'].apply(
-                lambda x: shape(json.loads(x)) if x else None
-            )
-            
-            # Creamos el GeoDataFrame
-            gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
-            
-            # --- MAPEO DE COLUMNAS PARA QUE EL VISUALIZADOR ENTIENDA ---
-            # El selector busca 'nom_cuenca'. Tu tabla tiene 'nombre_cuenca'.
-            
-            # 1. Nombre para mostrar en el menú (Ej: "Río Grande")
-            if 'nombre_cuenca' in gdf_subcuencas.columns:
-                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
-            else:
-                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas.get('n_nss3', 'Sin Nombre')
-
-            # 2. ID para filtrar datos (Ej: "2701-...")
-            if 'n_nss3' in gdf_subcuencas.columns:
-                gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['n_nss3']
-            else:
-                gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.index.astype(str)
+            if not df_c.empty:
+                import json
+                from shapely.geometry import shape
                 
-    except Exception as e:
-        print(f"!!! Error cargando Cuencas en Clima: {e}")
-        # Si falla, se queda vacía como estaba inicializada arriba
+                # Convertir geometría
+                df_c['geometry'] = df_c['geometry_json'].apply(
+                    lambda x: shape(json.loads(x)) if x else None
+                )
+                
+                gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
+                
+                # --- CORRECCIÓN DE NOMBRES PARA EL SELECTOR ---
+                
+                # PASO 1: "Esconder" la columna 'tipo_cuenca' para que el selector no se confunda.
+                # Al cambiarle el nombre a 'categoria', el sistema buscará otra opción mejor.
+                if 'tipo_cuenca' in gdf_subcuencas.columns:
+                    gdf_subcuencas.rename(columns={'tipo_cuenca': 'categoria_hidro'}, inplace=True)
 
+                # PASO 2: Asignar explícitamente los nombres reales a la columna 'nom_cuenca'
+                # Prioridad: 'n_nss3' (ej: Q. De Las Animas) > 'nombre_cuenca' (ej: R. Chico)
+                if 'n_nss3' in gdf_subcuencas.columns:
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['n_nss3']
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['n_nss3']
+                elif 'nombre_cuenca' in gdf_subcuencas.columns:
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['nombre_cuenca']
+                else:
+                    gdf_subcuencas['nom_cuenca'] = "Cuenca " + gdf_subcuencas.index.astype(str)
+                    
+        except Exception as e:
+            print(f"!!! Error Carga Cuencas: {e}")
 
 
     # B. MUNICIPIOS (Tu tabla 'municipios', nombre 'nombre_municipio')
