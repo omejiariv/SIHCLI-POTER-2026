@@ -96,11 +96,11 @@ def load_data_from_db():
             pass
         return gpd.GeoDataFrame()
 
-# ==========================================
-        # A. CUENCAS (CORREGIDO: 'n-nss3' con guion medio)
+        # ==========================================
+        # A. CUENCAS (CARGA ROBUSTA + DEBUG)
         # ==========================================
         try:
-            # 1. Carga robusta con GeoJSON (Garantiza que el mapa azul aparezca)
+            # 1. Carga Geométrica (Sabemos que esto funciona)
             q_cuencas = text("SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas")
             df_c = pd.read_sql(q_cuencas, engine)
             
@@ -108,36 +108,46 @@ def load_data_from_db():
                 import json
                 from shapely.geometry import shape
                 
-                # Procesar Geometría
+                # Convertir JSON a Geometría
                 df_c['geometry'] = df_c['geometry_json'].apply(
                     lambda x: shape(json.loads(x)) if x else None
                 )
                 
                 gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
                 
-                # 2. ASIGNACIÓN EXACTA DE NOMBRES (Usando n-nss3)
+                # 2. BÚSQUEDA INTELIGENTE DE COLUMNAS
+                # Buscamos la columna 'n-nss3' o 'nombre_cuenca' sin importar mayúsculas
+                cols_disponibles = list(gdf_subcuencas.columns)
                 
-                # Buscamos explícitamente la columna con guion medio 'n-nss3'
-                if 'n-nss3' in gdf_subcuencas.columns:
-                    # Usamos n-nss3 como el nombre principal
-                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['n-nss3']
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['n-nss3']
-                elif 'nombre_cuenca' in gdf_subcuencas.columns:
-                    # Plan B: nombre_cuenca
-                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['nombre_cuenca']
+                # Función para encontrar columna ignorando mayúsculas
+                def get_col(target):
+                    return next((c for c in cols_disponibles if target.lower() in c.lower()), None)
+
+                col_nss3 = get_col('n-nss3')      # Busca n-nss3, N-NSS3, etc.
+                col_nombre = get_col('nombre_cuenca')
+                col_tipo = get_col('tipo_cuenca')
+
+                # 3. ASIGNACIÓN DE NOMBRES
+                # Usamos la columna que hayamos encontrado
+                if col_nss3:
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_nss3]
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas[col_nss3]
+                elif col_nombre:
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_nombre]
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas[col_nombre]
                 else:
-                    # Fallback de emergencia
                     gdf_subcuencas['nom_cuenca'] = "Cuenca " + gdf_subcuencas.index.astype(str)
                     gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.index.astype(str)
-                
-                # 3. ELIMINACIÓN DE LA COLUMNA CONFUSA
-                # Borramos 'tipo_cuenca' para que el visualizador NO pueda mostrar "Cuenca/Intercuenca"
-                if 'tipo_cuenca' in gdf_subcuencas.columns:
-                    gdf_subcuencas = gdf_subcuencas.drop(columns=['tipo_cuenca'])
+
+                # 4. ELIMINAR TIPO_CUENCA (Para evitar confusión en el visualizador)
+                if col_tipo:
+                    gdf_subcuencas = gdf_subcuencas.drop(columns=[col_tipo])
                     
         except Exception as e:
             print(f"!!! Error Carga Cuencas: {e}")
+            # Muestra el error en pantalla para que sepamos qué pasa
+            st.error(f"⚠️ Error cargando Cuencas: {str(e)}")
+
 
     # B. MUNICIPIOS (Tu tabla 'municipios', nombre 'nombre_municipio')
     sql_mun = "SELECT nombre_municipio, ST_AsText(geometry) as wkt FROM municipios"
