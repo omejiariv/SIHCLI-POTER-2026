@@ -96,46 +96,46 @@ def load_data_from_db():
             pass
         return gpd.GeoDataFrame()
 
-        # ==========================================
-        # A. CUENCAS (CARGA DIRECTA - SIN SIMPLIFICAR EN SQL)
-        # ==========================================
-        try:
-            # 1. Traemos TODO (*) para tener 'nombre_cuenca', 'n_nss3', etc.
-            # 2. Usamos ST_AsGeoJSON puro. A veces ST_Simplify falla si la proyección no coincide.
-            #    Al ser solo 171 cuencas (según tu panel), podemos cargarlas completas sin miedo.
-            q_cuencas = text("SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas")
-            df_c = pd.read_sql(q_cuencas, engine)
+# ==========================================
+    # A. CUENCAS (CORREGIDO - Carga Robusta)
+    # ==========================================
+    try:
+        # 1. Usamos SELECT * para traer 'nombre_cuenca' y 'n_nss3' (vistos en tu Admin Panel)
+        # 2. Usamos ST_AsGeoJSON porque es seguro para geometrías complejas
+        q_cuencas = text("SELECT *, ST_AsGeoJSON(geometry) as geometry_json FROM cuencas")
+        df_c = pd.read_sql(q_cuencas, engine)
+        
+        if not df_c.empty:
+            import json
+            from shapely.geometry import shape
             
-            if not df_c.empty:
-                import json
-                from shapely.geometry import shape
-                
-                # Convertir JSON a Geometría
-                df_c['geometry'] = df_c['geometry_json'].apply(
-                    lambda x: shape(json.loads(x)) if x else None
-                )
-                
-                # Crear GeoDataFrame
-                gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
-                
-                # --- MAPEO EXACTO SEGÚN TU PANEL DE ADMINISTRACIÓN ---
-                # Tu panel muestra: 'nombre_cuenca' y 'n_nss3'
-                
-                # 1. Asignar Nombre Humano (Para el selector del menú)
-                if 'nombre_cuenca' in gdf_subcuencas.columns:
-                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
-                else:
-                    # Fallback si no encuentra la columna exacta
-                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas.get('n_nss3', 'Cuenca Desconocida')
+            # Convertimos el JSON a Geometría real
+            df_c['geometry'] = df_c['geometry_json'].apply(
+                lambda x: shape(json.loads(x)) if x else None
+            )
+            
+            # Creamos el GeoDataFrame
+            gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
+            
+            # --- MAPEO DE COLUMNAS PARA QUE EL VISUALIZADOR ENTIENDA ---
+            # El selector busca 'nom_cuenca'. Tu tabla tiene 'nombre_cuenca'.
+            
+            # 1. Nombre para mostrar en el menú (Ej: "Río Grande")
+            if 'nombre_cuenca' in gdf_subcuencas.columns:
+                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
+            else:
+                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas.get('n_nss3', 'Sin Nombre')
 
-                # 2. Asignar ID de Enlace (Para filtrar datos)
-                if 'n_nss3' in gdf_subcuencas.columns:
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['n_nss3']
-                else:
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.get('id_cuenca', gdf_subcuencas.index.astype(str))
+            # 2. ID para filtrar datos (Ej: "2701-...")
+            if 'n_nss3' in gdf_subcuencas.columns:
+                gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['n_nss3']
+            else:
+                gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.index.astype(str)
                 
-        except Exception as e:
-            print(f"!!! Error Carga Cuencas: {e}")
+    except Exception as e:
+        print(f"!!! Error cargando Cuencas en Clima: {e}")
+        # Si falla, se queda vacía como estaba inicializada arriba
+
 
 
     # B. MUNICIPIOS (Tu tabla 'municipios', nombre 'nombre_municipio')
