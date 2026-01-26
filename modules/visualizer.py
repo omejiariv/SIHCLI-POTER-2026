@@ -1312,35 +1312,46 @@ def display_spatial_distribution_tab(
 
     # --- BLOQUE DE DIBUJO DE CAPAS CORREGIDO ---
     
-    # 1. CAPA MUNICIPIOS (Fondo gris elegante)
+    # --- 1. CAPA MUNICIPIOS (Corregido para mostrar MPIO_CNMBR) ---
     if gdf_municipios is not None and not gdf_municipios.empty:
-        # Debug: Avisar si cargó
-        st.toast(f"Cargados {len(gdf_municipios)} municipios", icon="🏙️")
+        # Detectar la columna correcta del nombre
+        col_muni_name = next((c for c in ['MPIO_CNMBR', 'nombre_municipio', 'nombre'] if c in gdf_municipios.columns), 'MPIO_CNMBR')
         
         folium.GeoJson(
             gdf_municipios,
             name="Municipios",
             style_function=lambda x: {
-                'fillColor': '#95a5a6', 'color': 'white', 'weight': 1, 'fillOpacity': 0.1
+                'fillColor': '#95a5a6', 
+                'color': 'white', 
+                'weight': 0.8, 
+                'fillOpacity': 0.1,
+                'dashArray': '3, 3'
             },
             tooltip=folium.GeoJsonTooltip(
-                fields=['MPIO_CNMBR'],    # <--- La columna real que preparamos
+                fields=[col_muni_name],  # <--- Aquí forzamos el campo correcto
                 aliases=['Municipio:'],
-                localize=True
+                localize=True,
+                sticky=False
             )
         ).add_to(m)
 
-    # 2. CAPA CUENCAS (Azul con borde)
+    # --- 2. CAPA SUBCUENCAS (Corregido para mostrar nombre real) ---
     if gdf_subcuencas is not None and not gdf_subcuencas.empty:
+        # Prioridad: nom_cuenca -> SUBC_LBL -> nombre
+        col_cuenca_name = next((c for c in ['nom_cuenca', 'SUBC_LBL', 'nombre_cuenca', 'nombre'] if c in gdf_subcuencas.columns), 'nom_cuenca')
+        
         folium.GeoJson(
             gdf_subcuencas,
             name="Subcuencas",
             style_function=lambda x: {
-                'fillColor': 'transparent', 'color': '#3498db', 'weight': 2
+                'fillColor': 'blue', 
+                'color': '#3498db', 
+                'weight': 2, 
+                'fillOpacity': 0.05
             },
             highlight_function=lambda x: {'weight': 4, 'color': '#e74c3c'},
             tooltip=folium.GeoJsonTooltip(
-                fields=['nom_cuenca'],    # <--- La columna real
+                fields=[col_cuenca_name], # <--- Aquí forzamos el campo correcto
                 aliases=['Cuenca:'],
                 localize=True
             )
@@ -1360,7 +1371,6 @@ def display_spatial_distribution_tab(
             )
         ).add_to(m)
         
-    # ------------------------------------------------
         # -----------------------------------------------------------
         # SOLUCIÓN AL BLOQUEO: MARKER CLUSTER
         # Agrupamos los marcadores para no saturar el navegador
@@ -2588,7 +2598,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             print(f"Error máscara rápida: {e}")
             return np.zeros_like(grid_values)
             
-# ==========================================================================
+    # ==========================================================================
     # MODO 1: REGIONAL (COMPARACIÓN) - CON DESCARGAS
     # ==========================================================================
     if mode == "Regional (Comparación)":
@@ -2759,18 +2769,33 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # MODO 2: CUENCA (COMPLETO E INTEGRADO)
     # ==========================================================================
     else:
+        # --- MODO 2: CUENCA (CORREGIDO) ---
         gdf_subcuencas = kwargs.get("gdf_subcuencas")
         if gdf_subcuencas is None or gdf_subcuencas.empty:
             st.warning("⚠️ No se ha cargado la capa de Cuencas.")
             return
 
-        # Intentar obtener columna de nombre de cuenca
-        col_name = next((c for c in gdf_subcuencas.columns if "nombre" in c.lower() or "cuenca" in c.lower() or "nom_cuenca" in c.lower()), gdf_subcuencas.columns[0])
+        # 1. DETECCIÓN INTELIGENTE DEL NOMBRE (Prioridad a SUBC_LBL)
+        # Buscamos columnas candidatas en orden de preferencia
+        candidatos = ['SUBC_LBL', 'N-NSS3', 'nom_cuenca', 'nombre', 'NOMBRE']
+        col_name = next((c for c in candidatos if c in gdf_subcuencas.columns), None)
         
+        # Si no encuentra ninguna exacta, busca por coincidencia parcial
+        if not col_name:
+            col_name = next((c for c in gdf_subcuencas.columns if "nombre" in c.lower() or "cuenca" in c.lower()), gdf_subcuencas.columns[0])
+
+        # 2. SELECTOR MÚLTIPLE (Con el campo correcto)
         default_cuencas = st.session_state.get("last_sel_cuencas", [])
-        avail_opts = sorted(gdf_subcuencas[col_name].unique().astype(str))
+        avail_opts = sorted(gdf_subcuencas[col_name].dropna().astype(str).unique())
+        
+        # Validar que los defaults sigan existiendo
         valid_defaults = [x for x in default_cuencas if x in avail_opts]
-        sel_cuencas = st.multiselect("Seleccionar Cuenca(s):", avail_opts, default=valid_defaults)
+        
+        sel_cuencas = st.multiselect(
+            f"Seleccionar Cuenca(s) por {col_name}:", 
+            options=avail_opts, 
+            default=valid_defaults
+        )
 
         with st.expander("⚙️ Configuración Avanzada", expanded=False):
              buffer_km = st.slider("Radio búsqueda (km):", 0, 50, 15, step=5)
