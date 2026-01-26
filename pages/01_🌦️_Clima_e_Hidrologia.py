@@ -97,50 +97,40 @@ def load_data_from_db():
         return gpd.GeoDataFrame()
 
         # ==========================================
-        # A. CUENCAS (ADAPTADO A NUEVA ESTRUCTURA 2026)
+        # A. CUENCAS (ESTRATEGIA WKT - CLÁSICA Y ROBUSTA)
         # ==========================================
         try:
-            # 1. Consulta SQL Exacta (Basada en tus imágenes del Detective)
-            # Pedimos solo: nombre_cuenca, subcuenca y la geometría como JSON
-            q_str = """
-                SELECT nombre_cuenca, subcuenca, ST_AsGeoJSON(geometry) as geometry_json 
-                FROM cuencas
-            """
-            q_cuencas = text(q_str)
+            # 1. Usamos WKT (Texto) igual que en Municipios/Predios que SÍ funcionan.
+            # Pedimos EXACTAMENTE las columnas que vimos en tus fotos.
+            q_cuencas = text("SELECT nombre_cuenca, subcuenca, ST_AsText(geometry) as wkt FROM cuencas")
             df_c = pd.read_sql(q_cuencas, engine)
             
+            # --- DEBUG TEMPORAL (Te dirá en pantalla si cargó algo) ---
+            if df_c.empty:
+                st.warning(f"⚠️ ALERTA: La consulta a 'cuencas' funcionó pero trajo 0 filas.")
+            else:
+                # st.success(f"✅ ÉXITO: Se cargaron {len(df_c)} cuencas desde BD.") # Descomenta para ver confirmación
+                pass
+            # ---------------------------------------------------------
+
             if not df_c.empty:
-                import json
-                from shapely.geometry import shape
+                from shapely import wkt
                 
-                # 2. Convertir JSON a Geometría (Shapely)
-                df_c['geometry'] = df_c['geometry_json'].apply(
-                    lambda x: shape(json.loads(x)) if x else None
+                # 2. Convertir Texto (WKT) a Geometría
+                # Esto es más compatible con versiones viejas de librerías
+                df_c['geometry'] = df_c['wkt'].apply(
+                    lambda x: wkt.loads(x) if x else None
                 )
                 
-                # 3. Crear GeoDataFrame
                 gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
                 
-                # 4. Mapeo de Nombres (Crucial para el Visualizador)
-                # El visualizador busca 'nom_cuenca'. Le damos tu columna 'nombre_cuenca'.
-                if 'nombre_cuenca' in gdf_subcuencas.columns:
-                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
-                else:
-                    gdf_subcuencas['nom_cuenca'] = "Cuenca Desconocida"
-
-                # Asignamos el ID único
-                if 'subcuenca' in gdf_subcuencas.columns:
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['subcuenca']
-                else:
-                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas.index.astype(str)
+                # 3. Mapeo Directo (Sin bucles raros)
+                # Asignamos directo porque YA SABEMOS los nombres gracias a tus fotos
+                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
+                gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['subcuenca']
                 
-                # 5. Limpieza (Borrar columna JSON pesada)
-                if 'geometry_json' in gdf_subcuencas.columns:
-                    gdf_subcuencas.drop(columns=['geometry_json'], inplace=True)
-
         except Exception as e:
-            # Si falla, mostramos el error en rojo en la pantalla
-            st.error(f"❌ ERROR CRÍTICO CARGANDO CUENCAS: {str(e)}")
+            st.error(f"❌ ERROR TÉCNICO CARGANDO CUENCAS: {e}")
             print(f"Error Cuencas: {e}")
 
 
