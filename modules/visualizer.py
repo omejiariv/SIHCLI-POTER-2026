@@ -1310,31 +1310,57 @@ def display_spatial_distribution_tab(
         plugins.Fullscreen(position='topright').add_to(m)
         plugins.Geocoder(position='topright').add_to(m)
 
-        # Capas Vectoriales (Optimizadas)
-        if gdf_municipios is not None and not gdf_municipios.empty:
-            folium.GeoJson(
-                gdf_municipios,
-                name="Municipios",
-                style_function=lambda x: {'fillColor': '#ffff00', 'color': 'gray', 'weight': 1, 'fillOpacity': 0.1},
-                tooltip="Municipio"
-            ).add_to(m)
+    # --- BLOQUE DE DIBUJO DE CAPAS CORREGIDO ---
+    
+    # 1. CAPA MUNICIPIOS (Fondo gris elegante)
+    if gdf_municipios is not None and not gdf_municipios.empty:
+        # Debug: Avisar si cargó
+        # st.toast(f"Cargados {len(gdf_municipios)} municipios", icon="🏙️") 
+        
+        folium.GeoJson(
+            gdf_municipios,
+            name="Municipios",
+            style_function=lambda x: {
+                'fillColor': '#95a5a6', 'color': 'white', 'weight': 1, 'fillOpacity': 0.1
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=['MPIO_CNMBR'],    # <--- La columna real que preparamos
+                aliases=['Municipio:'],
+                localize=True
+            )
+        ).add_to(m)
 
-        if gdf_subcuencas is not None and not gdf_subcuencas.empty:
-            folium.GeoJson(
-                gdf_subcuencas,
-                name="Subcuencas",
-                style_function=lambda x: {'color': 'blue', 'weight': 2, 'fillOpacity': 0},
-                tooltip="Subcuenca"
-            ).add_to(m)
-            
-        if gdf_predios is not None and not gdf_predios.empty:
-            folium.GeoJson(
-                gdf_predios,
-                name="Predios",
-                style_function=lambda x: {'color': 'red', 'weight': 2, 'fillOpacity': 0.2},
-                tooltip="Predio"
-            ).add_to(m)
+    # 2. CAPA CUENCAS (Azul con borde)
+    if gdf_subcuencas is not None and not gdf_subcuencas.empty:
+        folium.GeoJson(
+            gdf_subcuencas,
+            name="Subcuencas",
+            style_function=lambda x: {
+                'fillColor': 'transparent', 'color': '#3498db', 'weight': 2
+            },
+            highlight_function=lambda x: {'weight': 4, 'color': '#e74c3c'},
+            tooltip=folium.GeoJsonTooltip(
+                fields=['nom_cuenca'],    # <--- La columna real
+                aliases=['Cuenca:'],
+                localize=True
+            )
+        ).add_to(m)
 
+    # 3. CAPA PREDIOS (Marcadores o Puntos)
+    if gdf_predios is not None and not gdf_predios.empty:
+        # Usamos CircleMarker para que se vea limpio
+        folium.GeoJson(
+            gdf_predios,
+            name="Predios",
+            marker=folium.CircleMarker(radius=6, fill_color="orange", fill_opacity=0.9, color="white", weight=1),
+            tooltip=folium.GeoJsonTooltip(
+                fields=['NOMBRE_PRE'],    # <--- La columna real
+                aliases=['Predio:'],
+                localize=True
+            )
+        ).add_to(m)
+        
+    # ------------------------------------------------
         # -----------------------------------------------------------
         # SOLUCIÓN AL BLOQUEO: MARKER CLUSTER
         # Agrupamos los marcadores para no saturar el navegador
