@@ -42,7 +42,7 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN DEFINITIVA: TRANSFORMACIÓN DE COORDENADAS Y TOOLTIPS ---
+# --- FUNCIÓN DEFINITIVA: SOPORTE MULTI-NOMBRE Y GEOMETRÍA ---
 @st.cache_resource(show_spinner="Procesando cartografía...", ttl=3600)
 def load_data_from_db():
     from shapely import wkb
@@ -70,30 +70,26 @@ def load_data_from_db():
         return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
 
     # ==============================================================================
-    # 1. CUENCAS (Polígonos)
+    # 1. CUENCAS
     # ==============================================================================
     try:
-        # Aseguramos proyección WGS84 (EPSG:4326)
         q_cue = """
             SELECT nombre_cuenca, subcuenca, 
             ST_AsBinary(ST_Transform(geometry, 4326)) as geom_wkb 
             FROM cuencas
         """
         df_c = pd.read_sql(text(q_cue), engine)
-        
         if not df_c.empty and 'geom_wkb' in df_c.columns:
             df_c['geometry'] = df_c['geom_wkb'].apply(lambda x: wkb.loads(bytes(x)) if x else None)
             gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
             
-            # --- ESTRATEGIA TOOLTIP: Llenar todas las opciones posibles ---
+            # Tooltips y Nombres
             if 'nombre_cuenca' in gdf_subcuencas.columns:
-                nombre = gdf_subcuencas['nombre_cuenca']
-                gdf_subcuencas['nom_cuenca'] = nombre # App
-                gdf_subcuencas['name'] = nombre       # Folium
-                gdf_subcuencas['Name'] = nombre       # Leaflet
-                gdf_subcuencas['tooltip'] = nombre    # Streamlit
-                gdf_subcuencas['label'] = nombre      # Otros
-                gdf_subcuencas['subc_lbl'] = nombre   # Legado
+                n = gdf_subcuencas['nombre_cuenca']
+                gdf_subcuencas['nom_cuenca'] = n
+                gdf_subcuencas['name'] = n
+                gdf_subcuencas['tooltip'] = n
+                gdf_subcuencas['subc_lbl'] = n
             
             if 'subcuenca' in gdf_subcuencas.columns:
                 gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['subcuenca']
@@ -103,37 +99,41 @@ def load_data_from_db():
         print(f"Error Cuencas: {e}")
 
     # ==============================================================================
-    # 2. MUNICIPIOS (Polígonos - ¡Corrección de Proyección!)
+    # 2. MUNICIPIOS (LÓGICA BLINDADA: BUSCA 'MPIO_CNMBR' O 'nombre_municipio')
     # ==============================================================================
     try:
-        # AQUÍ ESTÁ EL TRUCO: Usamos ST_Transform(geometry, 4326)
-        # Esto arregla el problema si los municipios venían en coordenadas planas.
-        q_mun = """
-            SELECT nombre_municipio, 
-            ST_AsBinary(ST_Transform(geometry, 4326)) as geom_wkb 
-            FROM municipios
-        """
+        # Pedimos TODO (*) porque no sabemos si se llamará MPIO_CNMBR o nombre_municipio
+        q_mun = "SELECT *, ST_AsBinary(ST_Transform(geometry, 4326)) as geom_wkb FROM municipios"
         df_m = pd.read_sql(text(q_mun), engine)
         
         if not df_m.empty and 'geom_wkb' in df_m.columns:
             df_m['geometry'] = df_m['geom_wkb'].apply(lambda x: wkb.loads(bytes(x)) if x else None)
             gdf_municipios = gpd.GeoDataFrame(df_m, geometry='geometry', crs="EPSG:4326")
             
-            # --- ESTRATEGIA TOOLTIP ---
-            if 'nombre_municipio' in gdf_municipios.columns:
-                nombre = gdf_municipios['nombre_municipio']
-                gdf_municipios['MPIO_CNMBR'] = nombre
-                gdf_municipios['name'] = nombre
-                gdf_municipios['Name'] = nombre
-                gdf_municipios['tooltip'] = nombre
-                gdf_municipios['label'] = nombre
+            # BÚSQUEDA INTELIGENTE DEL NOMBRE
+            # Tu GeoJSON original usa 'MPIO_CNMBR', tu tabla anterior 'nombre_municipio'
+            # Este código busca cualquiera de los dos.
+            col_nombre = None
+            if 'MPIO_CNMBR' in gdf_municipios.columns:
+                col_nombre = 'MPIO_CNMBR'
+            elif 'nombre_municipio' in gdf_municipios.columns:
+                col_nombre = 'nombre_municipio'
+            elif 'mpio_cnmbr' in gdf_municipios.columns: # A veces postgres lo pone en minúscula
+                 col_nombre = 'mpio_cnmbr'
+
+            if col_nombre:
+                gdf_municipios['MPIO_CNMBR'] = gdf_municipios[col_nombre] # Estandarizamos
+                gdf_municipios['name'] = gdf_municipios[col_nombre]       # Para tooltip
+                gdf_municipios['tooltip'] = gdf_municipios[col_nombre]    # Para tooltip
             
-            gdf_municipios.drop(columns=['geom_wkb'], inplace=True, errors='ignore')
+            # Limpieza para ahorrar memoria
+            cols_to_drop = ['geom_wkb', 'geometry_json', 'geom']
+            gdf_municipios.drop(columns=[c for c in cols_to_drop if c in gdf_municipios.columns], inplace=True, errors='ignore')
     except Exception as e:
         print(f"Error Municipios: {e}")
 
     # ==============================================================================
-    # 3. PREDIOS (Puntos - Corrección de Tooltip)
+    # 3. PREDIOS (Puntos Lat/Lon)
     # ==============================================================================
     try:
         q_pre = "SELECT nombre_predio, latitud, longitud FROM predios"
@@ -150,14 +150,10 @@ def load_data_from_db():
                 crs="EPSG:4326"
             )
             
-            # --- ESTRATEGIA TOOLTIP ---
             if 'nombre_predio' in gdf_predios_db.columns:
-                nombre = gdf_predios_db['nombre_predio']
-                gdf_predios_db['NOMBRE_PRE'] = nombre
-                gdf_predios_db['name'] = nombre
-                gdf_predios_db['Name'] = nombre
-                gdf_predios_db['tooltip'] = nombre
-                gdf_predios_db['label'] = nombre
+                gdf_predios_db['NOMBRE_PRE'] = gdf_predios_db['nombre_predio']
+                gdf_predios_db['name'] = gdf_predios_db['nombre_predio']
+                gdf_predios_db['tooltip'] = gdf_predios_db['nombre_predio']
     except Exception as e:
         print(f"Error Predios: {e}")
 
@@ -180,28 +176,20 @@ def load_data_from_db():
                     crs="EPSG:4326"
                 )
                 
-                # CRUCE ESPACIAL
                 if not gdf_subcuencas.empty:
                     try:
-                        stns_joined = gpd.sjoin(
-                            gdf_stations_db, 
-                            gdf_subcuencas[['geometry', 'nom_cuenca']], 
-                            how='left', 
-                            predicate='within'
-                        )
+                        stns_joined = gpd.sjoin(gdf_stations_db, gdf_subcuencas[['geometry', 'nom_cuenca']], how='left', predicate='within')
                         gdf_stations_db['Subcuenca'] = stns_joined['nom_cuenca'].fillna("Fuera de zona")
                     except: 
                         gdf_stations_db['Subcuenca'] = "N/A"
 
-                # Alias
                 if 'nom_est' in df_est.columns: 
                     gdf_stations_db[Config.STATION_NAME_COL] = df_est['nom_est']
-                    gdf_stations_db['name'] = df_est['nom_est'] # Tooltip
+                    gdf_stations_db['name'] = df_est['nom_est']
                 if 'municipio' in df_est.columns: gdf_stations_db['municipality'] = df_est['municipio']
                 gdf_stations_db['latitude'] = df_est.get('latitud', 0)
                 gdf_stations_db['longitude'] = df_est.get('longitud', 0)
 
-            # Lluvia
             q_rain = text("SELECT p.id_estacion_fk, e.nom_est as station_name, p.fecha_mes_año, p.precipitation FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion")
             df_long = pd.read_sql(q_rain, conn)
             if 'fecha_mes_año' in df_long.columns:
@@ -211,7 +199,6 @@ def load_data_from_db():
             df_long.rename(columns={"station_name": Config.STATION_NAME_COL, "precipitation": Config.PRECIPITATION_COL}, inplace=True)
     except: pass
     
-    # Índices
     try:
         with engine.connect() as conn:
             df_enso_raw = pd.read_sql(text("SELECT * FROM indices_climaticos"), conn)
@@ -225,7 +212,6 @@ def load_data_from_db():
                 if 'anomalia_oni' in cols: df_enso[Config.ENSO_ONI_COL] = df_enso[cols['anomalia_oni']]
     except: pass
 
-    # Garantías
     if Config.STATION_NAME_COL not in df_long.columns: df_long[Config.STATION_NAME_COL] = "Estación"
     if Config.PRECIPITATION_COL not in df_long.columns: df_long[Config.PRECIPITATION_COL] = 0.0
     if Config.ENSO_ONI_COL not in df_enso.columns: df_enso[Config.ENSO_ONI_COL] = 0.0
