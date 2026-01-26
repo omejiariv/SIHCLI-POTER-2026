@@ -97,41 +97,43 @@ def load_data_from_db():
         return gpd.GeoDataFrame()
 
         # ==========================================
-        # A. CUENCAS (ESTRATEGIA WKT - CLÁSICA Y ROBUSTA)
+        # A. CUENCAS (CARGA BINARIA DE ALTO RENDIMIENTO)
         # ==========================================
         try:
-            # 1. Usamos WKT (Texto) igual que en Municipios/Predios que SÍ funcionan.
-            # Pedimos EXACTAMENTE las columnas que vimos en tus fotos.
-            q_cuencas = text("SELECT nombre_cuenca, subcuenca, ST_AsText(geometry) as wkt FROM cuencas")
+            # 1. Usamos ST_AsBinary (WKB).
+            # Esto es mucho más rápido y no falla con polígonos gigantes como el texto.
+            q_str = "SELECT nombre_cuenca, subcuenca, ST_AsBinary(geometry) as geom_wkb FROM cuencas"
+            q_cuencas = text(q_str)
             df_c = pd.read_sql(q_cuencas, engine)
             
-            # --- DEBUG TEMPORAL (Te dirá en pantalla si cargó algo) ---
-            if df_c.empty:
-                st.warning(f"⚠️ ALERTA: La consulta a 'cuencas' funcionó pero trajo 0 filas.")
-            else:
-                # st.success(f"✅ ÉXITO: Se cargaron {len(df_c)} cuencas desde BD.") # Descomenta para ver confirmación
-                pass
-            # ---------------------------------------------------------
-
             if not df_c.empty:
-                from shapely import wkt
+                # Importamos el cargador binario
+                from shapely import wkb
                 
-                # 2. Convertir Texto (WKT) a Geometría
-                # Esto es más compatible con versiones viejas de librerías
-                df_c['geometry'] = df_c['wkt'].apply(
-                    lambda x: wkt.loads(x) if x else None
+                # 2. Convertir Binario a Geometría
+                # wkb.loads lee los bytes directo. Es la forma más robusta que existe.
+                df_c['geometry'] = df_c['geom_wkb'].apply(
+                    lambda x: wkb.loads(bytes(x)) if x else None
                 )
                 
                 gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
                 
-                # 3. Mapeo Directo (Sin bucles raros)
-                # Asignamos directo porque YA SABEMOS los nombres gracias a tus fotos
-                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
-                gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['subcuenca']
+                # 3. Asignar Nombres (Tal cual vimos en tu prueba SQL)
+                if 'nombre_cuenca' in gdf_subcuencas.columns:
+                    gdf_subcuencas['nom_cuenca'] = gdf_subcuencas['nombre_cuenca']
                 
+                if 'subcuenca' in gdf_subcuencas.columns:
+                    gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['subcuenca']
+                
+                # Limpieza de memoria (Borramos el binario crudo)
+                if 'geom_wkb' in gdf_subcuencas.columns:
+                    gdf_subcuencas.drop(columns=['geom_wkb'], inplace=True)
+
         except Exception as e:
-            st.error(f"❌ ERROR TÉCNICO CARGANDO CUENCAS: {e}")
+            # Si falla esto, el error será técnico y visible
+            st.error(f"❌ ERROR CARGA CUENCAS (WKB): {e}")
             print(f"Error Cuencas: {e}")
+
 
 
     # B. MUNICIPIOS (Tu tabla 'municipios', nombre 'nombre_municipio')
