@@ -99,38 +99,48 @@ def load_data_from_db():
         print(f"Error Cuencas: {e}")
 
     # ==============================================================================
-    # 2. MUNICIPIOS (LÓGICA BLINDADA: BUSCA 'MPIO_CNMBR' O 'nombre_municipio')
+    # 2. MUNICIPIOS (FUERZA BRUTA DE COORDENADAS)
     # ==============================================================================
     try:
-        # Pedimos TODO (*) porque no sabemos si se llamará MPIO_CNMBR o nombre_municipio
-        q_mun = "SELECT *, ST_AsBinary(ST_Transform(geometry, 4326)) as geom_wkb FROM municipios"
+        # ESTRATEGIA: Intentamos leer SIN transformar primero para ver si existe algo
+        # Usamos ST_AsBinary directo. Si el SRID está mal, ST_Transform falla y devuelve 0 filas.
+        q_mun = "SELECT *, ST_AsBinary(geometry) as geom_wkb FROM municipios"
         df_m = pd.read_sql(text(q_mun), engine)
         
         if not df_m.empty and 'geom_wkb' in df_m.columns:
+            # Convertimos binario a geometría
             df_m['geometry'] = df_m['geom_wkb'].apply(lambda x: wkb.loads(bytes(x)) if x else None)
-            gdf_municipios = gpd.GeoDataFrame(df_m, geometry='geometry', crs="EPSG:4326")
+            gdf_municipios = gpd.GeoDataFrame(df_m, geometry='geometry')
             
-            # BÚSQUEDA INTELIGENTE DEL NOMBRE
-            # Tu GeoJSON original usa 'MPIO_CNMBR', tu tabla anterior 'nombre_municipio'
-            # Este código busca cualquiera de los dos.
-            col_nombre = None
-            if 'MPIO_CNMBR' in gdf_municipios.columns:
-                col_nombre = 'MPIO_CNMBR'
-            elif 'nombre_municipio' in gdf_municipios.columns:
-                col_nombre = 'nombre_municipio'
-            elif 'mpio_cnmbr' in gdf_municipios.columns: # A veces postgres lo pone en minúscula
-                 col_nombre = 'mpio_cnmbr'
+            # ASIGNAR PROYECCIÓN MANUALMENTE
+            # Si no tiene proyección, asumimos WGS84 (4326) o Magna (3116)
+            if gdf_municipios.crs is None:
+                gdf_municipios.set_crs("EPSG:4326", allow_override=True, inplace=True)
+            else:
+                gdf_municipios.to_crs("EPSG:4326", inplace=True)
 
-            if col_nombre:
-                gdf_municipios['MPIO_CNMBR'] = gdf_municipios[col_nombre] # Estandarizamos
-                gdf_municipios['name'] = gdf_municipios[col_nombre]       # Para tooltip
-                gdf_municipios['tooltip'] = gdf_municipios[col_nombre]    # Para tooltip
+            # BÚSQUEDA INTELIGENTE DEL NOMBRE (Igual que antes)
+            col_nombre = None
+            for c in ['MPIO_CNMBR', 'nombre_municipio', 'mpio_cnmbr', 'nombre']:
+                if c in gdf_municipios.columns:
+                    col_nombre = c
+                    break
             
-            # Limpieza para ahorrar memoria
+            if col_nombre:
+                gdf_municipios['MPIO_CNMBR'] = gdf_municipios[col_nombre]
+                gdf_municipios['name'] = gdf_municipios[col_nombre]
+            
+            # Limpieza
             cols_to_drop = ['geom_wkb', 'geometry_json', 'geom']
             gdf_municipios.drop(columns=[c for c in cols_to_drop if c in gdf_municipios.columns], inplace=True, errors='ignore')
+            
+            # DEBUG VISUAL (Solo para ti)
+            # print(f"✅ Municipios cargados: {len(gdf_municipios)}") 
+
     except Exception as e:
         print(f"Error Municipios: {e}")
+
+
 
     # ==============================================================================
     # 3. PREDIOS (Puntos Lat/Lon)
