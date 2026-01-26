@@ -42,8 +42,10 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN MAESTRA: ADAPTADA A TU CARGA RECIENTE ---
-@st.cache_data(show_spinner="Procesando cartografía...", ttl=60)
+# --- FUNCIÓN MAESTRA: USO DE CACHE_RESOURCE (SOLUCIÓN ERROR SERIALIZACIÓN) ---
+# Usamos cache_resource porque las geometrías complejas (Shapely) a veces fallan
+# al intentar guardarse en disco (cache_data). Resource las mantiene en RAM.
+@st.cache_resource(show_spinner="Procesando cartografía...", ttl=3600)
 def load_data_from_db():
     from shapely import wkb
     from sqlalchemy import text
@@ -57,7 +59,7 @@ def load_data_from_db():
         from modules.db_manager import get_engine
         engine = get_engine()
 
-    # Inicialización de seguridad
+    # Inicialización de seguridad (Objetos vacíos)
     gdf_municipios = gpd.GeoDataFrame(columns=['MPIO_CNMBR', 'geometry'])
     gdf_subcuencas = gpd.GeoDataFrame(columns=['SUBC_LBL', 'nom_cuenca', 'geometry'])
     gdf_predios_db = gpd.GeoDataFrame(columns=['NOMBRE_PRE', 'geometry'])
@@ -70,7 +72,7 @@ def load_data_from_db():
         return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
 
     # ==============================================================================
-    # 1. CUENCAS (BINARIO WKB - Confirmado que funciona)
+    # 1. CUENCAS (BINARIO WKB)
     # ==============================================================================
     try:
         q_cue = "SELECT nombre_cuenca, subcuenca, ST_AsBinary(geometry) as geom_wkb FROM cuencas"
@@ -80,7 +82,7 @@ def load_data_from_db():
             df_c['geometry'] = df_c['geom_wkb'].apply(lambda x: wkb.loads(bytes(x)) if x else None)
             gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
             
-            # Alias de Nombres (Inundación de variables para asegurar Tooltips)
+            # Alias de Nombres
             if 'nombre_cuenca' in gdf_subcuencas.columns:
                 n = gdf_subcuencas['nombre_cuenca']
                 gdf_subcuencas['nom_cuenca'] = n
@@ -95,10 +97,9 @@ def load_data_from_db():
         print(f"Error Cuencas: {e}")
 
     # ==============================================================================
-    # 2. MUNICIPIOS (BINARIO WKB - ¡Ahora debe funcionar!)
+    # 2. MUNICIPIOS (BINARIO WKB - ¡Ahora con datos!)
     # ==============================================================================
     try:
-        # Como cargaste el GeoJSON exitosamente, ahora sí hay geometría.
         q_mun = "SELECT nombre_municipio, ST_AsBinary(geometry) as geom_wkb FROM municipios"
         df_m = pd.read_sql(text(q_mun), engine)
         
@@ -108,7 +109,9 @@ def load_data_from_db():
             
             if 'nombre_municipio' in gdf_municipios.columns:
                 gdf_municipios['MPIO_CNMBR'] = gdf_municipios['nombre_municipio']
-                gdf_municipios['nombre'] = gdf_municipios['nombre_municipio'] # Para tooltip
+                gdf_municipios['nombre'] = gdf_municipios['nombre_municipio']
+            
+            gdf_municipios.drop(columns=['geom_wkb'], inplace=True, errors='ignore')
     except Exception as e:
         print(f"Error Municipios: {e}")
 
@@ -116,7 +119,7 @@ def load_data_from_db():
     # 3. PREDIOS (PLAN B: LATITUD / LONGITUD)
     # ==============================================================================
     try:
-        # Ignoramos la geometría rota y pedimos coordenadas puras
+        # Usamos coordenadas puras para evitar el problema de la geometría rota
         q_pre = "SELECT nombre_predio, latitud, longitud FROM predios"
         df_pre = pd.read_sql(text(q_pre), engine)
         
@@ -128,7 +131,7 @@ def load_data_from_db():
             df_pre['latitud'] = pd.to_numeric(df_pre['latitud'], errors='coerce')
             df_pre['longitud'] = pd.to_numeric(df_pre['longitud'], errors='coerce')
             
-            # ¡Magia! Creamos el mapa desde los números
+            # Creamos el mapa desde los números
             gdf_predios_db = gpd.GeoDataFrame(
                 df_pre,
                 geometry=gpd.points_from_xy(df_pre['longitud'], df_pre['latitud']),
@@ -160,17 +163,15 @@ def load_data_from_db():
                     crs="EPSG:4326"
                 )
                 
-                # CRUCE ESPACIAL: Pegar nombre de cuenca a la estación
+                # CRUCE ESPACIAL
                 if not gdf_subcuencas.empty:
                     try:
-                        # Spatial Join: Estación dentro de Cuenca
                         stns_joined = gpd.sjoin(
                             gdf_stations_db, 
                             gdf_subcuencas[['geometry', 'nom_cuenca']], 
                             how='left', 
                             predicate='within'
                         )
-                        # Creamos columna 'Subcuenca' para el Popup
                         gdf_stations_db['Subcuenca'] = stns_joined['nom_cuenca'].fillna("Fuera de zona")
                     except: 
                         gdf_stations_db['Subcuenca'] = "N/A"
