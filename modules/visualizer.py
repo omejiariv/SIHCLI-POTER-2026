@@ -1312,26 +1312,16 @@ def display_spatial_distribution_tab(
 
     # --- BLOQUE DE DIBUJO DE CAPAS CORREGIDO ---
     
-    # --- 1. CAPA MUNICIPIOS (Corregido para mostrar MPIO_CNMBR) ---
+# En display_spatial_distribution_tab:
     if gdf_municipios is not None and not gdf_municipios.empty:
-        # Detectar la columna correcta del nombre
-        col_muni_name = next((c for c in ['MPIO_CNMBR', 'nombre_municipio', 'nombre'] if c in gdf_municipios.columns), 'MPIO_CNMBR')
-        
         folium.GeoJson(
             gdf_municipios,
             name="Municipios",
-            style_function=lambda x: {
-                'fillColor': '#95a5a6', 
-                'color': 'white', 
-                'weight': 0.8, 
-                'fillOpacity': 0.1,
-                'dashArray': '3, 3'
-            },
+            style_function=lambda x: {'fillColor': '#95a5a6', 'color': 'white', 'weight': 0.5, 'fillOpacity': 0.1},
             tooltip=folium.GeoJsonTooltip(
-                fields=[col_muni_name],  # <--- Aquí forzamos el campo correcto
+                fields=['MPIO_CNMBR'], # <--- IMPORTANTE: Este es el campo del nombre real
                 aliases=['Municipio:'],
-                localize=True,
-                sticky=False
+                localize=True
             )
         ).add_to(m)
 
