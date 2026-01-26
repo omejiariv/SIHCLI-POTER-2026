@@ -42,22 +42,22 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN DEFINITIVA: SOPORTE MULTI-NOMBRE Y GEOMETRÍA ---
-@st.cache_resource(show_spinner="Procesando cartografía...", ttl=3600)
+# --- FUNCIÓN HÍBRIDA: ESTRATEGIA "ISOYETAS" PARA MAPAS BASE ---
+@st.cache_resource(show_spinner="Cargando cartografía...", ttl=3600)
 def load_data_from_db():
-    from shapely import wkb
     from sqlalchemy import text
     import geopandas as gpd
     import pandas as pd
-    import numpy as np
+    import os
     
+    # Intentamos conectar a BD (para datos dinámicos como Estaciones/Lluvia)
     try:
         engine = get_engine()
     except:
         from modules.db_manager import get_engine
         engine = get_engine()
 
-    # Inicialización
+    # Inicialización de DataFrames vacíos por seguridad
     gdf_municipios = gpd.GeoDataFrame(columns=['MPIO_CNMBR', 'geometry'])
     gdf_subcuencas = gpd.GeoDataFrame(columns=['SUBC_LBL', 'nom_cuenca', 'geometry'])
     gdf_predios_db = gpd.GeoDataFrame(columns=['NOMBRE_PRE', 'geometry'])
@@ -65,169 +65,152 @@ def load_data_from_db():
     df_long = pd.DataFrame(columns=[Config.STATION_NAME_COL, Config.PRECIPITATION_COL, Config.DATE_COL])
     df_enso = pd.DataFrame(columns=[Config.DATE_COL, Config.ENSO_ONI_COL, 'fecha_mes_año'])
 
-    if not engine:
-        st.error("❌ Sin conexión a Base de Datos")
-        return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
-
     # ==============================================================================
-    # 1. CUENCAS
+    # 1. MUNICIPIOS: ESTRATEGIA "ISOYETAS" (Lectura de Archivo)
     # ==============================================================================
+    # En lugar de SQL, buscamos el archivo físico, que es infalible.
     try:
-        q_cue = """
-            SELECT nombre_cuenca, subcuenca, 
-            ST_AsBinary(ST_Transform(geometry, 4326)) as geom_wkb 
-            FROM cuencas
-        """
-        df_c = pd.read_sql(text(q_cue), engine)
-        if not df_c.empty and 'geom_wkb' in df_c.columns:
-            df_c['geometry'] = df_c['geom_wkb'].apply(lambda x: wkb.loads(bytes(x)) if x else None)
-            gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
-            
-            # Tooltips y Nombres
-            if 'nombre_cuenca' in gdf_subcuencas.columns:
-                n = gdf_subcuencas['nombre_cuenca']
-                gdf_subcuencas['nom_cuenca'] = n
-                gdf_subcuencas['name'] = n
-                gdf_subcuencas['tooltip'] = n
-                gdf_subcuencas['subc_lbl'] = n
-            
-            if 'subcuenca' in gdf_subcuencas.columns:
-                gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas['subcuenca']
-                
-            gdf_subcuencas.drop(columns=['geom_wkb'], inplace=True, errors='ignore')
-    except Exception as e:
-        print(f"Error Cuencas: {e}")
-
-    # ==============================================================================
-    # 2. MUNICIPIOS (FUERZA BRUTA DE COORDENADAS)
-    # ==============================================================================
-    try:
-        # ESTRATEGIA: Intentamos leer SIN transformar primero para ver si existe algo
-        # Usamos ST_AsBinary directo. Si el SRID está mal, ST_Transform falla y devuelve 0 filas.
-        q_mun = "SELECT *, ST_AsBinary(geometry) as geom_wkb FROM municipios"
-        df_m = pd.read_sql(text(q_mun), engine)
+        # Lista de rutas posibles (igual que en Isoyetas HD)
+        rutas_posibles = [
+            "data/MunicipiosAntioquia.geojson",
+            "MunicipiosAntioquia.geojson",
+            "pages/data/MunicipiosAntioquia.geojson"
+        ]
         
-        if not df_m.empty and 'geom_wkb' in df_m.columns:
-            # Convertimos binario a geometría
-            df_m['geometry'] = df_m['geom_wkb'].apply(lambda x: wkb.loads(bytes(x)) if x else None)
-            gdf_municipios = gpd.GeoDataFrame(df_m, geometry='geometry')
-            
-            # ASIGNAR PROYECCIÓN MANUALMENTE
-            # Si no tiene proyección, asumimos WGS84 (4326) o Magna (3116)
-            if gdf_municipios.crs is None:
-                gdf_municipios.set_crs("EPSG:4326", allow_override=True, inplace=True)
-            else:
-                gdf_municipios.to_crs("EPSG:4326", inplace=True)
+        archivo_encontrado = None
+        for ruta in rutas_posibles:
+            if os.path.exists(ruta):
+                archivo_encontrado = ruta
+                break
+        
+        # Opción B: Si no está en disco, usar GitHub (Tu preferencia)
+        if not archivo_encontrado:
+            # Reemplaza TU_USUARIO/TU_REPO por los reales si decides usar esta vía
+            archivo_encontrado = "https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main/data/MunicipiosAntioquia.geojson"
 
-            # BÚSQUEDA INTELIGENTE DEL NOMBRE (Igual que antes)
-            col_nombre = None
-            for c in ['MPIO_CNMBR', 'nombre_municipio', 'mpio_cnmbr', 'nombre']:
-                if c in gdf_municipios.columns:
-                    col_nombre = c
-                    break
+        # Leemos con GeoPandas (Directo y Robustos)
+        gdf_municipios = gpd.read_file(archivo_encontrado)
+        
+        if not gdf_municipios.empty:
+            # Asegurar WGS84
+            if gdf_municipios.crs and gdf_municipios.crs.to_string() != "EPSG:4326":
+                gdf_municipios = gdf_municipios.to_crs("EPSG:4326")
+            
+            # Normalización de Nombres (Lógica de Isoyetas)
+            # Busca columnas comunes sin importar mayúsculas
+            col_nombre = next((c for c in gdf_municipios.columns if 'cnmbr' in c.lower() or 'nomb' in c.lower() or 'muni' in c.lower()), None)
             
             if col_nombre:
-                gdf_municipios['MPIO_CNMBR'] = gdf_municipios[col_nombre]
-                gdf_municipios['name'] = gdf_municipios[col_nombre]
-            
-            # Limpieza
-            cols_to_drop = ['geom_wkb', 'geometry_json', 'geom']
-            gdf_municipios.drop(columns=[c for c in cols_to_drop if c in gdf_municipios.columns], inplace=True, errors='ignore')
-            
-            # DEBUG VISUAL (Solo para ti)
-            # print(f"✅ Municipios cargados: {len(gdf_municipios)}") 
+                gdf_municipios['MPIO_CNMBR'] = gdf_municipios[col_nombre] # Estandarizamos para el mapa
+                gdf_municipios['name'] = gdf_municipios[col_nombre]       # Para tooltip
 
     except Exception as e:
-        print(f"Error Municipios: {e}")
-
-
+        print(f"⚠️ Aviso: No se pudo cargar Municipios desde archivo ({e}).")
 
     # ==============================================================================
-    # 3. PREDIOS (Puntos Lat/Lon)
+    # 2. CUENCAS: ESTRATEGIA "ISOYETAS" (Lectura de Archivo)
     # ==============================================================================
+    # Aplicamos la misma lógica ganadora para Cuencas
     try:
-        q_pre = "SELECT nombre_predio, latitud, longitud FROM predios"
-        df_pre = pd.read_sql(text(q_pre), engine)
-        df_pre = df_pre.dropna(subset=['latitud', 'longitud'])
+        rutas_cuencas = [
+            "data/SubcuencasAinfluencia.geojson", 
+            "SubcuencasAinfluencia.geojson"
+        ]
+        path_cuencas = next((p for p in rutas_cuencas if os.path.exists(p)), None)
         
-        if not df_pre.empty:
-            df_pre['latitud'] = pd.to_numeric(df_pre['latitud'], errors='coerce')
-            df_pre['longitud'] = pd.to_numeric(df_pre['longitud'], errors='coerce')
+        if path_cuencas:
+            gdf_subcuencas = gpd.read_file(path_cuencas)
+            if gdf_subcuencas.crs and gdf_subcuencas.crs.to_string() != "EPSG:4326":
+                gdf_subcuencas = gdf_subcuencas.to_crs("EPSG:4326")
             
-            gdf_predios_db = gpd.GeoDataFrame(
-                df_pre,
-                geometry=gpd.points_from_xy(df_pre['longitud'], df_pre['latitud']),
-                crs="EPSG:4326"
-            )
-            
-            if 'nombre_predio' in gdf_predios_db.columns:
-                gdf_predios_db['NOMBRE_PRE'] = gdf_predios_db['nombre_predio']
-                gdf_predios_db['name'] = gdf_predios_db['nombre_predio']
-                gdf_predios_db['tooltip'] = gdf_predios_db['nombre_predio']
-    except Exception as e:
-        print(f"Error Predios: {e}")
+            # Buscar nombre (N-NSS3 o similar)
+            col_nom_c = next((c for c in gdf_subcuencas.columns if 'nss3' in c.lower() or 'nom' in c.lower() or 'cuenca' in c.lower()), None)
+            if col_nom_c:
+                gdf_subcuencas['nom_cuenca'] = gdf_subcuencas[col_nom_c]
+                gdf_subcuencas['SUBC_LBL'] = gdf_subcuencas[col_nom_c]
+
+        else:
+            # Si no hay archivo, intentamos fallback a BD (Lógica antigua)
+            if engine:
+                q_cue = "SELECT nombre_cuenca, subcuenca, ST_AsBinary(geometry) as geom_wkb FROM cuencas"
+                df_c = pd.read_sql(text(q_cue), engine)
+                from shapely import wkb
+                if not df_c.empty and 'geom_wkb' in df_c.columns:
+                    df_c['geometry'] = df_c['geom_wkb'].apply(lambda x: wkb.loads(bytes(x)) if x else None)
+                    gdf_subcuencas = gpd.GeoDataFrame(df_c, geometry='geometry', crs="EPSG:4326")
+                    gdf_subcuencas['nom_cuenca'] = df_c.get('nombre_cuenca', 'Cuenca')
+    except Exception:
+        pass
 
     # ==============================================================================
-    # 4. ESTACIONES (Spatial Join)
+    # 3. PREDIOS: RESCATE DESDE BD (Lat/Lon)
     # ==============================================================================
-    try:
-        with engine.connect() as conn:
-            df_est = pd.read_sql(text("SELECT * FROM estaciones"), conn)
-            for c in ['latitud', 'longitud', 'alt_est']:
-                if c in df_est.columns:
-                    df_est[c] = pd.to_numeric(df_est[c].astype(str).str.replace(',', '.'), errors='coerce')
-            
-            if 'latitud' in df_est.columns: df_est = df_est[df_est['latitud'].abs() > 0.0001]
-
-            if not df_est.empty:
-                gdf_stations_db = gpd.GeoDataFrame(
-                    df_est, 
-                    geometry=gpd.points_from_xy(df_est.get('longitud', 0), df_est.get('latitud', 0)), 
-                    crs="EPSG:4326"
+    # Predios suele ser dinámico, así que intentamos BD primero
+    if engine:
+        try:
+            q_pre = "SELECT nombre_predio, latitud, longitud FROM predios"
+            df_pre = pd.read_sql(text(q_pre), engine)
+            df_pre = df_pre.dropna(subset=['latitud', 'longitud'])
+            if not df_pre.empty:
+                df_pre['latitud'] = pd.to_numeric(df_pre['latitud'], errors='coerce')
+                df_pre['longitud'] = pd.to_numeric(df_pre['longitud'], errors='coerce')
+                gdf_predios_db = gpd.GeoDataFrame(
+                    df_pre, geometry=gpd.points_from_xy(df_pre['longitud'], df_pre['latitud']), crs="EPSG:4326"
                 )
+                if 'nombre_predio' in gdf_predios_db.columns:
+                    gdf_predios_db['NOMBRE_PRE'] = gdf_predios_db['nombre_predio']
+        except: pass
+
+    # ==============================================================================
+    # 4. DATOS DINÁMICOS (Estaciones, Lluvia, Índices) - SIEMPRE DE BD
+    # ==============================================================================
+    if engine:
+        try:
+            # Estaciones
+            with engine.connect() as conn:
+                df_est = pd.read_sql(text("SELECT * FROM estaciones"), conn)
+                # ... (Lógica de limpieza existente) ...
+                for c in ['latitud', 'longitud', 'alt_est']:
+                    if c in df_est.columns:
+                        df_est[c] = pd.to_numeric(df_est[c].astype(str).str.replace(',', '.'), errors='coerce')
+                if 'latitud' in df_est.columns: df_est = df_est[df_est['latitud'].abs() > 0.0001]
                 
-                if not gdf_subcuencas.empty:
-                    try:
-                        stns_joined = gpd.sjoin(gdf_stations_db, gdf_subcuencas[['geometry', 'nom_cuenca']], how='left', predicate='within')
-                        gdf_stations_db['Subcuenca'] = stns_joined['nom_cuenca'].fillna("Fuera de zona")
-                    except: 
-                        gdf_stations_db['Subcuenca'] = "N/A"
+                if not df_est.empty:
+                    gdf_stations_db = gpd.GeoDataFrame(df_est, geometry=gpd.points_from_xy(df_est.get('longitud', 0), df_est.get('latitud', 0)), crs="EPSG:4326")
+                    if 'nom_est' in df_est.columns: gdf_stations_db[Config.STATION_NAME_COL] = df_est['nom_est']
+                    if 'municipio' in df_est.columns: gdf_stations_db['municipality'] = df_est['municipio']
+                    gdf_stations_db['latitude'] = df_est.get('latitud', 0)
+                    gdf_stations_db['longitude'] = df_est.get('longitud', 0)
 
-                if 'nom_est' in df_est.columns: 
-                    gdf_stations_db[Config.STATION_NAME_COL] = df_est['nom_est']
-                    gdf_stations_db['name'] = df_est['nom_est']
-                if 'municipio' in df_est.columns: gdf_stations_db['municipality'] = df_est['municipio']
-                gdf_stations_db['latitude'] = df_est.get('latitud', 0)
-                gdf_stations_db['longitude'] = df_est.get('longitud', 0)
+                # Lluvia
+                q_rain = text("SELECT p.id_estacion_fk, e.nom_est as station_name, p.fecha_mes_año, p.precipitation FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion")
+                df_long = pd.read_sql(q_rain, conn)
+                if 'fecha_mes_año' in df_long.columns:
+                    df_long[Config.DATE_COL] = pd.to_datetime(df_long['fecha_mes_año'])
+                    df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
+                    df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
+                df_long.rename(columns={"station_name": Config.STATION_NAME_COL, "precipitation": Config.PRECIPITATION_COL}, inplace=True)
+                
+                # ENSO
+                df_enso_raw = pd.read_sql(text("SELECT * FROM indices_climaticos"), conn)
+                # ... (Procesamiento ENSO existente) ...
+                cols = {c.lower(): c for c in df_enso_raw.columns}
+                col_anio = next((k for k in cols if 'a' in k and 'o' in k and len(k)<=5), None)
+                col_mes = next((k for k in cols if 'mes' in k or 'month' in k), None)
+                if col_anio and col_mes:
+                    df_enso_raw['fecha_mes_año'] = pd.to_datetime(dict(year=pd.to_numeric(df_enso_raw[cols[col_anio]], errors='coerce'), month=pd.to_numeric(df_enso_raw[cols[col_mes]], errors='coerce'), day=1), errors='coerce')
+                    df_enso = df_enso_raw.dropna(subset=['fecha_mes_año']).sort_values('fecha_mes_año')
+                    df_enso[Config.DATE_COL] = df_enso['fecha_mes_año']
+                    if 'anomalia_oni' in cols: df_enso[Config.ENSO_ONI_COL] = df_enso[cols['anomalia_oni']]
+        except Exception as e:
+            print(f"Error cargando datos dinámicos: {e}")
 
-            q_rain = text("SELECT p.id_estacion_fk, e.nom_est as station_name, p.fecha_mes_año, p.precipitation FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion")
-            df_long = pd.read_sql(q_rain, conn)
-            if 'fecha_mes_año' in df_long.columns:
-                df_long[Config.DATE_COL] = pd.to_datetime(df_long['fecha_mes_año'])
-                df_long[Config.YEAR_COL] = df_long[Config.DATE_COL].dt.year
-                df_long[Config.MONTH_COL] = df_long[Config.DATE_COL].dt.month
-            df_long.rename(columns={"station_name": Config.STATION_NAME_COL, "precipitation": Config.PRECIPITATION_COL}, inplace=True)
-    except: pass
-    
-    try:
-        with engine.connect() as conn:
-            df_enso_raw = pd.read_sql(text("SELECT * FROM indices_climaticos"), conn)
-            cols = {c.lower(): c for c in df_enso_raw.columns}
-            col_anio = next((k for k in cols if 'a' in k and 'o' in k and len(k)<=5), None)
-            col_mes = next((k for k in cols if 'mes' in k or 'month' in k), None)
-            if col_anio and col_mes:
-                df_enso_raw['fecha_mes_año'] = pd.to_datetime(dict(year=pd.to_numeric(df_enso_raw[cols[col_anio]], errors='coerce'), month=pd.to_numeric(df_enso_raw[cols[col_mes]], errors='coerce'), day=1), errors='coerce')
-                df_enso = df_enso_raw.dropna(subset=['fecha_mes_año']).sort_values('fecha_mes_año')
-                df_enso[Config.DATE_COL] = df_enso['fecha_mes_año']
-                if 'anomalia_oni' in cols: df_enso[Config.ENSO_ONI_COL] = df_enso[cols['anomalia_oni']]
-    except: pass
-
+    # Garantías finales
     if Config.STATION_NAME_COL not in df_long.columns: df_long[Config.STATION_NAME_COL] = "Estación"
     if Config.PRECIPITATION_COL not in df_long.columns: df_long[Config.PRECIPITATION_COL] = 0.0
     if Config.ENSO_ONI_COL not in df_enso.columns: df_enso[Config.ENSO_ONI_COL] = 0.0
 
     return gdf_stations_db, gdf_municipios, df_long, df_enso, gdf_subcuencas, gdf_predios_db
-
 
 
 # --- NUEVAS FUNCIONES VISUALES (SIHCLI v2.0) ---
