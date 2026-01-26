@@ -1315,7 +1315,7 @@ def display_spatial_distribution_tab(
     # 1. CAPA MUNICIPIOS (Fondo gris elegante)
     if gdf_municipios is not None and not gdf_municipios.empty:
         # Debug: Avisar si cargó
-        # st.toast(f"Cargados {len(gdf_municipios)} municipios", icon="🏙️") 
+        st.toast(f"Cargados {len(gdf_municipios)} municipios", icon="🏙️")
         
         folium.GeoJson(
             gdf_municipios,
