@@ -1325,27 +1325,37 @@ def display_spatial_distribution_tab(
             )
         ).add_to(m)
 
-    # --- 2. CAPA SUBCUENCAS (Corregido para mostrar nombre real) ---
+    # --- 3. CAPA CUENCAS ---
     if gdf_subcuencas is not None and not gdf_subcuencas.empty:
-        # Prioridad: nom_cuenca -> SUBC_LBL -> nombre
-        col_cuenca_name = next((c for c in ['nom_cuenca', 'SUBC_LBL', 'nombre_cuenca', 'nombre'] if c in gdf_subcuencas.columns), 'nom_cuenca')
+        # Lógica Inteligente: Priorizamos SUBC_LBL y N-NSS3 sobre 'Tipo'
+        candidatos_cuenca = ['SUBC_LBL', 'N-NSS3', 'nom_cuenca', 'nombre_cuenca', 'NOMBRE']
+        col_cuenca = next((c for c in candidatos_cuenca if c in gdf_subcuencas.columns), None)
         
+        # Fallback: Si no encuentra, busca cualquier columna de texto que NO sea 'Tipo'
+        if not col_cuenca:
+             cols_texto = gdf_subcuencas.select_dtypes(include=['object']).columns
+             col_cuenca = next((c for c in cols_texto if c.lower() not in ['tipo', 'categoria', 'geometry']), None)
+
+        # Tooltip Cuenca
+        tooltip_cuenca = folium.GeoJsonTooltip(
+            fields=[col_cuenca] if col_cuenca else [],
+            aliases=['Cuenca:'] if col_cuenca else [],
+            style="font-size: 14px; font-weight: bold; color: #2980b9;"
+        ) if col_cuenca else None
+
         folium.GeoJson(
             gdf_subcuencas,
             name="Subcuencas",
             style_function=lambda x: {
-                'fillColor': 'blue', 
-                'color': '#3498db', 
-                'weight': 2, 
-                'fillOpacity': 0.05
+                'fillColor': '#3498db', 
+                'color': '#2980b9', 
+                'weight': 1.5, 
+                'fillOpacity': 0.1
             },
-            highlight_function=lambda x: {'weight': 4, 'color': '#e74c3c'},
-            tooltip=folium.GeoJsonTooltip(
-                fields=[col_cuenca_name], # <--- Aquí forzamos el campo correcto
-                aliases=['Cuenca:'],
-                localize=True
-            )
+            highlight_function=lambda x: {'weight': 3, 'color': '#e74c3c', 'fillOpacity': 0.3},
+            tooltip=tooltip_cuenca
         ).add_to(m)
+
 
     # 3. CAPA PREDIOS (Marcadores o Puntos)
     if gdf_predios is not None and not gdf_predios.empty:
