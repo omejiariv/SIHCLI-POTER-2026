@@ -2636,7 +2636,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             return
 
         # 1. DETECCIÓN INTELIGENTE DEL NOMBRE (Prioridad a SUBC_LBL)
-        candidatos = ['SUBC_LBL', 'N-NSS3', 'nom_cuenca', 'nombre', 'NOMBRE']
+        candidatos = ['SUBC_LBL', 'N-NSS3', 'n-nss3' , 'subcuenca', 'nombre_cuenca', 'NOMBRE']
         col_name = next((c for c in candidatos if c in gdf_subcuencas.columns), None)
         
         # Fallback de búsqueda laxa
