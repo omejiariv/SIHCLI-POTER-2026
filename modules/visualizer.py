@@ -1257,8 +1257,12 @@ def display_spatial_distribution_tab(
     df_anual_melted, df_monthly_filtered, analysis_mode, selected_regions,
     selected_municipios, selected_months, year_range, start_date, end_date, **kwargs
 ):
-    # Importación necesaria para evitar el bloqueo del mapa
-    from folium.plugins import MarkerCluster
+    import streamlit as st
+    import folium
+    from folium import plugins
+    from folium.plugins import MarkerCluster, Fullscreen, LocateControl
+    from streamlit_folium import st_folium
+    import pandas as pd
 
     # Inicializar estado
     if "selected_point" not in st.session_state:
@@ -1266,6 +1270,34 @@ def display_spatial_distribution_tab(
 
     st.markdown("### 🗺️ Distribución Espacial y Análisis Puntual")
     
+    # --- PANEL DE CONFIGURACIÓN DE ETIQUETAS (SOLUCIÓN DEFINITIVA) ---
+    # Esto permite al usuario corregir manualmente si sale "Antioquia" o "Cuenca"
+    with st.expander("⚙️ Configuración de Etiquetas (Tooltips)", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        
+        # Selector para MUNICIPIOS
+        col_muni_show = None
+        if gdf_municipios is not None and not gdf_municipios.empty:
+            cols_m = gdf_municipios.columns.tolist()
+            # Intentamos pre-seleccionar MPIO_CNMBR si existe
+            idx_m = next((i for i, c in enumerate(cols_m) if c in ['MPIO_CNMBR', 'nombre_municipio', 'NOMBRE_MPI']), 0)
+            col_muni_show = c1.selectbox("🏷️ Etiqueta Municipios:", cols_m, index=idx_m, key="sel_tooltip_muni")
+        
+        # Selector para CUENCAS
+        col_cuenca_show = None
+        if gdf_subcuencas is not None and not gdf_subcuencas.empty:
+            cols_c = gdf_subcuencas.columns.tolist()
+            # Intentamos pre-seleccionar N-NSS3, SUBC_LBL o NOMBRE
+            idx_c = next((i for i, c in enumerate(cols_c) if c in ['N-NSS3', 'SUBC_LBL', 'nom_cuenca', 'NOMBRE']), 0)
+            col_cuenca_show = c2.selectbox("🏷️ Etiqueta Cuencas:", cols_c, index=idx_c, key="sel_tooltip_cuenca")
+
+        # Selector para PREDIOS
+        col_predio_show = None
+        if gdf_predios is not None and not gdf_predios.empty:
+            cols_p = gdf_predios.columns.tolist()
+            idx_p = next((i for i, c in enumerate(cols_p) if c in ['NOMBRE_PRE', 'nombre_predio']), 0)
+            col_predio_show = c3.selectbox("🏷️ Etiqueta Predios:", cols_p, index=idx_p, key="sel_tooltip_predio")
+
     tab_mapa, tab_avail, tab_series = st.tabs(["📍 Mapa Interactivo", "📊 Disponibilidad", "📅 Series Anuales"])
 
     # --- PESTAÑA 1: MAPA INTERACTIVO ---
@@ -1281,8 +1313,10 @@ def display_spatial_distribution_tab(
             elif escala == "Antioquia": location_center, zoom_level = [7.0, -75.5], 8
             elif escala == "Región Actual" and not gdf_filtered.empty:
                 try:
-                    c = gdf_filtered.dissolve().centroid
-                    location_center, zoom_level = [c.geometry[0].y, c.geometry[0].x], 9
+                    # Calcular centroide
+                    minx, miny, maxx, maxy = gdf_filtered.total_bounds
+                    location_center = [(miny + maxy) / 2, (minx + maxx) / 2]
+                    zoom_level = 9
                 except: pass
         
         with c_manual:
@@ -1310,71 +1344,68 @@ def display_spatial_distribution_tab(
         plugins.Fullscreen(position='topright').add_to(m)
         plugins.Geocoder(position='topright').add_to(m)
 
-    # --- BLOQUE DE DIBUJO DE CAPAS CORREGIDO ---
-    
-# En display_spatial_distribution_tab:
-    if gdf_municipios is not None and not gdf_municipios.empty:
-        folium.GeoJson(
-            gdf_municipios,
-            name="Municipios",
-            style_function=lambda x: {'fillColor': '#95a5a6', 'color': 'white', 'weight': 0.5, 'fillOpacity': 0.1},
-            tooltip=folium.GeoJsonTooltip(
-                fields=['MPIO_CNMBR'], # <--- IMPORTANTE: Este es el campo del nombre real
-                aliases=['Municipio:'],
-                localize=True
-            )
-        ).add_to(m)
+        # --- CAPA MUNICIPIOS (Usando Selector Manual) ---
+        if gdf_municipios is not None and not gdf_municipios.empty:
+            folium.GeoJson(
+                gdf_municipios,
+                name="Municipios",
+                style_function=lambda x: {'fillColor': '#95a5a6', 'color': 'white', 'weight': 0.5, 'fillOpacity': 0.1},
+                tooltip=folium.GeoJsonTooltip(
+                    fields=[col_muni_show] if col_muni_show else [], 
+                    aliases=['Municipio:'],
+                    localize=True
+                ) if col_muni_show else None
+            ).add_to(m)
 
-    # --- 3. CAPA CUENCAS ---
-    if gdf_subcuencas is not None and not gdf_subcuencas.empty:
-        # Lógica Inteligente: Priorizamos SUBC_LBL y N-NSS3 sobre 'Tipo'
-        candidatos_cuenca = ['SUBC_LBL', 'N-NSS3', 'nom_cuenca', 'nombre_cuenca', 'NOMBRE']
-        col_cuenca = next((c for c in candidatos_cuenca if c in gdf_subcuencas.columns), None)
-        
-        # Fallback: Si no encuentra, busca cualquier columna de texto que NO sea 'Tipo'
-        if not col_cuenca:
-             cols_texto = gdf_subcuencas.select_dtypes(include=['object']).columns
-             col_cuenca = next((c for c in cols_texto if c.lower() not in ['tipo', 'categoria', 'geometry']), None)
+        # --- CAPA CUENCAS (Usando Selector Manual) ---
+        if gdf_subcuencas is not None and not gdf_subcuencas.empty:
+            folium.GeoJson(
+                gdf_subcuencas,
+                name="Subcuencas",
+                style_function=lambda x: {
+                    'fillColor': '#3498db', 
+                    'color': '#2980b9', 
+                    'weight': 1.5, 
+                    'fillOpacity': 0.1
+                },
+                highlight_function=lambda x: {'weight': 3, 'color': '#e74c3c', 'fillOpacity': 0.3},
+                tooltip=folium.GeoJsonTooltip(
+                    fields=[col_cuenca_show] if col_cuenca_show else [],
+                    aliases=['Cuenca:'],
+                    style="font-size: 14px; font-weight: bold; color: #2980b9;"
+                ) if col_cuenca_show else None
+            ).add_to(m)
 
-        # Tooltip Cuenca
-        tooltip_cuenca = folium.GeoJsonTooltip(
-            fields=[col_cuenca] if col_cuenca else [],
-            aliases=['Cuenca:'] if col_cuenca else [],
-            style="font-size: 14px; font-weight: bold; color: #2980b9;"
-        ) if col_cuenca else None
+        # --- CAPA PREDIOS (Usando Selector Manual) ---
+        if gdf_predios is not None and not gdf_predios.empty:
+            try:
+                # Determinar si es punto o polígono
+                geom_type = gdf_predios.geometry.iloc[0].geom_type
+                
+                tooltip_obj = folium.GeoJsonTooltip(
+                    fields=[col_predio_show] if col_predio_show else [],
+                    aliases=['Predio:'],
+                    localize=True
+                ) if col_predio_show else None
 
-        folium.GeoJson(
-            gdf_subcuencas,
-            name="Subcuencas",
-            style_function=lambda x: {
-                'fillColor': '#3498db', 
-                'color': '#2980b9', 
-                'weight': 1.5, 
-                'fillOpacity': 0.1
-            },
-            highlight_function=lambda x: {'weight': 3, 'color': '#e74c3c', 'fillOpacity': 0.3},
-            tooltip=tooltip_cuenca
-        ).add_to(m)
+                if geom_type == 'Point':
+                    folium.GeoJson(
+                        gdf_predios,
+                        name="Predios",
+                        marker=folium.CircleMarker(radius=6, fill_color="orange", fill_opacity=0.9, color="white", weight=1),
+                        tooltip=tooltip_obj
+                    ).add_to(m)
+                else: # Polygon / MultiPolygon
+                    folium.GeoJson(
+                        gdf_predios,
+                        name="Predios",
+                        style_function=lambda x: {'fillColor': 'orange', 'color': 'darkorange', 'weight': 1, 'fillOpacity': 0.4},
+                        tooltip=tooltip_obj
+                    ).add_to(m)
+            except Exception as e:
+                print(f"Error dibujando predios: {e}")
 
-
-    # 3. CAPA PREDIOS (Marcadores o Puntos)
-    if gdf_predios is not None and not gdf_predios.empty:
-        # Usamos CircleMarker para que se vea limpio
-        folium.GeoJson(
-            gdf_predios,
-            name="Predios",
-            marker=folium.CircleMarker(radius=6, fill_color="orange", fill_opacity=0.9, color="white", weight=1),
-            tooltip=folium.GeoJsonTooltip(
-                fields=['NOMBRE_PRE'],    # <--- La columna real
-                aliases=['Predio:'],
-                localize=True
-            )
-        ).add_to(m)
-        
-        # -----------------------------------------------------------
-        # SOLUCIÓN AL BLOQUEO: MARKER CLUSTER
-        # Agrupamos los marcadores para no saturar el navegador
-        # -----------------------------------------------------------
+        # --- CAPA ESTACIONES (Cluster) ---
         marker_cluster = MarkerCluster(name="Estaciones (Agrupadas)").add_to(m)
 
         # 1. PRE-CÁLCULO DE ESTADÍSTICAS
@@ -1382,6 +1413,8 @@ def display_spatial_distribution_tab(
         if not df_long.empty:
             try:
                 # Detectar columna de código
+                from modules.config import Config # Importar dentro para evitar error circular
+                
                 col_cod_long = next((c for c in ['Codigo', 'CODIGO', 'id_estacion', 'station_code'] if c in df_long.columns), df_long.columns[0])
                 
                 # Agrupamos por estación (Optimizado)
@@ -1408,14 +1441,18 @@ def display_spatial_distribution_tab(
                         return str(val) if pd.notna(val) else default
             return default
 
-        # BUCLE DE ESTACIONES (Ahora añadiendo al Cluster)
+        # BUCLE DE ESTACIONES
         if not gdf_filtered.empty:
+            # Importar Config localmente si es necesario
+            try: from modules.config import Config
+            except: pass
+            
             for _, row in gdf_filtered.iterrows():
                 try:
                     # Datos básicos
-                    nom = str(row[Config.STATION_NAME_COL])
-                    mun = str(row.get(Config.MUNICIPALITY_COL, 'Desconocido'))
-                    alt = str(row.get(Config.ALTITUDE_COL, 0))
+                    nom = str(row.get('nom_est', 'Estación'))
+                    mun = str(row.get('municipio', 'Desconocido'))
+                    alt = str(row.get('alt_est', 0))
                     
                     # ID y Subcuenca
                     cod = get_fuzzy_col(row, ['codigo', 'id', 'serial', 'cod'], 'Sin ID')
@@ -1452,7 +1489,6 @@ def display_spatial_distribution_tab(
                     iframe = folium.IFrame(html_content, width=280, height=240)
                     popup = folium.Popup(iframe, max_width=280)
 
-                    # AÑADIR AL CLUSTER EN VEZ DE AL MAPA DIRECTO
                     folium.Marker(
                         [row.geometry.y, row.geometry.x],
                         tooltip=f"{nom}",
@@ -1467,6 +1503,7 @@ def display_spatial_distribution_tab(
         folium.LayerControl().add_to(m)
 
         st.markdown("👆 **Haz clic en un marcador para ver detalles o en cualquier punto del mapa para ver el pronóstico.**")
+
         
         # Renderizar mapa
         map_output = st_folium(m, width=None, height=600, returned_objects=["last_clicked"])
