@@ -2604,9 +2604,45 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             st.warning("⚠️ No se ha cargado la capa de Cuencas.")
             return
 
-        # 1. DETECCIÓN INTELIGENTE (LA SOLUCIÓN AL PROBLEMA "CUENCA/INTERCUENCA")
-        # Usamos la función que mide cardinalidad para encontrar el nombre real
-        col_name = detectar_mejor_columna_nombre(gdf_subcuencas)
+# =========================================================
+        # NUEVO: SELECTOR MANUAL DE COLUMNA DE NOMBRES
+        # =========================================================
+        
+        # 1. Obtenemos todas las columnas del archivo
+        all_cols = gdf_subcuencas.columns.tolist()
+        
+        # 2. Intentamos pre-seleccionar una que parezca nombre (para ayudar)
+        pre_select_index = 0
+        candidatos = ['SUBC_LBL', 'N-NSS3', 'nom_cuenca', 'nombre', 'NOMBRE', 'MPIO_CNMBR']
+        for i, col in enumerate(all_cols):
+            if col in candidatos:
+                pre_select_index = i
+                break
+        
+        # 3. TE MOSTRAMOS EL SELECTOR DE COLUMNA (¡Aquí está la magia!)
+        st.info("👇 Si los nombres no son correctos, cambia la 'Columna de Nombres' aquí abajo.")
+        col_name = st.selectbox(
+            "🗂️ Columna de Nombres:", 
+            options=all_cols, 
+            index=pre_select_index,
+            key="selector_columna_manual"
+        )
+
+        # 4. AHORA SÍ, EL SELECTOR DE CUENCAS USA LA COLUMNA QUE TÚ ELEGISTE
+        try:
+            # Convertimos a string y ordenamos
+            avail_opts = sorted(gdf_subcuencas[col_name].dropna().astype(str).unique())
+        except: 
+            avail_opts = []
+            
+        default_cuencas = st.session_state.get("last_sel_cuencas", [])
+        valid_defaults = [x for x in default_cuencas if x in avail_opts]
+
+        sel_cuencas = st.multiselect(
+            f"🌊 Seleccionar Cuenca(s) ({len(avail_opts)} disponibles):", 
+            options=avail_opts, 
+            default=valid_defaults
+        )
         
         # 2. PREPARACIÓN DE OPCIONES
         try:
