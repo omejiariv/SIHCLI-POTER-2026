@@ -2398,83 +2398,65 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión Definitiva (Consolidada):
-    - Selector inteligente de cuencas (SUBC_LBL/N-NSS3).
-    - Mapas de contexto con capa de Municipios y Tooltips corregidos.
-    - Protección contra errores de memoria y geometrías.
+    Versión con Detector Heurístico de Nombres:
+    Distingue entre 'Tipo' (pocos valores únicos) y 'Nombre' (muchos valores únicos)
+    para evitar que el selector muestre "Cuenca/Intercuenca".
     """
     import plotly.graph_objects as go
-    import plotly.express as px
     from scipy.interpolate import Rbf, griddata
     import numpy as np
     from streamlit_folium import st_folium
     import folium
-    from folium.plugins import LocateControl
     import geopandas as gpd
     import matplotlib
     import matplotlib.pyplot as plt
     from shapely.geometry import LineString
     import tempfile
     import os
-    import shutil
     import pandas as pd
     
-    # Configuración de Matplotlib para servidor (sin interfaz gráfica)
     matplotlib.use('Agg')
 
-    # --- 1. RECUPERACIÓN DE DATOS GLOBALES ---
-    # Recuperamos las capas base al inicio para usarlas en ambos modos
-    gdf_coberturas = kwargs.get("gdf_coberturas", None)
-    gdf_municipios = kwargs.get("gdf_municipios", None) # Recuperamos municipios para el fondo
-    
-    # Intento de carga automática de coberturas si no vienen
-    if gdf_coberturas is None:
-        try:
-            path_cob = "data/coberturas_antioquia.geojson"
-            if os.path.exists(path_cob):
-                gdf_coberturas = gpd.read_file(path_cob)
-        except: pass
-            
-    df_trends_global = kwargs.get("df_trends", None)
-    user_loc = kwargs.get("user_loc", None)
-    
-    # Configuración de Imports Dinámicos (Evita errores si modules.config no está cargado)
+    # --- 1. CONFIGURACIÓN Y RECUPERACIÓN DE DATOS ---
     try:
         from modules.config import Config
     except ImportError:
-        # Fallback de configuración básica
         class Config:
             STATION_NAME_COL = 'nom_est'
             PRECIPITATION_COL = 'precipitation'
             YEAR_COL = 'year'
             DATE_COL = 'fecha_mes_año'
             ALTITUDE_COL = 'alt_est'
-    
-    try:
-        import modules.analysis as analysis
-    except ImportError:
-        analysis = None
+            
+    try: import modules.analysis as analysis
+    except ImportError: analysis = None
 
-    # Títulos Dinámicos
+    gdf_coberturas = kwargs.get("gdf_coberturas", None)
+    gdf_municipios = kwargs.get("gdf_municipios", None)
+    user_loc = kwargs.get("user_loc", None)
+
+    # Carga de Coberturas si no existen
+    if gdf_coberturas is None:
+        try:
+            path_cob = "data/coberturas_antioquia.geojson"
+            if os.path.exists(path_cob): gdf_coberturas = gpd.read_file(path_cob)
+        except: pass
+
+    # Títulos
     selected_months = kwargs.get("selected_months", [])
     titulo_meses = ""
     if selected_months and len(selected_months) < 12:
-        nombres_meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
-        meses_str = ", ".join([nombres_meses[m - 1] for m in selected_months])
-        titulo_meses = f" ({meses_str})"
+        nombres = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+        titulo_meses = f" ({', '.join([nombres[m - 1] for m in selected_months])})"
 
     st.subheader(f"🌍 Superficies de Interpolación{titulo_meses} y Análisis Hidrológico")
-
-    # Selector de Modo Principal
     mode = st.radio("Modo de Análisis:", ["Regional (Comparación)", "Por Cuenca (Detallado)"], horizontal=True)
 
-    # --- HELPERS INTERNOS ---
+    # --- HELPERS (Interpolación y Utilidades) ---
     def run_interp(df_puntos, metodo, bounds_box):
         try:
             minx, maxx, miny, maxy = bounds_box
-            # Grilla 150x150
             gx, gy = np.mgrid[minx:maxx:150j, miny:maxy:150j]
-            
             df_unique = df_puntos.drop_duplicates(subset=["longitude", "latitude"])
             pts = df_unique[["longitude", "latitude"]].values
             vals = df_unique[Config.PRECIPITATION_COL].values
@@ -2490,22 +2472,18 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             else:
                 gz = griddata(pts, vals, (gx, gy), method="linear")
             
-            # Relleno de bordes (Extrapolación Nearest)
+            # Relleno Nearest
             mask_nan = np.isnan(gz)
             if np.any(mask_nan):
-                gz_nearest = griddata(pts, vals, (gx, gy), method="nearest")
-                gz[mask_nan] = gz_nearest[mask_nan]
-            
+                gz[mask_nan] = griddata(pts, vals, (gx, gy), method="nearest")[mask_nan]
             return gx, gy, gz
-        except Exception as e:
-            print(f"Error interpolación: {e}")
-            return None, None, None
+        except: return None, None, None
 
     def calcular_promedios_reales(df_datos):
         if df_datos.empty: return pd.DataFrame()
         conteo = df_datos[df_datos[Config.PRECIPITATION_COL] >= 0].groupby([Config.STATION_NAME_COL, Config.YEAR_COL]).size()
         anos_validos = conteo[conteo >= 5].index
-        if len(anos_validos) == 0: return pd.DataFrame() # Blindaje
+        if len(anos_validos) == 0: return pd.DataFrame()
         df_filtrado = df_datos.set_index([Config.STATION_NAME_COL, Config.YEAR_COL]).loc[anos_validos].reset_index()
         suma_anual = df_filtrado.groupby([Config.STATION_NAME_COL, Config.YEAR_COL])[Config.PRECIPITATION_COL].sum().reset_index()
         return suma_anual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index()
@@ -2528,46 +2506,47 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             return gpd.GeoDataFrame({"valor": values, "geometry": lines}, crs=crs)
         except: return None
 
-    def mask_grid_with_geometries(gx, gy, grid_values, gdf_mask):
-        if gdf_mask is None or gdf_mask.empty or grid_values is None:
-            return np.zeros_like(grid_values) if grid_values is not None else None
-        try:
-            from rasterio import features
-            from rasterio.transform import from_bounds
-            if gdf_mask.crs and gdf_mask.crs.to_string() != "EPSG:4326":
-                gdf_mask = gdf_mask.to_crs("EPSG:4326")
+    # --- FUNCIÓN CLAVE: DETECTOR INTELIGENTE DE NOMBRES ---
+    def detectar_mejor_columna_nombre(gdf):
+        """
+        Busca la columna que tenga nombres de cuencas/municipios.
+        Evita columnas 'Tipo' (Cuenca/Intercuenca) contando valores únicos.
+        """
+        if gdf is None or gdf.empty: return None
+        cols = gdf.columns
+        
+        # 1. Lista blanca (Prioridad Máxima) - Insensible a mayúsculas
+        whitelist = ['subc_lbl', 'n-nss3', 'nnss3', 'nombre_cuenca', 'nom_cuenca', 'mpio_cnmbr', 'nombre_municipio']
+        for col in cols:
+            if col.lower() in whitelist: return col
             
-            rows, cols = gx.shape
-            minx, maxx = gx.min(), gx.max()
-            miny, maxy = gy.min(), gy.max()
-            transform = from_bounds(minx, miny, maxx, maxy, rows, cols)
+        # 2. Heurística: Columna de texto con mayor cardinalidad (variedad)
+        # Una columna "Tipo" tiene ~2 valores únicos. Un nombre tiene >10.
+        candidates = gdf.select_dtypes(include=['object', 'string']).columns
+        best_col = None
+        max_unique = 0
+        
+        for col in candidates:
+            # Lista negra obvia
+            if col.lower() in ['tipo', 'type', 'categoria', 'geometry', 'geom', 'shape_area', 'shape_len']: continue
             
-            shapes = [(geom, 1) for geom in gdf_mask.geometry if not geom.is_empty]
-            if not shapes: return np.zeros_like(grid_values)
-            
-            mask_arr = features.rasterize(shapes=shapes, out_shape=(rows, cols), transform=transform, fill=0, default_value=1, dtype='uint8')
-            
-            if mask_arr.shape != grid_values.shape: mask_arr = mask_arr.T
-            else: mask_arr = mask_arr.T # Ajuste común para mgrid
-
-            result = grid_values.copy()
-            result[mask_arr == 0] = np.nan
-            return result
-        except Exception:
-            return np.zeros_like(grid_values)
+            n_unique = gdf[col].nunique()
+            if n_unique > max_unique:
+                max_unique = n_unique
+                best_col = col
+        
+        return best_col if best_col else cols[0]
 
     # ==========================================================================
-    # MODO 1: REGIONAL (COMPARACIÓN)
+    # MODO 1: REGIONAL
     # ==========================================================================
     if mode == "Regional (Comparación)":
         st.markdown("#### 🆚 Comparación de Periodos Climáticos")
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown("###### Periodo 1 (Referencia)")
             r1 = st.slider("Rango P1:", 1980, 2024, (1990, 2000), key="r1")
             m1 = st.selectbox("Método P1:", ["Kriging (RBF)", "IDW (Lineal)"], key="m1")
         with c2:
-            st.markdown("###### Periodo 2 (Reciente)")
             r2 = st.slider("Rango P2:", 1980, 2024, (2010, 2020), key="r2")
             m2 = st.selectbox("Método P2:", ["Kriging (RBF)", "IDW (Lineal)"], key="m2")
 
@@ -2577,57 +2556,47 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
         if st.session_state.get("regional_done"):
             p = st.session_state["reg_params"]
-            
             def plot_panel(rng, meth, col, tag, u_loc):
                 mask = (df_long[Config.YEAR_COL] >= rng[0]) & (df_long[Config.YEAR_COL] <= rng[1])
-                df_sub = df_long[mask]
-                df_avg = calcular_promedios_reales(df_sub)
-                
-                if df_avg.empty:
-                    col.warning(f"Sin datos válidos para {rng}")
-                    return
-
+                df_avg = calcular_promedios_reales(df_long[mask])
+                if df_avg.empty: return
                 if Config.STATION_NAME_COL not in df_avg.columns: df_avg = df_avg.reset_index()
                 df_m = pd.merge(df_avg, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
-
+                
                 if len(df_m) > 2:
-                    bounds = [df_m.longitude.min() - 0.1, df_m.longitude.max() + 0.1, df_m.latitude.min() - 0.1, df_m.latitude.max() + 0.1]
+                    bounds = [df_m.longitude.min()-0.1, df_m.longitude.max()+0.1, df_m.latitude.min()-0.1, df_m.latitude.max()+0.1]
                     gx, gy, gz = run_interp(df_m, meth, bounds)
-
                     if gz is not None:
-                        # Mapa Plotly
-                        fig = go.Figure(go.Contour(z=gz.T, x=gx[:, 0], y=gy[0, :], colorscale="Viridis", colorbar=dict(title="mm/año"), contours=dict(start=0, end=5000, size=200)))
-                        fig.add_trace(go.Scatter(x=df_m.longitude, y=df_m.latitude, mode="markers", marker=dict(color="black", size=5), showlegend=False))
-                        fig.update_layout(title=f"Ppt Media Anual ({rng[0]}-{rng[1]})", margin=dict(l=0, r=0, b=0, t=40), height=350)
+                        fig = go.Figure(go.Contour(z=gz.T, x=gx[:,0], y=gy[0,:], colorscale="Viridis"))
+                        fig.add_trace(go.Scatter(x=df_m.longitude, y=df_m.latitude, mode="markers", marker=dict(color="black", size=5)))
+                        fig.update_layout(title=f"Ppt ({rng[0]}-{rng[1]})", margin=dict(l=0,r=0,b=0,t=40), height=300)
                         col.plotly_chart(fig, use_container_width=True)
                         
-                        # Mapa Interactivo Folium
-                        with col.expander(f"🔎 Ver Mapa Detallado ({tag})"):
-                            m = folium.Map(location=[(bounds[2]+bounds[3])/2, (bounds[0]+bounds[1])/2], zoom_start=8, tiles="CartoDB positron")
+                        # Mapa Folium
+                        with col.expander(f"🔎 Mapa Detallado ({tag})"):
+                            m = folium.Map([(bounds[2]+bounds[3])/2, (bounds[0]+bounds[1])/2], zoom_start=8, tiles="CartoDB positron")
                             
-                            # Fondo Municipios (Si existe)
+                            # MUNICIPIOS DE FONDO (Si existen)
                             if gdf_municipios is not None:
+                                col_muni_name = detectar_mejor_columna_nombre(gdf_municipios)
                                 folium.GeoJson(
                                     gdf_municipios, 
-                                    style_function=lambda x: {'fillColor': '#95a5a6', 'color': 'white', 'weight': 0.5, 'fillOpacity': 0.1},
-                                    name="Municipios"
+                                    name="Municipios",
+                                    style_function=lambda x: {'color': '#bdc3c7', 'weight': 0.5, 'fillOpacity': 0.1},
+                                    tooltip=folium.GeoJsonTooltip(fields=[col_muni_name], aliases=['Mun:']) if col_muni_name else None
                                 ).add_to(m)
 
-                            gdf_iso = generate_isohyets_gdf(gx, gy, gz, levels=12)
-                            if gdf_iso is not None:
-                                folium.GeoJson(gdf_iso, name="Isoyetas", style_function=lambda x: {'color': '#2c3e50', 'weight': 1, 'dashArray': '5, 5'}).add_to(m)
-                            
-                            for _, row in df_m.iterrows():
-                                html = f"<b>{row[Config.STATION_NAME_COL]}</b><br>{row[Config.PRECIPITATION_COL]:.0f} mm"
-                                folium.CircleMarker([row["latitude"], row["longitude"]], radius=5, color="blue", fill=True, tooltip=html).add_to(m)
-                            
-                            st_folium(m, height=300, use_container_width=True, key=f"folium_comp_{tag}")
+                            if gx is not None:
+                                gdf_iso = generate_isohyets_gdf(gx, gy, gz, levels=12)
+                                if gdf_iso is not None:
+                                    folium.GeoJson(gdf_iso, style_function=lambda x: {'color': '#2c3e50', 'weight': 1, 'dashArray': '5,5'}).add_to(m)
+                            st_folium(m, height=300, use_container_width=True, key=f"fol_{tag}")
 
             plot_panel(p["r1"], p["m1"], c1, "A", user_loc)
             plot_panel(p["r2"], p["m2"], c2, "B", user_loc)
 
     # ==========================================================================
-    # MODO 2: CUENCA (CORREGIDO Y DEFINITIVO)
+    # MODO 2: CUENCA (DETALLADO) - CORREGIDO
     # ==========================================================================
     else:
         gdf_subcuencas = kwargs.get("gdf_subcuencas")
@@ -2635,43 +2604,41 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             st.warning("⚠️ No se ha cargado la capa de Cuencas.")
             return
 
-        # 1. DETECCIÓN INTELIGENTE DEL NOMBRE (Prioridad a SUBC_LBL)
-        candidatos = ['SUBC_LBL', 'N-NSS3', 'n-nss3' , 'subcuenca', 'nombre_cuenca', 'NOMBRE']
-        col_name = next((c for c in candidatos if c in gdf_subcuencas.columns), None)
+        # 1. DETECCIÓN INTELIGENTE (LA SOLUCIÓN AL PROBLEMA "CUENCA/INTERCUENCA")
+        # Usamos la función que mide cardinalidad para encontrar el nombre real
+        col_name = detectar_mejor_columna_nombre(gdf_subcuencas)
         
-        # Fallback de búsqueda laxa
-        if not col_name:
-            col_name = next((c for c in gdf_subcuencas.columns if "nombre" in c.lower() or "cuenca" in c.lower() or "lbl" in c.lower()), gdf_subcuencas.columns[0])
-
-        # 2. SELECTOR
-        default_cuencas = st.session_state.get("last_sel_cuencas", [])
+        # 2. PREPARACIÓN DE OPCIONES
         try:
-            avail_opts = sorted(gdf_subcuencas[col_name].dropna().astype(str).unique())
-        except:
-            avail_opts = []
+            # Convertimos a string y ordenamos
+            opts_raw = gdf_subcuencas[col_name].dropna().astype(str).unique()
+            avail_opts = sorted(opts_raw)
+        except: avail_opts = []
             
+        # Recuperar estado previo
+        default_cuencas = st.session_state.get("last_sel_cuencas", [])
         valid_defaults = [x for x in default_cuencas if x in avail_opts]
-        
-        sel_cuencas = st.multiselect(f"Seleccionar Cuenca(s) por {col_name}:", options=avail_opts, default=valid_defaults)
 
-        with st.expander("⚙️ Configuración Avanzada", expanded=False):
+        # 3. SELECTOR
+        st.info(f"💡 Seleccionando usando la columna: **{col_name}**") # Feedback visual para debug
+        sel_cuencas = st.multiselect(f"Seleccionar Cuenca(s):", options=avail_opts, default=valid_defaults)
+
+        with st.expander("⚙️ Parámetros Avanzados", expanded=False):
              buffer_km = st.slider("Radio búsqueda (km):", 0, 50, 15, step=5)
 
         if sel_cuencas:
             c_p1, c_p2 = st.columns(2)
             rng_c = c_p1.slider("Periodo:", 1980, 2025, (2000, 2020))
-            meth_c = c_p2.selectbox("Método Interpolación:", ["Kriging (RBF)", "IDW"])
+            meth_c = c_p2.selectbox("Método:", ["Kriging (RBF)", "IDW"])
 
             if st.button("⚡ Analizar Cuenca"):
                 st.session_state["last_sel_cuencas"] = sel_cuencas
                 if "basin_res" in st.session_state: del st.session_state["basin_res"]
 
-                with st.spinner("Procesando hidrología, IVC y tendencias..."):
+                with st.spinner("Procesando..."):
                     try:
-                        # Filtrar y Unir Geometría
+                        # Geometría
                         sub = gdf_subcuencas[gdf_subcuencas[col_name].isin(sel_cuencas)]
-                        if sub.empty: raise ValueError("Error en selección de cuenca")
-                        
                         try: geom_union = sub.geometry.unary_union
                         except: geom_union = sub.geometry.iloc[0]
                         
@@ -2679,7 +2646,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                         gdf_vis = gdf_union.copy()
                         gdf_vis["geometry"] = gdf_vis.geometry.simplify(0.005)
 
-                        # Buffer y Estaciones
+                        # Buffer y Datos
                         buf = geom_union.buffer(buffer_km / 111.32)
                         gdf_buf = gpd.GeoDataFrame({"geometry": [buf]}, crs=gdf_stations.crs)
                         stns = gpd.sjoin(gdf_stations, gdf_buf, predicate="intersects")
@@ -2688,120 +2655,79 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             mask = (df_long[Config.STATION_NAME_COL].isin(stns[Config.STATION_NAME_COL].unique())) & (df_long[Config.YEAR_COL] >= rng_c[0]) & (df_long[Config.YEAR_COL] <= rng_c[1])
                             df_raw = df_long[mask].copy()
                             df_avg = calcular_promedios_reales(df_raw)
-                            
                             if Config.STATION_NAME_COL not in df_avg.columns: df_avg = df_avg.reset_index()
                             df_int = pd.merge(df_avg, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
                             if Config.ALTITUDE_COL not in df_int.columns: df_int[Config.ALTITUDE_COL] = 1500
-                            gdf_pts = gpd.GeoDataFrame(df_int, geometry=gpd.points_from_xy(df_int.longitude, df_int.latitude), crs=gdf_stations.crs)
 
                             if len(df_int) >= 3:
                                 minx, miny, maxx, maxy = gdf_buf.total_bounds
                                 gx, gy, gz = run_interp(df_int, meth_c, [minx, maxx, miny, maxy])
                                 
-                                # Cálculos Derivados (IVC, Hipsometría, FDC)
-                                gz_ivc, gz_cult, gz_inc = None, None, None
-                                fdc_data, hyp_data, idx_c, morph, bal = None, None, {}, {}, {}
-                                
-                                if gz is not None:
-                                    # IVC Simplificado (Placeholder para lógica compleja)
-                                    gz_ivc = gz / np.nanmax(gz) * 100 
-                                    
-                                    # Morfometría y Balance
-                                    if analysis:
-                                        try: morph = analysis.calculate_morphometry(gdf_union)
-                                        except: morph = {"area_km2": 100, "alt_prom_m": 1500}
-                                        
-                                        try: 
-                                            tm = max(0, 28 - 0.006 * morph.get("alt_prom_m", 1500))
-                                            _, q_mm = analysis.calculate_water_balance_turc(np.nanmean(gz), tm)
-                                            bal = {"P": np.nanmean(gz), "Q": q_mm}
-                                        except: pass
+                                # Morfometría y Curvas (Opcional)
+                                morph, hyp, fdc = {}, None, None
+                                if analysis:
+                                    try: morph = analysis.calculate_morphometry(gdf_union)
+                                    except: pass
+                                    try: hyp = analysis.calculate_hypsometric_curve(gdf_union)
+                                    except: pass
+                                    try: 
+                                        ppt_s = df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean()
+                                        fdc = analysis.calculate_duration_curve(ppt_s, runoff_coeff=0.4, area_km2=morph.get("area_km2", 100))
+                                    except: pass
 
-                                        # Curvas
-                                        try: hyp_data = analysis.calculate_hypsometric_curve(gdf_union)
-                                        except: pass
-                                        
-                                        try:
-                                            ppt_series = df_raw.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean()
-                                            fdc_data = analysis.calculate_duration_curve(ppt_series, runoff_coeff=0.4, area_km2=morph.get("area_km2", 100))
-                                        except: pass
-
-                                # Guardar Estado
                                 st.session_state["basin_res"] = {
                                     "ready": True, "names": ", ".join(sel_cuencas), "bounds": [minx, maxx, miny, maxy],
-                                    "gz": gz, "gx": gx, "gy": gy, "gz_ivc": gz_ivc, "gz_cult": gz_cult, "gz_inc": gz_inc,
-                                    "gdf_vis": gdf_vis, "gdf_pts": gdf_pts, "gdf_buf": gdf_buf,
-                                    "df_int": df_int, "df_raw": df_raw,
-                                    "morph": morph, "bal": bal, "idx": idx_c, "fdc": fdc_data, "hyp": hyp_data
+                                    "gz": gz, "gx": gx, "gy": gy, "gdf_vis": gdf_vis, "df_int": df_int,
+                                    "hyp": hyp, "fdc": fdc, "morph": morph
                                 }
-                            else: st.error("Insuficientes estaciones (<3) para interpolar.")
-                        else: st.error("Sin estaciones cercanas.")
-                    except Exception as e: st.error(f"Error procesando: {e}")
+                            else: st.error("Insuficientes estaciones (<3).")
+                        else: st.error("Sin estaciones en el rango.")
+                    except Exception as e: st.error(f"Error: {e}")
 
-            # --- VISUALIZACIÓN DE RESULTADOS ---
+            # Visualización
             res = st.session_state.get("basin_res")
             if res and res.get("ready"):
-                st.markdown(f"##### 📊 Resultados: {res['names']}")
-                
-                # Mapa Temático (Plotly)
+                st.markdown(f"##### Resultados: {res['names']}")
                 z = res["gz"]
                 if z is not None:
-                    fig = go.Figure(go.Contour(z=z.T, x=res["gx"][:,0], y=res["gy"][0,:], colorscale="Blues", colorbar=dict(title="mm")))
-                    # Contorno cuenca
-                    try:
-                        geoms = res["gdf_vis"].geometry
-                        poly = geoms.iloc[0]
-                        if poly.geom_type == 'Polygon': xs, ys = poly.exterior.xy
-                        else: xs, ys = poly.geoms[0].exterior.xy
-                        fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black", width=2), name="Cuenca"))
+                    fig = go.Figure(go.Contour(z=z.T, x=res["gx"][:,0], y=res["gy"][0,:], colorscale="Blues"))
+                    try: 
+                        poly = res["gdf_vis"].geometry.iloc[0]
+                        if poly.geom_type=='Polygon': xs,ys = poly.exterior.xy
+                        else: xs,ys = poly.geoms[0].exterior.xy
+                        fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines", line=dict(color="black")))
                     except: pass
                     st.plotly_chart(fig, use_container_width=True)
 
-                # Mapa Contexto (Folium) con Municipios
+                # Mapa Contexto Definitivo
                 st.markdown("---")
-                st.subheader("📍 Mapa de Contexto")
                 bounds = res["bounds"]
                 m_ctx = folium.Map([(bounds[2]+bounds[3])/2, (bounds[0]+bounds[1])/2], zoom_start=10, tiles="CartoDB positron")
                 
-                # --- AQUÍ ESTÁ LA MEJORA CLAVE DEL MAPA DE CONTEXTO ---
-                # 1. Capa Municipios (Fondo)
+                # Capa Municipios (Fondo) - Usando Detector de Nombres
                 if gdf_municipios is not None:
-                    col_muni = next((c for c in ['MPIO_CNMBR', 'nombre_municipio'] if c in gdf_municipios.columns), None)
+                    col_muni_bg = detectar_mejor_columna_nombre(gdf_municipios)
                     folium.GeoJson(
-                        gdf_municipios,
+                        gdf_municipios, 
                         name="Municipios",
-                        style_function=lambda x: {'fillColor': '#95a5a6', 'color': 'white', 'weight': 0.5, 'fillOpacity': 0.1},
-                        tooltip=folium.GeoJsonTooltip(fields=[col_muni], aliases=['Municipio:']) if col_muni else None
+                        style_function=lambda x: {'color': '#bdc3c7', 'weight': 0.5, 'fillOpacity': 0.05},
+                        tooltip=folium.GeoJsonTooltip(fields=[col_muni_bg], aliases=['Mun:']) if col_muni_bg else None
                     ).add_to(m_ctx)
 
-                # 2. Capa Cuenca Seleccionada
                 folium.GeoJson(res["gdf_vis"], style_function=lambda x: {"color": "blue", "weight": 2, "fillOpacity": 0.1}).add_to(m_ctx)
                 
-                # 3. Estaciones con Popup
                 for _, r in res["df_int"].iterrows():
-                    html = f"<b>{r[Config.STATION_NAME_COL]}</b><br>Ppt: {r[Config.PRECIPITATION_COL]:.0f} mm"
-                    folium.CircleMarker([r.latitude, r.longitude], radius=5, color="darkred", fill=True, tooltip=html).add_to(m_ctx)
-
-                st_folium(m_ctx, height=450, width="100%")
-
-                # Visualización de Curvas (FDC y Hipsometría)
+                    folium.CircleMarker([r.latitude, r.longitude], radius=4, color="red", fill=True, tooltip=f"{r[Config.STATION_NAME_COL]}: {r[Config.PRECIPITATION_COL]:.0f}mm").add_to(m_ctx)
+                
+                st_folium(m_ctx, height=400, width="100%")
+                
+                # Curvas Extra
                 if res.get("hyp") or res.get("fdc"):
-                    st.markdown("---")
-                    c_h, c_f = st.columns(2)
-                    with c_h:
-                        if res.get("hyp"):
-                            hyp = res["hyp"]
-                            fig_h = go.Figure(go.Scatter(x=hyp["area_percent"], y=hyp["elevations"], fill='tozeroy'))
-                            fig_h.update_layout(title="Curva Hipsométrica", height=300, margin=dict(l=0,r=0,t=30,b=0))
-                            st.plotly_chart(fig_h, use_container_width=True)
-                    with c_f:
-                        if res.get("fdc") and res["fdc"].get("data") is not None:
-                            df_fdc = res["fdc"]["data"]
-                            fig_f = go.Figure(go.Scatter(x=df_fdc["Probabilidad Excedencia (%)"], y=df_fdc["Caudal (m³/s)"], line=dict(color='green')))
-                            fig_f.update_layout(title="Curva Duración Caudales", yaxis_type="log", height=300, margin=dict(l=0,r=0,t=30,b=0))
-                            st.plotly_chart(fig_f, use_container_width=True)
-            else:
-                st.info("👈 Seleccione una cuenca y haga clic en '⚡ Analizar Cuenca'.")
+                    c1, c2 = st.columns(2)
+                    if res.get("hyp"): 
+                        with c1: st.plotly_chart(go.Figure(go.Scatter(x=res["hyp"]["area_percent"], y=res["hyp"]["elevations"], fill='tozeroy')).update_layout(title="Hipsometría", height=250), use_container_width=True)
+                    if res.get("fdc") and res["fdc"].get("data") is not None:
+                        with c2: st.plotly_chart(go.Figure(go.Scatter(x=res["fdc"]["data"]["Probabilidad Excedencia (%)"], y=res["fdc"]["data"]["Caudal (m³/s)"])).update_layout(title="Curva Duración", yaxis_type="log", height=250), use_container_width=True)
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
