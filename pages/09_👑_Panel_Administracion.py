@@ -294,23 +294,57 @@ with tabs[2]:
             df_p = pd.read_sql("SELECT * FROM predios LIMIT 2000", engine)
             st.data_editor(df_p, key="ed_pred", use_container_width=True)
         except: st.warning("Sin datos.")
+
     with sb2:
-        up_gp = st.file_uploader("GeoJSON", type=["geojson", "json"], key="up_pred_geo")
-        if up_gp and st.button("Procesar", key="btn_proc_pred"):
+        st.info("Carga 'Predios.geojson'. El sistema detectará automáticamente la geometría y reemplazará la tabla existente.")
+        
+        # Key única para evitar conflictos
+        up_gp = st.file_uploader("GeoJSON Predios", type=["geojson", "json"], key="up_pred_geo_smart")
+        
+        if up_gp:
             try:
-                data = json.load(up_gp)
-                rows = []
-                for f in data['features']:
-                    p = f.get('properties', {})
-                    rows.append({
-                        "id_predio": str(p.get('PK_PREDIOS', 'SN')),
-                        "nombre_predio": p.get('NOMBRE_PRE', ''),
-                        "municipio": p.get('NOMB_MPIO', ''),
-                        "area_ha": float(p.get('AREA_HA', 0))
+                # 1. Leemos CON GEOPANDAS (Para conservar el mapa)
+                gdf_p = gpd.read_file(up_gp)
+                cols_p = list(gdf_p.columns)
+                
+                st.markdown("##### 🛠️ Configuración de Columnas")
+                c1, c2 = st.columns(2)
+                
+                # Buscamos columnas candidatas automáticamente
+                idx_nom = next((i for i, c in enumerate(cols_p) if c.lower() in ['nombre_pre', 'nombre_predio', 'nombre', 'predio']), 0)
+                idx_id = next((i for i, c in enumerate(cols_p) if c.lower() in ['pk_predios', 'id_predio', 'codigo', 'id']), 0)
+                
+                # SELECTORES MANUALES (Tú tienes el control)
+                col_nom_p = c1.selectbox("📌 Columna NOMBRE PREDIO:", cols_p, index=idx_nom, key="sel_nom_pred")
+                col_id_p = c2.selectbox("🔑 Columna ID ÚNICO:", cols_p, index=idx_id, key="sel_id_pred")
+                
+                if st.button("🚀 Reemplazar y Guardar Predios", key="btn_save_pred_smart"):
+                    status = st.status("Procesando...", expanded=True)
+                    
+                    # 2. Asegurar WGS84
+                    if gdf_p.crs and gdf_p.crs.to_string() != "EPSG:4326":
+                        status.write("🔄 Reproyectando a WGS84...")
+                        gdf_p = gdf_p.to_crs("EPSG:4326")
+                    
+                    # 3. Renombrar a estándar (nombre_predio, id_predio)
+                    gdf_p = gdf_p.rename(columns={
+                        col_nom_p: 'nombre_predio',
+                        col_id_p: 'id_predio'
                     })
-                pd.DataFrame(rows).drop_duplicates('id_predio').to_sql('predios', engine, if_exists='append', index=False, method='multi')
-                st.success("Cargado.")
-            except: st.warning("Error/Duplicados. Use SQL para limpiar.")
+                    
+                    # 4. SUBIDA GEESPACIAL (to_postgis) con 'replace'
+                    # 'if_exists="replace"' elimina el error de duplicados borrando lo viejo
+                    status.write("📤 Guardando geometría en Base de Datos...")
+                    gdf_p.to_postgis('predios', engine, if_exists='replace', index=False)
+                    
+                    status.update(label="¡Predios Recuperados!", state="complete")
+                    st.success(f"✅ Se cargaron {len(gdf_p)} predios correctamente.")
+                    st.balloons()
+                    time.sleep(2)
+                    st.rerun()
+                    
+            except Exception as e:
+                st.error(f"Error procesando archivo: {e}")
 
 # ==============================================================================
 # TAB 4: CUENCAS (CORREGIDO: TODOS LOS CAMPOS DEL GEOJSON)
@@ -392,7 +426,7 @@ with tabs[3]:
                 st.error(f"Error leyendo archivo: {e}")
 
 # ==============================================================================
-# TAB 5: MUNICIPIOS (RECUPERADO)
+# TAB 5: MUNICIPIOS
 # ==============================================================================
 with tabs[4]:
     st.header("🏙️ Municipios")
