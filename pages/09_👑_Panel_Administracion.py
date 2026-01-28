@@ -339,62 +339,57 @@ with tabs[3]:
             st.info("No hay datos cargados o la tabla no existe aún.")
 
     with sb2:
-        st.info("Carga 'SubcuencasAinfluencia.geojson'. Se guardarán **TODOS** los atributos (AH, ZH, SZH, etc.)")
-        up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"], key="up_cuen_geo_all_fields")
+        st.info("Carga el archivo de Cuencas. Podrás elegir manualmente qué columna contiene el NOMBRE.")
+        up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"], key="up_cuen_geo_smart")
         
-        if up_c and st.button("Procesar Archivo Completo", key="btn_proc_cuen_full"):
-            status = st.status("Leyendo archivo geográfico...", expanded=True)
+        if up_c:
+            # 1. Previsualización Rápida
             try:
-                # 1. Leer GeoJSON con Geopandas (Captura todos los atributos automáticamente)
-                up_c.seek(0)
-                gdf = gpd.read_file(up_c)
+                gdf_preview = gpd.read_file(up_c)
+                cols = list(gdf_preview.columns)
                 
-                status.write(f"✅ Archivo leído. {len(gdf)} registros con {len(gdf.columns)} columnas.")
+                st.markdown("##### 🛠️ Configuración de Columnas (Mapeo)")
+                c1, c2 = st.columns(2)
                 
-                # 2. Estandarización WGS84
-                if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
-                    status.write("🔄 Reproyectando a WGS84...")
-                    gdf = gdf.to_crs("EPSG:4326")
+                # BUSCADOR INTELIGENTE DE COLUMNAS
+                # Intentamos adivinar, pero TÚ tienes la última palabra
+                idx_nom = next((i for i, c in enumerate(cols) if c.lower() in ['subc_lbl', 'n_nss3', 'nombre', 'nom_cuenca']), 0)
+                idx_id = next((i for i, c in enumerate(cols) if c.lower() in ['cod', 'objectid', 'id_cuenca', 'codigo']), 0)
                 
-                # 3. Normalizar nombres de columnas (minúsculas para evitar problemas en SQL)
-                gdf.columns = [c.lower() for c in gdf.columns]
+                col_nombre = c1.selectbox("📌 ¿Qué columna es el NOMBRE?", cols, index=idx_nom, key="sel_col_nom_cuenca")
+                col_id = c2.selectbox("🔑 ¿Qué columna es el ID/CÓDIGO?", cols, index=idx_id, key="sel_col_id_cuenca")
                 
-                # 4. Mapeo de columnas CLAVE para que la app funcione (sin perder las otras)
-                # La app espera 'id_cuenca' y 'nombre_cuenca'. Renombramos las tuyas a estas.
-                rename_dict = {}
-                
-                # Buscamos la columna de código (COD o OBJECTID)
-                if 'cod' in gdf.columns: rename_dict['cod'] = 'id_cuenca'
-                elif 'objectid' in gdf.columns: rename_dict['objectid'] = 'id_cuenca'
-                
-                # Buscamos la columna de nombre (SUBC_LBL o N_NSS1)
-                if 'subc_lbl' in gdf.columns: rename_dict['subc_lbl'] = 'nombre_cuenca'
-                elif 'n_nss1' in gdf.columns: rename_dict['n_nss1'] = 'nombre_cuenca'
-                
-                # Mapeo de Río Principal
-                if 'szh' in gdf.columns: rename_dict['szh'] = 'rio_principal'
-                
-                # Aplicar cambios de nombre
-                gdf = gdf.rename(columns=rename_dict)
-                
-                # Asegurar que id_cuenca sea texto
-                if 'id_cuenca' in gdf.columns:
-                    gdf['id_cuenca'] = gdf['id_cuenca'].astype(str)
-                
-                # 5. SUBIDA COMPLETA (Reemplazo total para reestructurar la tabla con los nuevos campos)
-                status.write("📤 Guardando en Base de Datos (Esto incluye AH, ZH, Zona, etc.)...")
-                gdf.to_postgis("cuencas", engine, if_exists='replace', index=False)
-                
-                status.update(label="¡Carga Exitosa!", state="complete", expanded=False)
-                st.success(f"✅ Base de datos actualizada con {len(gdf.columns)} campos de información.")
-                st.balloons()
-                time.sleep(1)
-                st.rerun()
-                
+                if st.button("🚀 Guardar en Base de Datos (Normalizado)", key="btn_save_cuenca_smart"):
+                    status = st.status("Procesando...", expanded=True)
+                    
+                    # 2. Normalización y Limpieza
+                    # Reproyectar a WGS84
+                    if gdf_preview.crs and gdf_preview.crs.to_string() != "EPSG:4326":
+                        status.write("🔄 Reproyectando a WGS84...")
+                        gdf_preview = gdf_preview.to_crs("EPSG:4326")
+                    
+                    # 3. Renombrar Columnas Clave (Lo que elegiste -> Estándar de la App)
+                    # Creamos un nuevo GDF limpio, pero conservamos todo si quieres
+                    gdf_preview = gdf_preview.rename(columns={
+                        col_nombre: 'nombre_cuenca',  # ESTANDARIZADO PARA LA APP
+                        col_id: 'id_cuenca'
+                    })
+                    
+                    # Aseguramos tipos
+                    gdf_preview['id_cuenca'] = gdf_preview['id_cuenca'].astype(str)
+                    
+                    # 4. Guardar
+                    status.write("📤 Subiendo a PostgreSQL...")
+                    gdf_preview.to_postgis("cuencas", engine, if_exists='replace', index=False)
+                    
+                    status.update(label="¡Carga Exitosa!", state="complete")
+                    st.success(f"✅ Tabla 'cuencas' actualizada. Columna de nombre configurada: **{col_nombre}** → **nombre_cuenca**")
+                    st.balloons()
+                    time.sleep(2)
+                    st.rerun()
+                    
             except Exception as e:
-                status.update(label="Error", state="error")
-                st.error(f"Error detallado: {e}")
-
+                st.error(f"Error leyendo archivo: {e}")
 
 # ==============================================================================
 # TAB 5: MUNICIPIOS (RECUPERADO)
@@ -423,24 +418,51 @@ with tabs[4]:
             st.warning("No hay municipios cargados.")
 
     with sb2:
-        st.info("Carga el archivo 'Municipios.geojson' para poblar la base de datos.")
-        up_m = st.file_uploader("GeoJSON Municipios", type=["geojson", "json"], key="up_mun_geo")
+        st.info("Carga el archivo de Municipios. Selecciona la columna correcta para evitar el error 'ANTIOQUIA'.")
+        up_m = st.file_uploader("GeoJSON Municipios", type=["geojson", "json"], key="up_mun_geo_smart")
         
-        if up_m and st.button("Procesar Municipios", key="btn_proc_mun"):
+        if up_m:
             try:
-                data = json.load(up_m)
-                rows = []
-                for f in data['features']:
-                    p = f.get('properties', {})
-                    rows.append({
-                        "id_municipio": str(p.get('MPIO_CDPMP', '00000')),
-                        "nombre_municipio": p.get('MPIO_CNMBR', ''),
-                        "departamento": p.get('DPTO_CNMBR', 'Antioquia'),
-                        "poblacion": 0
+                gdf_m = gpd.read_file(up_m)
+                cols_m = list(gdf_m.columns)
+                
+                st.markdown("##### 🛠️ Mapeo de Columnas")
+                c1, c2 = st.columns(2)
+                
+                # Intentamos adivinar MPIO_CNMBR o NOMBRE_MUNICIPIO
+                idx_nom_m = next((i for i, c in enumerate(cols_m) if c.lower() in ['mpio_cnmbr', 'nombre_municipio', 'nombre']), 0)
+                idx_cod_m = next((i for i, c in enumerate(cols_m) if c.lower() in ['mpio_cdpmp', 'codigo', 'id_municipio']), 0)
+                
+                # EL USUARIO ELIGE LA VERDAD
+                col_nom_mun = c1.selectbox("📌 Columna NOMBRE MUNICIPIO:", cols_m, index=idx_nom_m, help="Selecciona la que dice 'Medellín', NO la que dice 'Antioquia'")
+                col_cod_mun = c2.selectbox("🔑 Columna CÓDIGO DANE:", cols_m, index=idx_cod_m)
+                
+                if st.button("🚀 Guardar Municipios", key="btn_save_mun_smart"):
+                    status = st.status("Procesando...", expanded=True)
+                    
+                    if gdf_m.crs and gdf_m.crs.to_string() != "EPSG:4326":
+                        gdf_m = gdf_m.to_crs("EPSG:4326")
+                        
+                    # Renombrado Estándar
+                    gdf_m = gdf_m.rename(columns={
+                        col_nom_mun: 'nombre_municipio', # ESTANDARIZADO
+                        col_cod_mun: 'id_municipio'
                     })
-                pd.DataFrame(rows).drop_duplicates('id_municipio').to_sql('municipios', engine, if_exists='replace', index=False)
-                st.success(f"✅ Cargados {len(rows)} municipios.")
-            except Exception as e: st.error(f"Error: {e}")
+                    
+                    # Limpieza extra
+                    if 'departamento' not in gdf_m.columns:
+                        gdf_m['departamento'] = 'Antioquia' # Default si falta
+                        
+                    gdf_m.to_postgis('municipios', engine, if_exists='replace', index=False)
+                    
+                    status.update(label="¡Listo!", state="complete")
+                    st.success(f"✅ Municipios cargados. Mapeo: **{col_nom_mun}** → **nombre_municipio**")
+                    time.sleep(2)
+                    st.rerun()
+                    
+            except Exception as e:
+                st.error(f"Error: {e}")
+
 
 # ==============================================================================
 # TAB 6: COBERTURAS (VER INFO + GUARDAR)
