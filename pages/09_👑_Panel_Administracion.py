@@ -289,17 +289,19 @@ with tabs[1]:
 with tabs[2]:
     st.header("🏠 Gestión de Predios")
     sb1, sb2 = st.tabs(["👁️ Tabla Completa", "📂 Carga GeoJSON"])
+    
     with sb1:
         try:
-            df_p = pd.read_sql("SELECT * FROM predios LIMIT 2000", engine)
+            # Consultamos sin geometría para que sea rápido de ver
+            df_p = pd.read_sql("SELECT id_predio, nombre_predio, municipio, area_ha FROM predios LIMIT 2000", engine)
             st.data_editor(df_p, key="ed_pred", use_container_width=True)
-        except: st.warning("Sin datos.")
+        except: st.warning("Sin datos o tabla no existe.")
 
     with sb2:
-        st.info("Carga 'Predios.geojson'. El sistema detectará automáticamente la geometría y reemplazará la tabla existente.")
+        st.info("Carga 'PrediosEjecutados.geojson'. El sistema detectará automáticamente la geometría y reemplazará la tabla existente.")
         
         # Key única para evitar conflictos
-        up_gp = st.file_uploader("GeoJSON Predios", type=["geojson", "json"], key="up_pred_geo_smart")
+        up_gp = st.file_uploader("GeoJSON Predios", type=["geojson", "json"], key="up_pred_geo_smart_v2")
         
         if up_gp:
             try:
@@ -308,15 +310,17 @@ with tabs[2]:
                 cols_p = list(gdf_p.columns)
                 
                 st.markdown("##### 🛠️ Configuración de Columnas")
-                c1, c2 = st.columns(2)
+                c1, c2, c3 = st.columns(3)
                 
                 # Buscamos columnas candidatas automáticamente
                 idx_nom = next((i for i, c in enumerate(cols_p) if c.lower() in ['nombre_pre', 'nombre_predio', 'nombre', 'predio']), 0)
                 idx_id = next((i for i, c in enumerate(cols_p) if c.lower() in ['pk_predios', 'id_predio', 'codigo', 'id']), 0)
+                idx_mun = next((i for i, c in enumerate(cols_p) if c.lower() in ['nomb_mpio', 'municipio', 'mpio']), 0)
                 
                 # SELECTORES MANUALES (Tú tienes el control)
-                col_nom_p = c1.selectbox("📌 Columna NOMBRE PREDIO:", cols_p, index=idx_nom, key="sel_nom_pred")
-                col_id_p = c2.selectbox("🔑 Columna ID ÚNICO:", cols_p, index=idx_id, key="sel_id_pred")
+                col_nom_p = c1.selectbox("📌 Nombre Predio:", cols_p, index=idx_nom, key="sel_nom_pred")
+                col_id_p = c2.selectbox("🔑 ID Único:", cols_p, index=idx_id, key="sel_id_pred")
+                col_mun_p = c3.selectbox("🏙️ Municipio:", cols_p, index=idx_mun, key="sel_mun_pred")
                 
                 if st.button("🚀 Reemplazar y Guardar Predios", key="btn_save_pred_smart"):
                     status = st.status("Procesando...", expanded=True)
@@ -327,9 +331,11 @@ with tabs[2]:
                         gdf_p = gdf_p.to_crs("EPSG:4326")
                     
                     # 3. Renombrar a estándar (nombre_predio, id_predio)
+                    # Esto asegura que el visualizador encuentre las columnas
                     gdf_p = gdf_p.rename(columns={
                         col_nom_p: 'nombre_predio',
-                        col_id_p: 'id_predio'
+                        col_id_p: 'id_predio',
+                        col_mun_p: 'municipio'
                     })
                     
                     # 4. SUBIDA GEESPACIAL (to_postgis) con 'replace'
@@ -338,13 +344,14 @@ with tabs[2]:
                     gdf_p.to_postgis('predios', engine, if_exists='replace', index=False)
                     
                     status.update(label="¡Predios Recuperados!", state="complete")
-                    st.success(f"✅ Se cargaron {len(gdf_p)} predios correctamente.")
+                    st.success(f"✅ Se cargaron {len(gdf_p)} predios con su geometría correctamente.")
                     st.balloons()
                     time.sleep(2)
                     st.rerun()
                     
             except Exception as e:
                 st.error(f"Error procesando archivo: {e}")
+
 
 # ==============================================================================
 # TAB 4: CUENCAS (CORREGIDO: TODOS LOS CAMPOS DEL GEOJSON)
