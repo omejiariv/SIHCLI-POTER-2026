@@ -877,31 +877,46 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
             else:
                 src_dem = rasterio.open(path_dem)
 
-            # C. BUCLE DE CÁLCULO
+# C. BUCLE DE CÁLCULO
             progreso = st.progress(0)
             status = st.empty()
             lista_resultados = []
             total = len(gdf_all)
             
+            # Pre-chequeo del CRS del DEM para no hacerlo en cada iteración
+            crs_dem = src_dem.crs if src_dem else None
+
             for i, row in gdf_all.iterrows():
-                # Nombre usando la columna seleccionada
+                # Nombre
                 nom = str(row.get(col_nombre_reporte, f"Cuenca {i}"))
                 status.text(f"Procesando {i+1}/{total}: {nom}...")
                 
-                # --- 1. MORFOMETRÍA (Área Real) ---
+                # Geometría Original (en Metros EPSG:3116 según cargamos gdf_all)
                 geom_metros = row.geometry
+                
+                # --- 1. MORFOMETRÍA (Área) ---
                 area_km2 = geom_metros.area / 1e6
                 perim_km = geom_metros.length / 1000
                 
-                # --- 2. TOPOGRAFÍA (DEM) ---
-                alt_min, alt_max, alt_med = 0, 0, 0
+                # --- 2. TOPOGRAFÍA (Corrección de Alineación) ---
+                alt_min, alt_max, alt_med, pendiente_prom = 0, 0, 0, 0
                 ec_hyp = "N/A"
                 
                 if src_dem:
                     try:
-                        # Mask requiere geometría
-                        out_image, _ = mask(src_dem, [geom_metros], crop=True, nodata=src_dem.nodata)
+                        # [CLAVE] Alineación Dinámica:
+                        # Si el DEM tiene un CRS diferente a la Cuenca, reproyectamos la geometría
+                        # para que coincida con el DEM antes de cortar.
+                        if gdf_all.crs != crs_dem:
+                            geom_para_dem = gpd.GeoSeries([geom_metros], crs=gdf_all.crs).to_crs(crs_dem).iloc[0]
+                        else:
+                            geom_para_dem = geom_metros
+
+                        # Recorte (Mask) usando la geometría alineada
+                        out_image, _ = mask(src_dem, [geom_para_dem], crop=True, nodata=src_dem.nodata)
                         data = out_image[0]
+                        
+                        # Filtro de Validos (Quitamos NoData y errores < -100m)
                         validos = data[(data != src_dem.nodata) & (data > -100)]
                         
                         if validos.size > 0:
@@ -909,18 +924,29 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                             alt_max = float(np.max(validos))
                             alt_med = float(np.mean(validos))
                             
-                            # Curva Hipsométrica Real (Llamada al módulo analysis actualizado)
+                            # Cálculo aproximado de Pendiente (%)
+                            # Pendiente = (Desnivel / Longitud Característica) * 100
+                            # Longitud aprox = Raíz cuadrada del área
+                            long_aprox = np.sqrt(area_km2 * 1e6) 
+                            if long_aprox > 0:
+                                pendiente_prom = ((alt_max - alt_min) / long_aprox) * 100
+
+                            # Curva Hipsométrica (Pasamos la geometría alineada)
                             if analysis:
-                                gdf_temp = gpd.GeoDataFrame({'geometry': [geom_metros]}, crs="EPSG:3116")
+                                # Creamos un GDF temporal con el CRS del DEM para que analysis no falle
+                                gdf_temp = gpd.GeoDataFrame({'geometry': [geom_para_dem]}, crs=crs_dem)
                                 hyp_res = analysis.calculate_hypsometric_curve(gdf_temp, dem_path=path_dem)
                                 if hyp_res: ec_hyp = hyp_res.get("equation", "N/A")
-                    except: pass # Fallback silencioso si falla DEM parcial
+                        else:
+                            print(f"Cuenca {nom}: Intersección con DEM vacía.")
 
-                # --- 3. HIDROLOGÍA CON BUFFER 20KM ---
-                # Crear Buffer de 20km alrededor de la cuenca
+                    except Exception as e:
+                        print(f"Error DEM en {nom}: {e}")
+
+                # --- 3. HIDROLOGÍA (Buffer 20km) ---
+                # Usamos la geometría en METROS (EPSG:3116) para el buffer, eso es correcto
                 buffer_geom = geom_metros.buffer(20000) 
                 
-                # Filtrar estaciones
                 est_in_buffer = gdf_est[gdf_est.geometry.within(buffer_geom)]
                 n_est = len(est_in_buffer)
                 
@@ -930,32 +956,34 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 if n_est > 0:
                     ids_vecinos = est_in_buffer['id_estacion'].unique()
                     
-                    # A. Precipitación Media (Promedio vecinos)
+                    # A. Precipitación Media
                     ppt_vals = df_rain_anual[df_rain_anual['id_estacion_fk'].isin(ids_vecinos)]['ppt_anual']
                     if not ppt_vals.empty:
                         ppt_cuenca = ppt_vals.mean()
                     
-                    # B. Ecuación FDC Real (Serie sintética)
+                    # B. Ecuación FDC
                     if analysis:
                         try:
                             serie_vecinos = df_rain_mensual[df_rain_mensual['id_estacion_fk'].isin(ids_vecinos)]
-                            # Promedio espacial por fecha (Serie representativa de la zona)
                             serie_sintetica = serie_vecinos.groupby('fecha')['precipitation'].mean()
                             
-                            # Coeficiente escorrentía estimado para la curva
-                            temp_est = max(0, 28 - 0.006 * (alt_med if alt_med > 0 else 1500))
+                            # Usamos altura media calculada (o fallback 1500) para coeficientes
+                            h_calc = alt_med if alt_med > 0 else 1500
+                            temp_est = max(0, 28 - 0.006 * h_calc)
                             L_est = 300 + 25*temp_est + 0.05*(temp_est**3)
+                            
                             etr_est = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L_est)**2) if (L_est > 0 and ppt_cuenca > 0) else 0
+                            # Coeficiente de escorrentía (C = Q/P = (P-ETR)/P)
                             c_runoff = (ppt_cuenca - etr_est) / ppt_cuenca if ppt_cuenca > 0 else 0.4
                             
                             fdc_res = analysis.calculate_duration_curve(serie_sintetica, runoff_coeff=c_runoff, area_km2=area_km2)
                             if fdc_res: ec_fdc = fdc_res.get("equation", "N/A")
                         except: pass
                 else:
-                    ppt_cuenca = 2000 # Fallback si no hay nada en 20km (Raro)
+                    ppt_cuenca = 2000 # Fallback
 
-                # --- 4. BALANCE HÍDRICO (Turc) ---
-                if alt_med == 0: alt_med = 1500 # Fallback altura
+                # --- 4. BALANCE Y CIERRE ---
+                if alt_med == 0: alt_med = 1500 # Fallback final
                 
                 temp = max(0, 28 - 0.006 * alt_med)
                 L = 300 + 25*temp + 0.05*(temp**3)
@@ -964,17 +992,13 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 etr = min(etr, ppt_cuenca)
                 esc = ppt_cuenca - etr
                 
-                inf = esc * 0.3 # Factor medio suelo
-                rec = inf * 0.5 # Factor medio acuífero
-                
-                # Caudal (m3/s)
+                inf = esc * 0.3
+                rec = inf * 0.5
                 caudal = (esc * area_km2 * 1000) / 31536000
                 
-                # Índices
                 i_martonne = ppt_cuenca / (temp + 10)
                 i_fournier = (ppt_cuenca**2) / ppt_cuenca if ppt_cuenca > 0 else 0
                 
-                # --- 5. GUARDAR FILA ---
                 lista_resultados.append({
                     "Cuenca": nom,
                     "Área (km²)": round(area_km2, 2),
@@ -982,6 +1006,7 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                     "Altitud Media (msnm)": round(alt_med, 0),
                     "Altitud Mín": round(alt_min, 0),
                     "Altitud Máx": round(alt_max, 0),
+                    "Pendiente Media (%)": round(pendiente_prom, 2),
                     "Lluvia (mm)": round(ppt_cuenca, 0),
                     "ETR (mm)": round(etr, 0),
                     "Infiltración (mm)": round(inf, 0),
