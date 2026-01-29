@@ -800,237 +800,193 @@ else:
 
 
 # ==============================================================================
-# SECCIÓN: REPORTE GLOBAL HIDROLÓGICO (VERSIÓN FINAL: BUFFER 20KM + SELECTOR DE NOMBRE)
+# SECCIÓN: REPORTE GLOBAL HIDROLÓGICO (SOLUCIÓN DEM ORIGEN NACIONAL + BUFFER)
 # ==============================================================================
 st.markdown("---")
 with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=False):
     
-    st.info("Este módulo genera una tabla maestra con cálculos hidrológicos para TODAS las cuencas del sistema, usando estaciones vecinas (Buffer 20km) y el DEM real.")
+    st.info("Genera tabla maestra con Altitudes Reales (DEM Origen Nacional) y Lluvia Regional (Buffer 20km).")
 
-    # 1. VISUALIZAR REPORTE EXISTENTE (Si ya se calculó)
+    # 1. VER REPORTE EXISTENTE
     try:
         df_reporte_existente = pd.read_sql("SELECT * FROM reporte_cuencas", engine)
-        st.success(f"✅ Reporte disponible ({len(df_reporte_existente)} cuencas). Última actualización en BD.")
+        st.success(f"✅ Reporte disponible en BD ({len(df_reporte_existente)} registros).")
         st.dataframe(df_reporte_existente, use_container_width=True)
-        
         csv_ex = df_reporte_existente.to_csv(index=False).encode('utf-8')
         st.download_button("💾 Descargar Tabla (CSV)", csv_ex, "Reporte_Hidrologico_Global.csv", "text/csv")
         st.markdown("---")
     except:
-        st.warning("⚠️ No existe un reporte generado aún. Debes crearlo por primera vez.")
+        st.warning("⚠️ Aún no has generado el reporte.")
 
-    # 2. CONFIGURACIÓN DE GENERACIÓN
-    st.write("#### ⚙️ Configuración de Cálculo")
-    
-    # A. Selector de Columna de Nombre (CRÍTICO para ver "Tramo 1", "Tramo 2")
+    # 2. CONFIGURACIÓN
+    st.write("#### ⚙️ Configuración")
     try:
         cols_bd = pd.read_sql("SELECT column_name FROM information_schema.columns WHERE table_name = 'cuencas' AND column_name != 'geometry'", engine)['column_name'].tolist()
-        
-        # Intentamos seleccionar n_nss3 por defecto si existe
         idx_def = next((i for i, c in enumerate(cols_bd) if c in ['n_nss3', 'subc_lbl']), 0)
-        
-        col_nombre_reporte = st.selectbox(
-            "🏷️ ¿Qué columna usar como Nombre de Cuenca?", 
-            cols_bd, 
-            index=idx_def,
-            key="sel_col_reporte_glob",
-            help="Selecciona 'n_nss3' para ver los tramos detallados, o 'subc_lbl' para nombres generales."
-        )
+        col_nombre_reporte = st.selectbox("🏷️ Columna para Nombres:", cols_bd, index=idx_def, key="sel_col_rep_final")
     except:
-        col_nombre_reporte = 'nombre_cuenca' # Fallback
-        st.warning("No se pudieron leer las columnas de la tabla 'cuencas'. Usando 'nombre_cuenca'.")
+        col_nombre_reporte = 'nombre_cuenca'
 
-    # 3. BOTÓN DE GENERACIÓN
-    if st.button(f"🚀 Generar Reporte Completo (Usando '{col_nombre_reporte}')"):
+    # 3. BOTÓN DE CÁLCULO
+    if st.button(f"🚀 Generar Reporte (Forzando Alineación DEM)"):
         import rasterio
         from rasterio.mask import mask
         
         try:
-            # A. CARGAR INSUMOS
-            with st.spinner("Cargando geometrías, lluvias y DEM..."):
-                # 1. Cuencas (Proyectadas a Metros para medir área correctamente)
+            # A. CARGAR DATOS
+            with st.spinner("Cargando geometrías..."):
+                # Cuencas en Metros Bogotá (3116) para áreas y buffer
                 gdf_all = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry")
                 if gdf_all.crs and gdf_all.crs.to_string() != "EPSG:3116":
                     gdf_all = gdf_all.to_crs("EPSG:3116")
                 
-                # 2. Estaciones (Proyectadas a Metros para el Buffer)
+                # Estaciones en Metros Bogotá (3116)
                 gdf_est = gpd.read_postgis("SELECT id_estacion, geom FROM estaciones", engine, geom_col="geom")
                 if gdf_est.crs and gdf_est.crs.to_string() != "EPSG:3116":
                     gdf_est = gdf_est.to_crs("EPSG:3116")
 
-                # 3. Datos de Lluvia (Total Anual y Serie Mensual)
-                df_rain_anual = pd.read_sql("""
-                    SELECT id_estacion_fk, AVG(precipitation)*12 as ppt_anual 
-                    FROM precipitacion_mensual 
-                    GROUP BY id_estacion_fk
-                """, engine)
-                
-                # Serie mensual para calcular FDC real
+                # Lluvia
+                df_rain_anual = pd.read_sql("SELECT id_estacion_fk, AVG(precipitation)*12 as ppt_anual FROM precipitacion_mensual GROUP BY id_estacion_fk", engine)
                 df_rain_mensual = pd.read_sql("SELECT id_estacion_fk, fecha_mes_año, precipitation FROM precipitacion_mensual", engine)
                 df_rain_mensual['fecha'] = pd.to_datetime(df_rain_mensual['fecha_mes_año'])
 
             # B. PREPARAR DEM
             path_dem = "data/DemAntioquia_EPSG3116.tif"
             if not os.path.exists(path_dem):
-                st.error(f"❌ Falta el archivo DEM: {path_dem}. Las alturas serán 0.")
+                st.error(f"❌ Falta DEM: {path_dem}")
                 src_dem = None
             else:
                 src_dem = rasterio.open(path_dem)
+                # Detección de CRS del DEM (Para alinear la cuenca)
+                # Si es Origen Único, rasterio suele leerlo como EPSG:9377 o similar
+                crs_dem_objetivo = src_dem.crs
+                # Parche de seguridad: Si rasterio no lee el CRS pero sabemos que es CTM12 (5 millones)
+                if not crs_dem_objetivo and src_dem.transform[2] > 4000000:
+                    crs_dem_objetivo = "EPSG:9377" # Forzamos CTM12
 
-# C. BUCLE DE CÁLCULO
+            # C. BUCLE
             progreso = st.progress(0)
             status = st.empty()
             lista_resultados = []
             total = len(gdf_all)
             
-            # Pre-chequeo del CRS del DEM para no hacerlo en cada iteración
-            crs_dem = src_dem.crs if src_dem else None
-
             for i, row in gdf_all.iterrows():
-                # Nombre
                 nom = str(row.get(col_nombre_reporte, f"Cuenca {i}"))
                 status.text(f"Procesando {i+1}/{total}: {nom}...")
                 
-                # Geometría Original (en Metros EPSG:3116 según cargamos gdf_all)
-                geom_metros = row.geometry
+                # Geometría Base (Bogotá - 3116)
+                geom_base = row.geometry
+                area_km2 = geom_base.area / 1e6
+                perim_km = geom_base.length / 1000
                 
-                # --- 1. MORFOMETRÍA (Área) ---
-                area_km2 = geom_metros.area / 1e6
-                perim_km = geom_metros.length / 1000
-                
-                # --- 2. TOPOGRAFÍA (Corrección de Alineación) ---
-                alt_min, alt_max, alt_med, pendiente_prom = 0, 0, 0, 0
+                # --- 1. TOPOGRAFÍA (DEM) ---
+                alt_min, alt_max, alt_med, pend_med = 0, 0, 0, 0
                 ec_hyp = "N/A"
-                                
+                
                 if src_dem:
                     try:
-                        # --- SOLUCIÓN FUERZA BRUTA PARA ORIGEN NACIONAL ---
-                        # Definimos explícitamente el CRS de Origen Nacional (CTM12)
-                        # Esto asegura que la cuenca viaje a las coordenadas 5,000,000
-                        crs_objetivo = "EPSG:9377" 
+                        # TRUCO MAESTRO: Reproyectar la geometría AL SISTEMA DEL DEM
+                        # Convertimos de 3116 (Bogotá) -> al CRS del DEM (probablemente 9377)
+                        geom_para_dem = gpd.GeoSeries([geom_base], crs="EPSG:3116").to_crs(crs_dem_objetivo).iloc[0]
                         
-                        # 1. Reproyectar Cuenca a CTM12 (Origen Nacional)
-                        # Asumimos que la cuenca viene de BD en WGS84 (4326) o Magna Bogota (3116)
-                        geom_reproyectada = gpd.GeoSeries([geom_metros], crs="EPSG:3116").to_crs(crs_objetivo)
-                        
-                        # 2. Verificar si el DEM tiene CRS asignado, si no, le forzamos el override
-                        # (Esto es un truco de rasterio para leerlo como si fuera CTM12 si no trae etiqueta)
-                        # Pero primero intentamos el recorte normal con la geometría reproyectada
-                        
-                        out_image, out_transform = mask(src_dem, geom_reproyectada, crop=True, nodata=src_dem.nodata)
+                        out_image, _ = mask(src_dem, [geom_para_dem], crop=True, nodata=src_dem.nodata)
                         data = out_image[0]
-                        
-                        # 3. Validar Datos
-                        validos = data[(data != src_dem.nodata) & (data > 0)] # Altura > 0
+                        validos = data[(data != src_dem.nodata) & (data > -500)] # Filtro vacíos
                         
                         if validos.size > 0:
                             alt_min = float(np.min(validos))
                             alt_max = float(np.max(validos))
                             alt_med = float(np.mean(validos))
                             
-                            # Cálculo pendiente (Aprox)
-                            dist_aprox = np.sqrt(area_km2 * 1e6)
-                            if dist_aprox > 0:
-                                pendiente_prom = ((alt_max - alt_min) / dist_aprox) * 100
+                            # Pendiente Aprox (%)
+                            l_caracteristica = np.sqrt(area_km2 * 1e6)
+                            if l_caracteristica > 0:
+                                pend_med = ((alt_max - alt_min) / l_caracteristica) * 100
 
-                            # Curva Hipsométrica (Pasamos la geometría alineada)
-                            if analysis:
-                                # Creamos un GDF temporal con el CRS del DEM para que analysis no falle
-                                gdf_temp = gpd.GeoDataFrame({'geometry': [geom_para_dem]}, crs=crs_dem)
-                                hyp_res = analysis.calculate_hypsometric_curve(gdf_temp, dem_path=path_dem)
-                                if hyp_res: ec_hyp = hyp_res.get("equation", "N/A")
-                        else:
-                            print(f"Cuenca {nom}: Intersección con DEM vacía.")
+                            # Hipsometría (Cálculo In-Line para evitar errores de módulos)
+                            try:
+                                hist, bins = np.histogram(validos, bins=50)
+                                areas_acum = np.cumsum(hist[::-1]) / validos.size * 100 # % Área acumulada
+                                cotas = bins[:-1][::-1]
+                                # Ajuste Polinómico
+                                z = np.polyfit(areas_acum, cotas, 3)
+                                ec_hyp = f"H = {z[0]:.2e}A³ + {z[1]:.2e}A² + {z[2]:.2e}A + {z[3]:.0f}"
+                            except: pass
+                    except: pass
 
-                    except Exception as e:
-                        print(f"Error DEM en {nom}: {e}")
-
-                # --- 3. HIDROLOGÍA (Buffer 20km) ---
-                # Usamos la geometría en METROS (EPSG:3116) para el buffer, eso es correcto
-                buffer_geom = geom_metros.buffer(20000) 
-                
-                est_in_buffer = gdf_est[gdf_est.geometry.within(buffer_geom)]
-                n_est = len(est_in_buffer)
+                # --- 2. HIDROLOGÍA (Buffer 20km en 3116) ---
+                buffer_geom = geom_base.buffer(20000) 
+                est_in = gdf_est[gdf_est.geometry.within(buffer_geom)]
+                n_est = len(est_in)
                 
                 ppt_cuenca = 0
                 ec_fdc = "N/A"
                 
                 if n_est > 0:
-                    ids_vecinos = est_in_buffer['id_estacion'].unique()
+                    ids = est_in['id_estacion'].unique()
+                    ppt_vals = df_rain_anual[df_rain_anual['id_estacion_fk'].isin(ids)]['ppt_anual']
+                    if not ppt_vals.empty: ppt_cuenca = ppt_vals.mean()
                     
-                    # A. Precipitación Media
-                    ppt_vals = df_rain_anual[df_rain_anual['id_estacion_fk'].isin(ids_vecinos)]['ppt_anual']
-                    if not ppt_vals.empty:
-                        ppt_cuenca = ppt_vals.mean()
-                    
-                    # B. Ecuación FDC
+                    # FDC Real
                     if analysis:
                         try:
-                            serie_vecinos = df_rain_mensual[df_rain_mensual['id_estacion_fk'].isin(ids_vecinos)]
-                            serie_sintetica = serie_vecinos.groupby('fecha')['precipitation'].mean()
+                            s_mensual = df_rain_mensual[df_rain_mensual['id_estacion_fk'].isin(ids)]
+                            s_sintetica = s_mensual.groupby('fecha')['precipitation'].mean()
                             
-                            # Usamos altura media calculada (o fallback 1500) para coeficientes
-                            h_calc = alt_med if alt_med > 0 else 1500
-                            temp_est = max(0, 28 - 0.006 * h_calc)
-                            L_est = 300 + 25*temp_est + 0.05*(temp_est**3)
+                            h_ref = alt_med if alt_med > 0 else 1500
+                            temp = max(0, 28 - 0.006 * h_ref)
+                            L = 300 + 25*temp + 0.05*(temp**3)
+                            etr_e = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L>0 and ppt_cuenca>0) else 0
+                            c_run = (ppt_cuenca - etr_e)/ppt_cuenca if ppt_cuenca > 0 else 0.4
                             
-                            etr_est = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L_est)**2) if (L_est > 0 and ppt_cuenca > 0) else 0
-                            # Coeficiente de escorrentía (C = Q/P = (P-ETR)/P)
-                            c_runoff = (ppt_cuenca - etr_est) / ppt_cuenca if ppt_cuenca > 0 else 0.4
-                            
-                            fdc_res = analysis.calculate_duration_curve(serie_sintetica, runoff_coeff=c_runoff, area_km2=area_km2)
-                            if fdc_res: ec_fdc = fdc_res.get("equation", "N/A")
+                            fdc = analysis.calculate_duration_curve(s_sintetica, runoff_coeff=c_run, area_km2=area_km2)
+                            if fdc: ec_fdc = fdc.get("equation", "N/A")
                         except: pass
                 else:
                     ppt_cuenca = 2000 # Fallback
 
-                # --- 4. BALANCE Y CIERRE ---
-                if alt_med == 0: alt_med = 1500 # Fallback final
-                
+                # --- 3. BALANCE FINAL ---
+                if alt_med == 0: alt_med = 1500
                 temp = max(0, 28 - 0.006 * alt_med)
                 L = 300 + 25*temp + 0.05*(temp**3)
-                
-                etr = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L > 0 and ppt_cuenca > 0) else 0
-                etr = min(etr, ppt_cuenca)
+                etr = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L>0 and ppt_cuenca>0) else 0
                 esc = ppt_cuenca - etr
-                
                 inf = esc * 0.3
                 rec = inf * 0.5
                 caudal = (esc * area_km2 * 1000) / 31536000
                 
-                i_martonne = ppt_cuenca / (temp + 10)
-                i_fournier = (ppt_cuenca**2) / ppt_cuenca if ppt_cuenca > 0 else 0
-                
+                im = ppt_cuenca / (temp + 10)
+                ifow = (ppt_cuenca**2) / ppt_cuenca if ppt_cuenca > 0 else 0
+
                 lista_resultados.append({
                     "Cuenca": nom,
                     "Área (km²)": round(area_km2, 2),
                     "Perímetro (km)": round(perim_km, 2),
-                    "Altitud Media (msnm)": round(alt_med, 0),
-                    "Altitud Mín": round(alt_min, 0),
+                    "Altitud Media": round(alt_med, 0),
                     "Altitud Máx": round(alt_max, 0),
-                    "Pendiente Media (%)": round(pendiente_prom, 2),
+                    "Altitud Mín": round(alt_min, 0),
+                    "Pendiente (%)": round(pend_med, 2),
                     "Lluvia (mm)": round(ppt_cuenca, 0),
                     "ETR (mm)": round(etr, 0),
-                    "Infiltración (mm)": round(inf, 0),
-                    "Recarga (mm)": round(rec, 0),
-                    "Escorrentía (mm)": round(esc, 0),
+                    "Infiltración": round(inf, 0),
+                    "Recarga": round(rec, 0),
+                    "Escorrentía": round(esc, 0),
                     "Caudal (m³/s)": round(caudal, 3),
-                    "Estaciones (20km)": n_est,
-                    "I. Martonne": round(i_martonne, 2),
-                    "I. Fournier": round(i_fournier, 2),
+                    "Estaciones": n_est,
+                    "I. Martonne": round(im, 2),
+                    "I. Fournier": round(ifow, 2),
                     "Ec. Hipsométrica": ec_hyp,
                     "Ec. FDC": ec_fdc
                 })
-                
                 progreso.progress((i+1)/total)
 
-            # D. GUARDAR EN BD
+            # GUARDAR
             df_final = pd.DataFrame(lista_resultados)
             df_final.to_sql("reporte_cuencas", engine, if_exists='replace', index=False)
             
             progreso.empty()
-            status.success(f"✅ ¡Reporte Generado Exitosamente! ({len(df_final)} cuencas procesadas).")
-            st.rerun() # Recargar para mostrar la tabla nueva
-            
+            status.success("✅ Reporte Generado con Éxito.")
+            st.rerun()
+
         except Exception as e:
-            st.error(f"Error crítico generando el reporte: {e}")
+            st.error(f"Error: {e}")
