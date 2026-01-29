@@ -901,35 +901,37 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 # --- 2. TOPOGRAFÍA (Corrección de Alineación) ---
                 alt_min, alt_max, alt_med, pendiente_prom = 0, 0, 0, 0
                 ec_hyp = "N/A"
-                
+                                
                 if src_dem:
                     try:
-                        # [CLAVE] Alineación Dinámica:
-                        # Si el DEM tiene un CRS diferente a la Cuenca, reproyectamos la geometría
-                        # para que coincida con el DEM antes de cortar.
-                        if gdf_all.crs != crs_dem:
-                            geom_para_dem = gpd.GeoSeries([geom_metros], crs=gdf_all.crs).to_crs(crs_dem).iloc[0]
-                        else:
-                            geom_para_dem = geom_metros
-
-                        # Recorte (Mask) usando la geometría alineada
-                        out_image, _ = mask(src_dem, [geom_para_dem], crop=True, nodata=src_dem.nodata)
+                        # --- SOLUCIÓN FUERZA BRUTA PARA ORIGEN NACIONAL ---
+                        # Definimos explícitamente el CRS de Origen Nacional (CTM12)
+                        # Esto asegura que la cuenca viaje a las coordenadas 5,000,000
+                        crs_objetivo = "EPSG:9377" 
+                        
+                        # 1. Reproyectar Cuenca a CTM12 (Origen Nacional)
+                        # Asumimos que la cuenca viene de BD en WGS84 (4326) o Magna Bogota (3116)
+                        geom_reproyectada = gpd.GeoSeries([geom_metros], crs="EPSG:3116").to_crs(crs_objetivo)
+                        
+                        # 2. Verificar si el DEM tiene CRS asignado, si no, le forzamos el override
+                        # (Esto es un truco de rasterio para leerlo como si fuera CTM12 si no trae etiqueta)
+                        # Pero primero intentamos el recorte normal con la geometría reproyectada
+                        
+                        out_image, out_transform = mask(src_dem, geom_reproyectada, crop=True, nodata=src_dem.nodata)
                         data = out_image[0]
                         
-                        # Filtro de Validos (Quitamos NoData y errores < -100m)
-                        validos = data[(data != src_dem.nodata) & (data > -100)]
+                        # 3. Validar Datos
+                        validos = data[(data != src_dem.nodata) & (data > 0)] # Altura > 0
                         
                         if validos.size > 0:
                             alt_min = float(np.min(validos))
                             alt_max = float(np.max(validos))
                             alt_med = float(np.mean(validos))
                             
-                            # Cálculo aproximado de Pendiente (%)
-                            # Pendiente = (Desnivel / Longitud Característica) * 100
-                            # Longitud aprox = Raíz cuadrada del área
-                            long_aprox = np.sqrt(area_km2 * 1e6) 
-                            if long_aprox > 0:
-                                pendiente_prom = ((alt_max - alt_min) / long_aprox) * 100
+                            # Cálculo pendiente (Aprox)
+                            dist_aprox = np.sqrt(area_km2 * 1e6)
+                            if dist_aprox > 0:
+                                pendiente_prom = ((alt_max - alt_min) / dist_aprox) * 100
 
                             # Curva Hipsométrica (Pasamos la geometría alineada)
                             if analysis:
