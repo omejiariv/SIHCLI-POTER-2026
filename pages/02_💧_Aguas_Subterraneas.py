@@ -144,21 +144,31 @@ if gdf_zona is not None:
     # 2. Estadísticas y Datos
     with st.spinner("Procesando hidrología..."):
         df_mapa_stats = hydrogeo_utils.obtener_estadisticas_estaciones(engine, df_puntos)
-
-    df_raw = pd.DataFrame()
-    intentos = [('precipitacion', 'id_estacion', 'fecha', 'valor'), ('precipitacion_mensual', 'id_estacion_fk', 'fecha_mes_año', 'precipitation')]
-    for tbl, col_id, col_f, col_v in intentos:
-        try:
-            if len(ids_estaciones) == 1:
-                q = text(f"SELECT {col_f} as fecha, {col_v} as valor FROM {tbl} WHERE {col_id} = '{ids_estaciones[0]}'")
-                df_temp = pd.read_sql(q, engine)
-            else:
-                q = text(f"SELECT {col_f} as fecha, {col_v} as valor FROM {tbl} WHERE {col_id} IN :ids")
-                df_temp = pd.read_sql(q, engine, params={'ids': tuple(ids_estaciones)})
-            if not df_temp.empty:
-                df_raw = df_temp
-                break
-        except: continue
+        
+        df_raw = pd.DataFrame()
+        intentos = [
+            ('precipitacion', 'id_estacion', 'fecha', 'valor'), 
+            ('precipitacion_mensual', 'id_estacion_fk', 'fecha_mes_año', 'precipitation')
+        ]
+        
+        for tbl, col_id, col_f, col_v in intentos:
+            try:
+                # --- CORRECCIÓN CLAVE AQUÍ ---
+                # Agregamos "{col_id} as id_estacion" a la consulta SQL
+                if len(ids_estaciones) == 1:
+                    q = text(f"SELECT {col_id} as id_estacion, {col_f} as fecha, {col_v} as valor FROM {tbl} WHERE {col_id} = '{ids_estaciones[0]}'")
+                    df_temp = pd.read_sql(q, engine)
+                else:
+                    q = text(f"SELECT {col_id} as id_estacion, {col_f} as fecha, {col_v} as valor FROM {tbl} WHERE {col_id} IN :ids")
+                    df_temp = pd.read_sql(q, engine, params={'ids': tuple(ids_estaciones)})
+                
+                if not df_temp.empty:
+                    df_raw = df_temp
+                    # Aseguramos que el ID sea string para que coincida con la tabla de puntos
+                    df_raw['id_estacion'] = df_raw['id_estacion'].astype(str)
+                    break
+            except Exception as e:
+                continue
 
     df_res = pd.DataFrame()
     if not df_raw.empty:
