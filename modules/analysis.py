@@ -915,14 +915,12 @@ def calculate_percentiles_extremes(df_long, station_name, p_low=10, p_high=90):
 def calculate_duration_curve(series_mensual, runoff_coeff, area_km2):
     """
     Calcula la Curva de Duración de Caudales (FDC) con ajuste polinómico y R².
+    CORRECCIÓN: Formato en Notación Científica (Scientific Notation) para la ecuación.
     """
     if series_mensual is None or series_mensual.empty:
         return None
 
-    # Q (m3/s) = P(mm/mes) * C * Area(km2) * 1000 / (30.44 * 86400)
-    # Factor de conversión de mm/mes a m3/s:
-    # (Area * 1000) / (30.44 días/mes * 24h * 3600s)
-    # Usamos 30.4375 días como promedio exacto del mes (365.25/12)
+    # Q (m3/s) = P(mm/mes) * C * Area(km2) * 1000 / (30.4375 * 86400)
     factor = (area_km2 * 1000) / (30.4375 * 86400)
     q_m3s = series_mensual * runoff_coeff * factor
 
@@ -948,18 +946,13 @@ def calculate_duration_curve(series_mensual, runoff_coeff, area_km2):
         ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
         r_squared = 1 - (ss_res / ss_tot)
 
-        # Formato DECIMAL LEGIBLE (evitando notación científica)
-        # Q = aP³ + bP² + cP + d
-        # Usamos 6 decimales para el cúbico porque suele ser pequeño, 2 para la constante
-        sign_b = "+" if coeffs[1] >= 0 else "-"
-        sign_c = "+" if coeffs[2] >= 0 else "-"
-        sign_d = "+" if coeffs[3] >= 0 else "-"
-
+        # --- FORMATO CIENTÍFICO APLICADO AQUÍ ---
+        # Usamos :.2e para asegurar que coeficientes pequeños (ej: 4.5e-06) se vean bien
         eq_str = (
-            f"Q = {coeffs[0]:.6f}P^3 "
-            f"{sign_b} {abs(coeffs[1]):.2e}P^2 "
-            f"{sign_c} {abs(coeffs[2]):.2e}P "
-            f"{sign_d} {abs(coeffs[3]):.2f}"
+            f"Q = {coeffs[0]:.2e}P³ "
+            f"{'+' if coeffs[1]>=0 else '-'} {abs(coeffs[1]):.2e}P² "
+            f"{'+' if coeffs[2]>=0 else '-'} {abs(coeffs[2]):.2e}P "
+            f"{'+' if coeffs[3]>=0 else '-'} {abs(coeffs[3]):.2e}"
         )
 
         # Generar línea de tendencia para graficar
@@ -981,7 +974,6 @@ def calculate_duration_curve(series_mensual, runoff_coeff, area_km2):
         "trend_x": trend_x,
         "trend_y": trend_y,
     }
-
 
 # --- 4. CORRECCIÓN DE SESGO (BIAS CORRECTION) ---
 def calculate_bias_correction_metrics(df_stations, df_satellite):
