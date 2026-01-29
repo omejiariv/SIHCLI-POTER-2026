@@ -800,76 +800,106 @@ else:
 
 
 # ==============================================================================
-# SECCIÓN: REPORTE GLOBAL HIDROLÓGICO (CON BUFFER 20KM)
+# SECCIÓN: REPORTE GLOBAL HIDROLÓGICO (VERSIÓN FINAL: BUFFER 20KM + SELECTOR DE NOMBRE)
 # ==============================================================================
 st.markdown("---")
 with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=False):
     
-    # 1. Botón de Generación
-    if st.button("🚀 Generar/Actualizar Reporte Global (Con Buffer 20km)"):
+    st.info("Este módulo genera una tabla maestra con cálculos hidrológicos para TODAS las cuencas del sistema, usando estaciones vecinas (Buffer 20km) y el DEM real.")
+
+    # 1. VISUALIZAR REPORTE EXISTENTE (Si ya se calculó)
+    try:
+        df_reporte_existente = pd.read_sql("SELECT * FROM reporte_cuencas", engine)
+        st.success(f"✅ Reporte disponible ({len(df_reporte_existente)} cuencas). Última actualización en BD.")
+        st.dataframe(df_reporte_existente, use_container_width=True)
+        
+        csv_ex = df_reporte_existente.to_csv(index=False).encode('utf-8')
+        st.download_button("💾 Descargar Tabla (CSV)", csv_ex, "Reporte_Hidrologico_Global.csv", "text/csv")
+        st.markdown("---")
+    except:
+        st.warning("⚠️ No existe un reporte generado aún. Debes crearlo por primera vez.")
+
+    # 2. CONFIGURACIÓN DE GENERACIÓN
+    st.write("#### ⚙️ Configuración de Cálculo")
+    
+    # A. Selector de Columna de Nombre (CRÍTICO para ver "Tramo 1", "Tramo 2")
+    try:
+        cols_bd = pd.read_sql("SELECT column_name FROM information_schema.columns WHERE table_name = 'cuencas' AND column_name != 'geometry'", engine)['column_name'].tolist()
+        
+        # Intentamos seleccionar n_nss3 por defecto si existe
+        idx_def = next((i for i, c in enumerate(cols_bd) if c in ['n_nss3', 'subc_lbl']), 0)
+        
+        col_nombre_reporte = st.selectbox(
+            "🏷️ ¿Qué columna usar como Nombre de Cuenca?", 
+            cols_bd, 
+            index=idx_def,
+            key="sel_col_reporte_glob",
+            help="Selecciona 'n_nss3' para ver los tramos detallados, o 'subc_lbl' para nombres generales."
+        )
+    except:
+        col_nombre_reporte = 'nombre_cuenca' # Fallback
+        st.warning("No se pudieron leer las columnas de la tabla 'cuencas'. Usando 'nombre_cuenca'.")
+
+    # 3. BOTÓN DE GENERACIÓN
+    if st.button(f"🚀 Generar Reporte Completo (Usando '{col_nombre_reporte}')"):
         import rasterio
         from rasterio.mask import mask
         
         try:
-            # A. Cargar Insumos
-            with st.spinner("Cargando geometrías y datos base..."):
-                # Cuencas y Proyección a Metros (EPSG:3116) para poder hacer buffer en metros
+            # A. CARGAR INSUMOS
+            with st.spinner("Cargando geometrías, lluvias y DEM..."):
+                # 1. Cuencas (Proyectadas a Metros para medir área correctamente)
                 gdf_all = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry")
-                if gdf_all.crs.to_string() != "EPSG:3116":
+                if gdf_all.crs and gdf_all.crs.to_string() != "EPSG:3116":
                     gdf_all = gdf_all.to_crs("EPSG:3116")
                 
-                # Estaciones (Geometría en Metros)
+                # 2. Estaciones (Proyectadas a Metros para el Buffer)
                 gdf_est = gpd.read_postgis("SELECT id_estacion, geom FROM estaciones", engine, geom_col="geom")
                 if gdf_est.crs and gdf_est.crs.to_string() != "EPSG:3116":
                     gdf_est = gdf_est.to_crs("EPSG:3116")
 
-                # Datos de Lluvia (Total Anual Promedio)
+                # 3. Datos de Lluvia (Total Anual y Serie Mensual)
                 df_rain_anual = pd.read_sql("""
                     SELECT id_estacion_fk, AVG(precipitation)*12 as ppt_anual 
                     FROM precipitacion_mensual 
                     GROUP BY id_estacion_fk
                 """, engine)
                 
-                # Datos de Lluvia (Serie Mensual para FDC)
-                # Cargamos todo en memoria (cuidado si es muy grande, pero necesario para FDC real)
-                df_rain_mensual = pd.read_sql("""
-                    SELECT id_estacion_fk, fecha_mes_año, precipitation 
-                    FROM precipitacion_mensual
-                """, engine)
+                # Serie mensual para calcular FDC real
+                df_rain_mensual = pd.read_sql("SELECT id_estacion_fk, fecha_mes_año, precipitation FROM precipitacion_mensual", engine)
                 df_rain_mensual['fecha'] = pd.to_datetime(df_rain_mensual['fecha_mes_año'])
 
-            # B. Preparar DEM
+            # B. PREPARAR DEM
             path_dem = "data/DemAntioquia_EPSG3116.tif"
             if not os.path.exists(path_dem):
-                st.error(f"Falta DEM: {path_dem}. Altitudes serán 0.")
+                st.error(f"❌ Falta el archivo DEM: {path_dem}. Las alturas serán 0.")
                 src_dem = None
             else:
                 src_dem = rasterio.open(path_dem)
 
+            # C. BUCLE DE CÁLCULO
             progreso = st.progress(0)
             status = st.empty()
             lista_resultados = []
             total = len(gdf_all)
             
-            # C. Bucle de Cálculo
             for i, row in gdf_all.iterrows():
-                # Nombre seguro
-                nom = row.get('nombre_cuenca', row.get('subc_lbl', f"Cuenca {i}"))
-                status.text(f"Analizando {i+1}/{total}: {nom}...")
+                # Nombre usando la columna seleccionada
+                nom = str(row.get(col_nombre_reporte, f"Cuenca {i}"))
+                status.text(f"Procesando {i+1}/{total}: {nom}...")
                 
-                # --- 1. Morfometría (Área Real) ---
+                # --- 1. MORFOMETRÍA (Área Real) ---
                 geom_metros = row.geometry
                 area_km2 = geom_metros.area / 1e6
                 perim_km = geom_metros.length / 1000
                 
-                # --- 2. Topografía (DEM) ---
+                # --- 2. TOPOGRAFÍA (DEM) ---
                 alt_min, alt_max, alt_med = 0, 0, 0
                 ec_hyp = "N/A"
                 
                 if src_dem:
                     try:
-                        # Mask requiere geometría en el CRS del Raster
-                        # Asumimos que el Raster y gdf_all (EPSG:3116) coinciden
+                        # Mask requiere geometría
                         out_image, _ = mask(src_dem, [geom_metros], crop=True, nodata=src_dem.nodata)
                         data = out_image[0]
                         validos = data[(data != src_dem.nodata) & (data > -100)]
@@ -879,22 +909,18 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                             alt_max = float(np.max(validos))
                             alt_med = float(np.mean(validos))
                             
-                            # Curva Hipsométrica Real
+                            # Curva Hipsométrica Real (Llamada al módulo analysis actualizado)
                             if analysis:
-                                # Creamos un GDF temporal en el CRS correcto para pasar a analysis
                                 gdf_temp = gpd.GeoDataFrame({'geometry': [geom_metros]}, crs="EPSG:3116")
                                 hyp_res = analysis.calculate_hypsometric_curve(gdf_temp, dem_path=path_dem)
                                 if hyp_res: ec_hyp = hyp_res.get("equation", "N/A")
-                    except Exception as e:
-                        # Fallback suave
-                        pass
+                    except: pass # Fallback silencioso si falla DEM parcial
 
-                # --- 3. HIDROLOGÍA CON BUFFER 20KM (LA SOLUCIÓN) ---
-                
+                # --- 3. HIDROLOGÍA CON BUFFER 20KM ---
                 # Crear Buffer de 20km alrededor de la cuenca
-                buffer_geom = geom_metros.buffer(20000) # 20,000 metros
+                buffer_geom = geom_metros.buffer(20000) 
                 
-                # Filtrar estaciones dentro del buffer
+                # Filtrar estaciones
                 est_in_buffer = gdf_est[gdf_est.geometry.within(buffer_geom)]
                 n_est = len(est_in_buffer)
                 
@@ -904,63 +930,58 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 if n_est > 0:
                     ids_vecinos = est_in_buffer['id_estacion'].unique()
                     
-                    # A. Precipitación Media Anual (Promedio de vecinos)
+                    # A. Precipitación Media (Promedio vecinos)
                     ppt_vals = df_rain_anual[df_rain_anual['id_estacion_fk'].isin(ids_vecinos)]['ppt_anual']
                     if not ppt_vals.empty:
                         ppt_cuenca = ppt_vals.mean()
                     
-                    # B. Ecuación FDC Real (Usando serie sintética de vecinos)
+                    # B. Ecuación FDC Real (Serie sintética)
                     if analysis:
                         try:
-                            # Filtramos la serie mensual de los vecinos
                             serie_vecinos = df_rain_mensual[df_rain_mensual['id_estacion_fk'].isin(ids_vecinos)]
-                            # Promediamos por fecha para crear una "Estación Virtual" representativa
+                            # Promedio espacial por fecha (Serie representativa de la zona)
                             serie_sintetica = serie_vecinos.groupby('fecha')['precipitation'].mean()
                             
-                            # Coeficiente escorrentía estimado (Turc simple para el coeff)
-                            # Se recalcula abajo con precisión, aquí un estimado para la curva
-                            temp_est = max(0, 28 - 0.006 * alt_med)
+                            # Coeficiente escorrentía estimado para la curva
+                            temp_est = max(0, 28 - 0.006 * (alt_med if alt_med > 0 else 1500))
                             L_est = 300 + 25*temp_est + 0.05*(temp_est**3)
-                            etr_est = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L_est)**2) if L_est > 0 else 0
+                            etr_est = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L_est)**2) if (L_est > 0 and ppt_cuenca > 0) else 0
                             c_runoff = (ppt_cuenca - etr_est) / ppt_cuenca if ppt_cuenca > 0 else 0.4
                             
                             fdc_res = analysis.calculate_duration_curve(serie_sintetica, runoff_coeff=c_runoff, area_km2=area_km2)
                             if fdc_res: ec_fdc = fdc_res.get("equation", "N/A")
                         except: pass
                 else:
-                    # Fallback extremo si no hay nada en 20km (Raro en Antioquia)
-                    ppt_cuenca = 2000 
+                    ppt_cuenca = 2000 # Fallback si no hay nada en 20km (Raro)
 
-                # --- 4. Balance Hídrico (Turc) ---
-                # Usamos la altura media REAL calculada del DEM
-                if alt_med == 0: alt_med = 1500 # Solo si falló el DEM
+                # --- 4. BALANCE HÍDRICO (Turc) ---
+                if alt_med == 0: alt_med = 1500 # Fallback altura
                 
                 temp = max(0, 28 - 0.006 * alt_med)
                 L = 300 + 25*temp + 0.05*(temp**3)
                 
-                # ETR y Escorrentía
                 etr = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L > 0 and ppt_cuenca > 0) else 0
-                etr = min(etr, ppt_cuenca) # Física básica
+                etr = min(etr, ppt_cuenca)
                 esc = ppt_cuenca - etr
                 
-                # Infiltración y Recarga (Factores Globales del Sidebar o Defecto)
-                # Como es reporte global, usamos valores medios típicos de la zona andina
-                # Si quieres usar los del sidebar, tendrías que leer st.session_state
-                inf = esc * 0.3 # ~30% de la escorrentía infiltra
-                rec = inf * 0.5 # ~50% de lo infiltrado recarga
+                inf = esc * 0.3 # Factor medio suelo
+                rec = inf * 0.5 # Factor medio acuífero
                 
-                # Caudal Medio (m3/s)
+                # Caudal (m3/s)
                 caudal = (esc * area_km2 * 1000) / 31536000
                 
                 # Índices
                 i_martonne = ppt_cuenca / (temp + 10)
-                i_fournier = (ppt_cuenca**2) / ppt_cuenca # Aprox anual
+                i_fournier = (ppt_cuenca**2) / ppt_cuenca if ppt_cuenca > 0 else 0
                 
-                # Guardar Fila
+                # --- 5. GUARDAR FILA ---
                 lista_resultados.append({
                     "Cuenca": nom,
                     "Área (km²)": round(area_km2, 2),
                     "Perímetro (km)": round(perim_km, 2),
+                    "Altitud Media (msnm)": round(alt_med, 0),
+                    "Altitud Mín": round(alt_min, 0),
+                    "Altitud Máx": round(alt_max, 0),
                     "Lluvia (mm)": round(ppt_cuenca, 0),
                     "ETR (mm)": round(etr, 0),
                     "Infiltración (mm)": round(inf, 0),
@@ -968,28 +989,21 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                     "Escorrentía (mm)": round(esc, 0),
                     "Caudal (m³/s)": round(caudal, 3),
                     "Estaciones (20km)": n_est,
-                    "Pendiente Media (%)": 0,
                     "I. Martonne": round(i_martonne, 2),
                     "I. Fournier": round(i_fournier, 2),
-                    "Altitud Máx": round(alt_max, 0),
-                    "Altitud Mín": round(alt_min, 0),
-                    "Altitud Media": round(alt_med, 0),
                     "Ec. Hipsométrica": ec_hyp,
                     "Ec. FDC": ec_fdc
                 })
                 
                 progreso.progress((i+1)/total)
 
-            # D. Guardar y Mostrar
+            # D. GUARDAR EN BD
             df_final = pd.DataFrame(lista_resultados)
             df_final.to_sql("reporte_cuencas", engine, if_exists='replace', index=False)
             
             progreso.empty()
-            status.success(f"✅ ¡Reporte Actualizado! Se usaron estaciones en un radio de 20km.")
-            st.dataframe(df_final, use_container_width=True)
-            
-            csv = df_final.to_csv(index=False).encode('utf-8')
-            st.download_button("💾 Descargar CSV", csv, "Reporte_Hidrologico_Buffer20km.csv", "text/csv")
+            status.success(f"✅ ¡Reporte Generado Exitosamente! ({len(df_final)} cuencas procesadas).")
+            st.rerun() # Recargar para mostrar la tabla nueva
             
         except Exception as e:
-            st.error(f"Error crítico: {e}")
+            st.error(f"Error crítico generando el reporte: {e}")
