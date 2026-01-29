@@ -1029,7 +1029,6 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                         if not s_mensual.empty:
                             s_sintetica = s_mensual.groupby('fecha')['precipitation'].mean()
                             
-                            
                             # Estadísticas con Suelo Hidrológico
                             stats_ext = analysis.calculate_hydrological_statistics(
                                 s_sintetica, 
@@ -1038,15 +1037,11 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                                 q_base_m3s=q_base_m3s
                             )
                             
-                            # FDC (ACTUALIZADO: Pasando q_base_m3s)
-                            fdc = analysis.calculate_duration_curve(
-                                s_sintetica, 
-                                runoff_coeff=c_directo, 
-                                area_km2=area_km2,
-                                q_base_m3s=q_base_m3s # <--- NUEVO ARGUMENTO
-                            )
-                            
+                            # FDC
+                            fdc = analysis.calculate_duration_curve(s_sintetica, runoff_coeff=c_directo, area_km2=area_km2, q_base_m3s=q_base_m3s)
                             if fdc: ec_fdc = fdc.get("equation", "N/A")
+                    except: 
+                        pass # <--- AQUÍ ESTABA EL ERROR: Faltaba cerrar el try
 
                 # Índices
                 im = ppt_cuenca / (temp + 10)
