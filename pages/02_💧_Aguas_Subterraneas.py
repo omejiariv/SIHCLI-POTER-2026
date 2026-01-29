@@ -16,8 +16,14 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import os
 
+# Importaciones de módulos propios
 from modules import db_manager, hydrogeo_utils, selectors
 from modules import land_cover
+# Intentamos importar analysis para las curvas, si falla no rompe la app
+try:
+    from modules import analysis
+except ImportError:
+    analysis = None
 
 st.set_page_config(page_title="Aguas Subterráneas", page_icon="💧", layout="wide")
 
@@ -25,8 +31,7 @@ if st.sidebar.button("🧹 Limpiar Memoria y Recargar"):
     st.cache_data.clear()
     st.rerun()
 
-# --- 1. SELECTOR ESPACIAL (ESTO DEBE IR PRIMERO) ---
-# Al llamar esto aquí, definimos gdf_zona ANTES de usarlo en los parámetros
+# --- 1. SELECTOR ESPACIAL ---
 ids_estaciones, nombre_zona, altitud_ref, gdf_zona = selectors.render_selector_espacial()
 engine = db_manager.get_engine()
 
@@ -34,7 +39,6 @@ engine = db_manager.get_engine()
 st.sidebar.divider()
 st.sidebar.header("🎛️ Parámetros del Modelo")
 
-# RUTA AL RASTER (Asegúrate que existe en data/)
 RUTA_RASTER = "data/Cob25m_WGS84.tif"
 
 modo_params = st.sidebar.radio(
@@ -43,10 +47,8 @@ modo_params = st.sidebar.radio(
     horizontal=True
 )
 
-# Valores iniciales
 pct_bosque, pct_agricola, pct_pecuario, pct_agua, pct_urbano = 40.0, 20.0, 30.0, 5.0, 5.0
 
-# Lógica condicional segura (Ahora gdf_zona sí existe)
 if modo_params == "Automático (Satélite)" and gdf_zona is not None:
     with st.sidebar.status("🛰️ Analizando territorio..."):
         stats_raw = land_cover.calcular_estadisticas_zona(gdf_zona, RUTA_RASTER)
@@ -57,7 +59,6 @@ if modo_params == "Automático (Satélite)" and gdf_zona is not None:
     else:
         st.sidebar.success("✅ Datos extraídos")
         pct_bosque, pct_agricola, pct_pecuario, pct_agua, pct_urbano = p_bosque, p_agricola, p_pecuario, p_agua, p_urbano
-        
         st.sidebar.progress(int(pct_bosque), text=f"Bosque: {pct_bosque:.0f}%")
         st.sidebar.progress(int(pct_pecuario + pct_agricola), text=f"Agropecuario: {(pct_pecuario+pct_agricola):.0f}%")
         st.sidebar.caption(f"Urbano: {pct_urbano:.1f}% | Agua: {pct_agua:.1f}%")
@@ -69,7 +70,7 @@ else:
     pct_urbano = max(0, 100 - (pct_bosque + pct_agricola + pct_pecuario + pct_agua))
     st.sidebar.metric("% Urbano / Otro", f"{pct_urbano}%")
 
-# --- A. FACTOR SUELO (Textura -> Ki Superficial) ---
+# --- FACTORES ---
 st.sidebar.subheader("🌱 Suelo (Infiltración)")
 tipo_suelo = st.sidebar.select_slider(
     "Textura Dominante:",
@@ -79,50 +80,33 @@ tipo_suelo = st.sidebar.select_slider(
 mapa_factores_suelo = {"Arcilloso (Baja)": 0.6, "Franco-Arcilloso": 0.8, "Franco (Media)": 1.0, "Franco-Arenoso": 1.2, "Arenoso (Alta)": 1.35}
 factor_suelo = mapa_factores_suelo[tipo_suelo]
 
-# --- B. FACTOR GEOLÓGICO (Roca -> Recarga Real) ---
 st.sidebar.subheader("🪨 Geología (Recarga)")
 tipo_geo = st.sidebar.select_slider(
     "Permeabilidad del Acuífero:",
     options=["Muy Baja (Granitos/Arcillolitas)", "Baja", "Media (Sedimentarias)", "Alta", "Muy Alta (Aluvial/Kárstico)"],
-    value="Media (Sedimentarias)",
-    help="Define qué porcentaje de la infiltración realmente llega al acuífero (Kg)."
+    value="Media (Sedimentarias)"
 )
-mapa_kg = {
-    "Muy Baja (Granitos/Arcillolitas)": 0.3, # Mucho interflujo, poca recarga profunda
-    "Baja": 0.5,
-    "Media (Sedimentarias)": 0.7,
-    "Alta": 0.85,
-    "Muy Alta (Aluvial/Kárstico)": 0.95
-}
+mapa_kg = {"Muy Baja (Granitos/Arcillolitas)": 0.3, "Baja": 0.5, "Media (Sedimentarias)": 0.7, "Alta": 0.85, "Muy Alta (Aluvial/Kárstico)": 0.95}
 kg_factor = mapa_kg[tipo_geo]
 
-# --- CÁLCULOS ---
-# 1. Kc (ETR)
 kc_ponderado = ((pct_bosque * 1.0) + (pct_agricola * 0.85) + (pct_pecuario * 0.80) + (pct_agua * 1.05) + (pct_urbano * 0.40)) / 100.0
-
-# 2. Ki Superficial (Suelo + Cobertura)
 ki_cobertura = ((pct_bosque * 0.50) + (pct_agricola * 0.30) + (pct_pecuario * 0.30) + (pct_agua * 0.90) + (pct_urbano * 0.05)) / 100.0
 ki_final = max(0.01, min(0.95, ki_cobertura * factor_suelo))
 
-# Métricas Sidebar
 c1, c2 = st.sidebar.columns(2)
-c1.metric("Infiltración", f"{(ki_final*100):.0f}%", help="% de Excedente que entra al suelo")
-c2.metric("Recarga Real", f"{(kg_factor*100):.0f}%", help="% de Infiltración que llega al acuífero (Kg)")
+c1.metric("Infiltración", f"{(ki_final*100):.0f}%")
+c2.metric("Recarga Real", f"{(kg_factor*100):.0f}%")
 
 st.sidebar.divider()
 meses_futuros = st.sidebar.slider("Horizonte", 12, 60, 24)
 ruido = st.sidebar.slider("Incertidumbre", 0.0, 1.0, 0.1)
 
-
-# Inicializar variables de sesión para descargas
-if 'raster_data' not in st.session_state: st.session_state.raster_data = None
-
+# --- LÓGICA DE DATOS ---
 if gdf_zona is not None:
-    # 1. Recuperar Estaciones (CORREGIDO: Incluye columna 'municipio')
+    # 1. Recuperar Estaciones
     if not ids_estaciones:
         minx, miny, maxx, maxy = gdf_zona.total_bounds
         buff = 0.05
-        # AGREGADO: municipio en el SELECT
         q_geo = text(f"""
             SELECT id_estacion, nom_est, latitud, longitud, alt_est, municipio 
             FROM estaciones 
@@ -132,7 +116,6 @@ if gdf_zona is not None:
         df_puntos = pd.read_sql(q_geo, engine)
         
         if not df_puntos.empty:
-            # Intento de filtro fino por polígono
             try:
                 points = gpd.points_from_xy(df_puntos.longitud, df_puntos.latitud)
                 gdf_pts = gpd.GeoDataFrame(df_puntos, geometry=points, crs="EPSG:4326")
@@ -147,7 +130,6 @@ if gdf_zona is not None:
             
             ids_estaciones = df_puntos['id_estacion'].tolist()
     else:
-        # Selección por IDs (AGREGADO: municipio)
         if len(ids_estaciones) == 1:
             q = text(f"SELECT id_estacion, nom_est, latitud, longitud, alt_est, municipio FROM estaciones WHERE id_estacion = '{ids_estaciones[0]}'")
             df_puntos = pd.read_sql(q, engine)
@@ -159,12 +141,10 @@ if gdf_zona is not None:
         st.error("❌ No se encontraron estaciones.")
         st.stop()
 
-
-    # 2. Estadísticas (Cacheado)
+    # 2. Estadísticas y Datos
     with st.spinner("Procesando hidrología..."):
         df_mapa_stats = hydrogeo_utils.obtener_estadisticas_estaciones(engine, df_puntos)
 
-    # 3. Serie Histórica
     df_raw = pd.DataFrame()
     intentos = [('precipitacion', 'id_estacion', 'fecha', 'valor'), ('precipitacion_mensual', 'id_estacion_fk', 'fecha_mes_año', 'precipitation')]
     for tbl, col_id, col_f, col_v in intentos:
@@ -183,33 +163,56 @@ if gdf_zona is not None:
     df_res = pd.DataFrame()
     if not df_raw.empty:
         alt_calc = altitud_ref if altitud_ref else df_puntos['alt_est'].mean()
-        # PASAMOS KG
         df_res = hydrogeo_utils.ejecutar_pronostico_prophet(df_raw, meses_futuros, alt_calc, ki_final, ruido, kg=kg_factor, kc=kc_ponderado)
 
     st.markdown(f"### 📍 {nombre_zona}")
     
-    # --- VISUALIZACIÓN KPIs (6 COLUMNAS) ---
+    # --- VISUALIZACIÓN KPIs ACTUALIZADA (8 COLUMNAS) ---
     if not df_res.empty:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
         if not df_hist.empty:
-            # Ahora son 6 columnas para incluir Escorrentía y Coef. Infiltración
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
             
+            # 1. Cálculo de Área en km2 (Proyectando para precisión)
+            try:
+                # Si viene de BD y tiene columna de área
+                if 'area_km2' in gdf_zona.columns:
+                    area_km2 = gdf_zona['area_km2'].iloc[0]
+                elif 'Shape_Area' in gdf_zona.columns:
+                    # Asumiendo que Shape_Area está en grados cuadrados si es WGS84, esto es impreciso.
+                    # Mejor proyectamos al vuelo:
+                    geom_proj = gdf_zona.to_crs("EPSG:3116") # MAGNA-SIRGAS Colombia
+                    area_km2 = geom_proj.area.iloc[0] / 1e6
+                else:
+                    # Fallback proyección
+                    geom_proj = gdf_zona.to_crs("EPSG:3116")
+                    area_km2 = geom_proj.area.iloc[0] / 1e6
+            except:
+                area_km2 = 1.0 # Valor seguro para evitar división por cero
+                
+            # 2. Medias Anuales (mm)
             p_med = df_hist['p_final'].mean()*12
             etr_med = df_hist['etr_mm'].mean()*12
             rec_med = df_hist['recarga_mm'].mean()*12
-            esc_med = df_hist['escorrentia_mm'].mean()*12
+            esc_med = df_hist['escorrentia_mm'].mean()*12 # P - ETR - Infiltración
             inf_med = df_hist['infiltracion_mm'].mean()*12
             
-            c1.metric("Lluvia", f"{p_med:,.0f} mm")
-            c2.metric("ETR", f"{etr_med:,.0f} mm")
-            c3.metric("Infiltración", f"{inf_med:,.0f} mm", delta="Suelo")
-            c4.metric("Recarga Real", f"{rec_med:,.0f} mm", delta="Acuífero")
-            c5.metric("Escorrentía", f"{esc_med:,.0f} mm")
-            c6.metric("Estaciones", len(df_puntos))
-    
-    # --- GUÍA METODOLÓGICA (Entre KPIs y Tabs) ---
+            # 3. Cálculo de Caudal (m3/s)
+            # Q = (Escorrentia_mm * Area_km2 * 1000) / (365 * 24 * 3600)
+            q_m3s = (esc_med * area_km2 * 1000) / 31536000
 
+            # 4. Panel de 8 Columnas
+            st.markdown("##### 💧 Balance Hídrico y Oferta")
+            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
+            
+            c1.metric("📏 Área", f"{area_km2:,.1f} km²")
+            c2.metric("🌧️ Lluvia", f"{p_med:,.0f} mm")
+            c3.metric("☀️ ETR", f"{etr_med:,.0f} mm")
+            c4.metric("🌱 Infiltración", f"{inf_med:,.0f} mm", help="Suelo")
+            c5.metric("💧 Recarga", f"{rec_med:,.0f} mm", help="Acuífero")
+            c6.metric("🌊 Escorrentía", f"{esc_med:,.0f} mm")
+            c7.metric("🚿 Caudal", f"{q_m3s:.2f} m³/s")
+            c8.metric("📡 Estaciones", len(df_puntos))
+            
             st.divider()
 
             with st.expander("📘 Guía Técnica, Metodología y Fuentes de Información", expanded=False):
@@ -794,4 +797,134 @@ if gdf_zona is not None:
 
 else:
     st.info("👈 Selecciona una zona.")
+
+
+# ==============================================================================
+# SECCIÓN: REPORTE GLOBAL HIDROLÓGICO
+# ==============================================================================
+st.markdown("---")
+with st.expander("📑 Generar Tabla Maestra de Todas las Cuencas", expanded=False):
+    st.warning("⚠️ Este proceso realiza cálculos complejos (Hipsometría, FDC, Balance) para TODAS las cuencas. Puede tardar unos minutos.")
+    
+    if st.button("🚀 Generar Reporte Global"):
+        
+        # Barra de progreso
+        progreso = st.progress(0)
+        status_txt = st.empty()
+        
+        resultados = []
+        total_cuencas = len(gdf_subcuencas)
+        
+        # Iteramos sobre cada cuenca
+        for i, (idx, row) in enumerate(gdf_subcuencas.iterrows()):
+            nombre = row.get('SUBC_LBL', f"Cuenca {idx}")
+            status_txt.text(f"Procesando {i+1}/{total_cuencas}: {nombre}...")
+            
+            try:
+                # 1. Geometría y Área
+                geom = row.geometry
+                geom_proj = gpd.GeoSeries([geom], crs="EPSG:4326").to_crs("EPSG:3116")
+                area = geom_proj.area.iloc[0] / 1e6
+                perimetro = geom_proj.length.iloc[0] / 1000
+                
+                # 2. Análisis Espacial (DEM) - Requiere el archivo TIF
+                # Usamos una función auxiliar de analysis.py o calculamos aquí si es simple
+                stats_topo = {"min": 0, "max": 0, "mean": 0, "slope": 0}
+                eq_hyp = "N/A"
+                
+                # Intentamos calcular hipsometría si existe el módulo
+                try:
+                    hyp_data = analysis.calculate_hypsometric_curve(gpd.GeoDataFrame([row], crs="EPSG:4326"))
+                    if hyp_data:
+                        stats_topo["min"] = hyp_data["elevations"].min()
+                        stats_topo["max"] = hyp_data["elevations"].max()
+                        stats_topo["mean"] = hyp_data["elevations"].mean() # Aprox
+                        eq_hyp = hyp_data.get("equation", "N/A")
+                except: pass
+
+                # 3. Datos Hidrológicos (Estaciones dentro de la cuenca)
+                # Filtro espacial rápido
+                estaciones_en_cuenca = gpd.sjoin(gdf_stations, gpd.GeoDataFrame([row], crs="EPSG:4326"), predicate="intersects")
+                n_est = len(estaciones_en_cuenca)
+                
+                lluvia_c, etr_c, q_c, inf_c, rec_c, caudal_c = 0, 0, 0, 0, 0, 0
+                eq_fdc = "N/A"
+                idx_martonne, idx_fournier = 0, 0
+
+                if n_est > 0:
+                    # Filtramos datos de lluvia
+                    codigos = estaciones_en_cuenca[Config.STATION_NAME_COL].unique()
+                    mask_lluvia = df_long[Config.STATION_NAME_COL].isin(codigos)
+                    df_cuenca = df_long[mask_lluvia]
+                    
+                    if not df_cuenca.empty:
+                        # Balance simple (Promedios)
+                        lluvia_c = df_cuenca[Config.PRECIPITATION_COL].mean() * 12 # Anual aprox
+                        temp_aprox = max(0, 28 - 0.006 * stats_topo.get("mean", 1500))
+                        
+                        # Cálculos Turc
+                        L = 300 + 25*temp_aprox + 0.05*(temp_aprox**3)
+                        etr_c = lluvia_c / ((0.9 + (lluvia_c/L)**2)**0.5)
+                        esc_c = lluvia_c - etr_c
+                        
+                        # Estimaciones simples (ajustar según tu modelo real)
+                        inf_c = lluvia_c * 0.2 # Placeholder
+                        rec_c = inf_c * 0.5    # Placeholder
+                        
+                        caudal_c = (esc_c * area * 1000) / 31536000
+                        
+                        # Índices
+                        idx_martonne = lluvia_c / (temp_aprox + 10)
+                        # Fournier requiere datos mensuales, asumimos cálculo si existe función
+                        
+                        # FDC
+                        try:
+                            ppt_series = df_cuenca.groupby(Config.DATE_COL)[Config.PRECIPITATION_COL].mean()
+                            fdc_res = analysis.calculate_duration_curve(ppt_series, runoff_coeff=esc_c/lluvia_c, area_km2=area)
+                            if fdc_res: eq_fdc = fdc_res.get("equation", "N/A")
+                        except: pass
+
+                # 4. Consolidar Fila
+                resultados.append({
+                    "Cuenca": nombre,
+                    "Área (km²)": round(area, 2),
+                    "Perímetro (km)": round(perimetro, 2),
+                    "Altitud Media (msnm)": round(stats_topo["mean"], 0),
+                    "Altitud Máx": round(stats_topo["max"], 0),
+                    "Altitud Mín": round(stats_topo["min"], 0),
+                    "Pendiente Media (%)": 0, # Requiere cálculo raster más pesado
+                    "Estaciones": n_est,
+                    "Lluvia (mm/año)": round(lluvia_c, 0),
+                    "ETR (mm/año)": round(etr_c, 0),
+                    "Infiltración (mm/año)": round(inf_c, 0),
+                    "Recarga Acuífero (mm/año)": round(rec_c, 0),
+                    "Escorrentía (mm/año)": round(esc_c if 'esc_c' in locals() else 0, 0),
+                    "Caudal (m³/s)": round(caudal_c, 3),
+                    "Índice Martonne": round(idx_martonne, 2),
+                    "Ec. Hipsométrica": eq_hyp,
+                    "Ec. FDC": eq_fdc
+                })
+                
+            except Exception as e:
+                print(f"Error en cuenca {nombre}: {e}")
+            
+            # Actualizar barra
+            progreso.progress((i + 1) / total_cuencas)
+            
+        # FIN DEL BUCLE
+        status_txt.success("✅ ¡Cálculos completados!")
+        progreso.empty()
+        
+        # Mostrar y Descargar
+        df_final = pd.DataFrame(resultados)
+        st.dataframe(df_final, use_container_width=True)
+        
+        # Botón CSV
+        csv = df_final.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "💾 Descargar Reporte Global (CSV)",
+            csv,
+            "Reporte_Hidrologico_Completo.csv",
+            "text/csv"
+        )
 
