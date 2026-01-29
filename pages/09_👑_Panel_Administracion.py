@@ -354,7 +354,7 @@ with tabs[2]:
 
 
 # ==============================================================================
-# TAB 4: CUENCAS (CARGADOR "FULL DATA" - SIN PÉRDIDA DE COLUMNAS)
+# TAB 4: CUENCAS (CARGADOR FULL DATA - SIN PÉRDIDA DE COLUMNAS)
 # ==============================================================================
 with tabs[3]:
     st.header("🌊 Gestión de Cuencas")
@@ -362,22 +362,22 @@ with tabs[3]:
     
     with sb1:
         try:
-            # Consultamos todo excepto la geometría pesada para visualizar rápido
+            # Consultamos todo excepto la geometría pesada
             cols_query = "SELECT column_name FROM information_schema.columns WHERE table_name = 'cuencas' AND column_name != 'geometry'"
             cols_disponibles = pd.read_sql(cols_query, engine)['column_name'].tolist()
             
             if cols_disponibles:
                 cols_str = ", ".join([f'"{c}"' for c in cols_disponibles])
                 df_c = pd.read_sql(f"SELECT {cols_str} FROM cuencas", engine)
-                st.markdown(f"**Total Registros:** {len(df_c)} | **Columnas:** {', '.join(df_c.columns)}")
+                st.markdown(f"**Registros:** {len(df_c)} | **Columnas:** {', '.join(df_c.columns)}")
                 st.dataframe(df_c, use_container_width=True)
             else:
-                st.info("La tabla existe pero no tiene columnas legibles.")
+                st.info("Tabla sin columnas legibles.")
         except: 
-            st.warning("No hay datos cargados o la tabla 'cuencas' no existe.")
+            st.warning("Tabla 'cuencas' no encontrada.")
 
     with sb2:
-        st.info("Sube tu GeoJSON. Se guardarán **TODAS** las columnas originales (N-NSS3, SUBC_LBL, etc.).")
+        st.info("Sube 'SubcuencasAinfluencia.geojson'. Se guardarán **TODAS** las columnas originales (incluyendo n_nss3).")
         up_c = st.file_uploader("GeoJSON Cuencas", type=["geojson", "json"], key="up_cuen_full_v3")
         
         if up_c:
@@ -385,46 +385,43 @@ with tabs[3]:
                 # 1. Leer archivo
                 gdf_preview = gpd.read_file(up_c)
                 
-                # 2. Limpieza de nombres de columnas (Para que SQL no moleste con mayúsculas/guiones)
-                # Ejemplo: "N-NSS3" -> "n_nss3", "SUBC_LBL" -> "subc_lbl"
+                # 2. Limpieza de nombres (Minúsculas y guiones bajos para SQL)
+                # IMPORTANTE: 'N-NSS3' se convertirá en 'n_nss3'
                 gdf_preview.columns = [c.strip().lower().replace("-", "_").replace(" ", "_") for c in gdf_preview.columns]
                 cols = list(gdf_preview.columns)
                 
                 st.success(f"✅ Archivo leído. Columnas detectadas: {cols}")
                 
-                st.markdown("##### 🛠️ Mapeo de Identificadores")
-                st.caption("Selecciona qué columna usar como NOMBRE PRINCIPAL para la App.")
-                
+                st.markdown("##### 🛠️ Configuración de Identificadores")
                 c1, c2 = st.columns(2)
                 
-                # Intentamos adivinar la columna 'n_nss3' o 'subc_lbl'
-                idx_nom = next((i for i, c in enumerate(cols) if c in ['n_nss3', 'subc_lbl', 'nombre', 'nom_cuenca']), 0)
-                idx_id = next((i for i, c in enumerate(cols) if c in ['cod', 'objectid', 'id', 'codigo']), 0)
+                # Buscamos 'n_nss3' automáticamente
+                idx_nom = next((i for i, c in enumerate(cols) if c in ['n_nss3', 'subc_lbl', 'nombre']), 0)
+                idx_id = next((i for i, c in enumerate(cols) if c in ['cod', 'objectid', 'id']), 0)
                 
                 # SELECTORES
-                col_nombre_origen = c1.selectbox("📌 Columna de NOMBRE (Ej: n_nss3):", cols, index=idx_nom, key="sel_cn_nom")
+                col_nombre_origen = c1.selectbox("📌 Columna de NOMBRE (Busca n_nss3):", cols, index=idx_nom, key="sel_cn_nom")
                 col_id_origen = c2.selectbox("🔑 Columna de ID (Ej: cod):", cols, index=idx_id, key="sel_cn_id")
                 
                 if st.button("🚀 Guardar en Base de Datos (Conservando Todo)", key="btn_save_cuen_full"):
                     status = st.status("Procesando...", expanded=True)
                     
-                    # 3. Reproyección a WGS84
+                    # 3. Reproyección WGS84
                     if gdf_preview.crs and gdf_preview.crs.to_string() != "EPSG:4326":
                         status.write("🔄 Reproyectando a WGS84...")
                         gdf_preview = gdf_preview.to_crs("EPSG:4326")
                     
-                    # 4. Estandarización CRÍTICA (Renombrar para la App)
-                    # Creamos copias para no perder el dato original si se llama igual
-                    # La App espera 'nombre_cuenca' y 'id_cuenca'
+                    # 4. Alias para la App (Sin borrar el original)
+                    # La App busca 'nombre_cuenca' y 'id_cuenca', así que duplicamos la columna elegida
                     gdf_preview['nombre_cuenca'] = gdf_preview[col_nombre_origen].astype(str)
                     gdf_preview['id_cuenca'] = gdf_preview[col_id_origen].astype(str)
                     
-                    # 5. Guardar en PostGIS
-                    status.write("📤 Subiendo tabla completa...")
+                    # 5. Guardar TODO
+                    status.write("📤 Subiendo tabla completa a Supabase...")
                     gdf_preview.to_postgis("cuencas", engine, if_exists='replace', index=False)
                     
                     status.update(label="¡Carga Exitosa!", state="complete")
-                    st.success(f"✅ Base de datos actualizada. Se usó **'{col_nombre_origen}'** como nombre principal.")
+                    st.success(f"✅ Tabla 'cuencas' actualizada. Ahora contiene la columna **{col_nombre_origen}** y todas las demás.")
                     st.balloons()
                     time.sleep(2)
                     st.rerun()
