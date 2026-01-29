@@ -184,44 +184,48 @@ if gdf_zona is not None:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
         
         if not df_hist.empty:
-            # 1. CÁLCULO DE ÁREA (ROBUSTO - A PRUEBA DE FALLOS)
+            # 1. CÁLCULO DE ÁREA (ROBUSTO Y COMPATIBLE CON BUFFER)
             area_km2 = 0
             try:
-                # Opción A: Si la columna ya viene calculada desde la BD
+                # --- CORRECCIÓN CRÍTICA: Normalizar GeoSeries ---
+                # Si gdf_zona viene de un Buffer, es una GeoSeries sin columnas.
+                # La convertimos a GeoDataFrame para que el resto del código no falle.
+                if isinstance(gdf_zona, gpd.GeoSeries):
+                    gdf_zona = gpd.GeoDataFrame(geometry=gdf_zona)
+
+                # Opción A: Si la columna ya viene calculada desde la BD (y no se perdió en el buffer)
                 if 'area_km2' in gdf_zona.columns:
                      val = gdf_zona['area_km2'].iloc[0]
                      if val > 0: area_km2 = val
 
-                # Opción B: Calcular desde la geometría (Si A falló o no existe)
-                if area_km2 == 0 and 'geometry' in gdf_zona.columns:
-                    # Copia para no romper el original
+                # Opción B: Calcular desde la geometría (Si A falló, no existe, o es un Buffer)
+                if area_km2 == 0:
                     gdf_calc = gdf_zona.copy()
                     
-                    # SI NO TIENE CRS DEFINIDO, LO ADIVINAMOS POR LOS VALORES
+                    # Si no tiene CRS definido, adivinamos por los valores
                     if gdf_calc.crs is None:
                         minx = gdf_calc.total_bounds[0]
                         if -180 <= minx <= 180:
-                            # Son Grados (Lat/Lon) -> EPSG:4326
                             gdf_calc.set_crs("EPSG:4326", inplace=True)
                         else:
-                            # Son Metros (Bogotá u Origen Nacional) -> EPSG:3116 (Asumido)
                             gdf_calc.set_crs("EPSG:3116", inplace=True)
                     
-                    # Ahora sí, proyectamos a Metros Bogotá para medir
+                    # Proyectamos a Metros para medir
                     gdf_metros = gdf_calc.to_crs("EPSG:3116")
                     area_km2 = gdf_metros.area.iloc[0] / 1e6
 
             except Exception as e:
-                print(f"Error calculando área: {e}")
-                # Fallback final si todo falla: Intentar leer Shape_Area si existe
-                if 'Shape_Area' in gdf_zona.columns:
-                     area_km2 = gdf_zona['Shape_Area'].iloc[0] / 1e6 # Asumiendo m2
+                # Fallback seguro
+                if hasattr(gdf_zona, 'columns') and 'Shape_Area' in gdf_zona.columns:
+                     try: area_km2 = gdf_zona['Shape_Area'].iloc[0] / 1e6
+                     except: area_km2 = 1.0
                 else:
-                     area_km2 = 1.0 # Valor por defecto para no romper divisiones
+                     area_km2 = 1.0 
             
             # Validación final anti-cero
             if area_km2 <= 0: area_km2 = 1.0
 
+ 
             # 2. MEDIAS ANUALES (Balance Hídrico)
             p_med = df_hist['p_final'].mean() * 12
             etr_med = df_hist['etr_mm'].mean() * 12
