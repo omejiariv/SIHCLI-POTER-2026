@@ -1017,86 +1017,74 @@ def calculate_bias_correction_metrics(df_stations, df_satellite):
 
 def calculate_hydrological_statistics(series_mensual, runoff_coeff, area_km2):
     """
-    Calcula estadísticas hidrológicas avanzadas:
-    - Caudales Medios, Ecológicos (Q95) y Desviación.
-    - Caudales Máximos (Crecientes) para Tr: 2.33, 5, 10, 25, 50, 100 años (Gumbel).
-    - Caudales Mínimos (Sequías) para Tr: 2.33, 5, 10, 25, 50, 100 años (Gumbel Inv).
+    Calcula estadísticas hidrológicas avanzadas.
+    Versión Blindada: Maneja índices de fecha y evita retornos vacíos.
     """
-    if series_mensual is None or series_mensual.empty or len(series_mensual) < 12:
+    # 1. Validación de Entrada
+    if series_mensual is None or series_mensual.empty:
+        return {}
+    
+    # 2. Asegurar Índice Datetime (CRÍTICO para resample)
+    if not isinstance(series_mensual.index, pd.DatetimeIndex):
+        try:
+            # Intentamos convertir el índice a datetime
+            series_mensual.index = pd.to_datetime(series_mensual.index)
+        except:
+            return {} # Si no hay fechas, no podemos calcular retornos anuales
+
+    # 3. CONVERSIÓN A CAUDAL (m3/s)
+    # Q(m3/s) = P(mm/mes) * C * Area(km2) * 1000 / (DiasMes * 86400)
+    # Factor aproximado mensual
+    factor = (area_km2 * 1000) / (30.4375 * 86400)
+    q_series = series_mensual * runoff_coeff * factor
+
+    # 4. ESTADÍSTICAS BÁSICAS
+    try:
+        q_mean = q_series.mean()
+        q_std = q_series.std()
+        q_eco = q_series.quantile(0.05) # Q95
+        
+        stats_dict = {
+            "Q_Medio": q_mean,
+            "Q_Ecologico_Q95": q_eco,
+            "Desviacion_Std": q_std
+        }
+    except:
         return {}
 
-    # 1. CONVERSIÓN A CAUDAL (m3/s)
-    # Factor = Area(m2) / (Tiempo(s))
-    # Q = P(mm) * 0.001(m/mm) * Area(km2)*1e6 * C / (DiasMes * 86400)
-    # Simplificamos asumiendo mes promedio de 30.44 días
-    factor = (area_km2 * 1000) / (30.4375 * 86400)
-    q_series = series_mensual * runoff_coeff * factor # Serie mensual de caudales
-
-    # 2. ESTADÍSTICAS BÁSICAS
-    q_mean = q_series.mean()
-    q_std = q_series.std()
-    q_eco = q_series.quantile(0.05) # Q95 (Excedido el 95% del tiempo, valor bajo conservador)
-    
-    stats_dict = {
-        "Q_Medio": q_mean,
-        "Q_Ecologico_Q95": q_eco,
-        "Desviacion_Std": q_std
-    }
-
-    # 3. ANÁLISIS DE VALORES EXTREMOS (ANUALES)
-    # Agrupamos por año para extraer Máximos y Mínimos anuales
-    # Asumimos que el índice es datetime. Si no, intentamos convertir.
+    # 5. ANÁLISIS DE EXTREMOS (GUMBEL)
     try:
-        if not isinstance(q_series.index, pd.DatetimeIndex):
-             # Si es índice numérico o string, intentamos usar la columna fecha del dataframe original
-             # (Pero aquí recibimos una serie... asumimos que viene indexada por fecha desde el reporte)
-             pass 
+        # Agrupar por AÑO ('YE' es Year End en pandas nuevos, 'Y' en viejos. Usamos 'A' para compatibilidad)
+        q_max_anual = q_series.resample('A').max().dropna()
+        q_min_anual = q_series.resample('A').min().dropna()
         
-        # Agrupación Anual
-        q_max_anual = q_series.resample('Y').max().dropna()
-        q_min_anual = q_series.resample('Y').min().dropna()
-        
-        # Requerimos al menos 5 años para intentar ajustar una distribución
-        if len(q_max_anual) >= 5:
-            
-            # --- AJUSTE GUMBEL MÁXIMOS (Crecientes) ---
-            # Tr (Periodos de retorno)
-            tr_list = [2.33, 5, 10, 25, 50, 100]
-            
-            # Ajuste (params: loc, scale)
-            loc_max, scale_max = stats.gumbel_r.fit(q_max_anual)
-            
-            for tr in tr_list:
-                # Probabilidad de no excedencia = 1 - 1/Tr
-                prob = 1 - (1/tr)
-                q_tr = stats.gumbel_r.ppf(prob, loc_max, scale_max)
-                stats_dict[f"Q_Max_{tr}a"] = max(0, q_tr)
+        tr_list = [2.33, 5, 10, 25, 50, 100]
 
-            # --- AJUSTE GUMBEL MÍNIMOS (Sequías) ---
-            # Para mínimos usamos Gumbel sobre los negativos o Gumbel_l (Left)
-            # Simplificación robusta: Invertir signo, ajustar Gumbel_r, reinvertir.
-            loc_min, scale_min = stats.gumbel_r.fit(-q_min_anual)
-            
+        # --- MÁXIMOS (CRECIENTES) ---
+        if len(q_max_anual) >= 2: # Mínimo 2 años para intentar algo
+            loc_max, scale_max = stats.gumbel_r.fit(q_max_anual)
             for tr in tr_list:
-                # Para sequía, Tr de X años significa probabilidad 1/Tr de ser MENOR
-                # Usamos la misma lógica de ppf sobre la serie invertida
-                prob = 1 - (1/tr) 
-                q_tr_inv = stats.gumbel_r.ppf(prob, loc_min, scale_min)
-                stats_dict[f"Q_Min_{tr}a"] = max(0, -q_tr_inv) # Reinvertir
-                
+                prob = 1 - (1/tr)
+                val = stats.gumbel_r.ppf(prob, loc_max, scale_max)
+                stats_dict[f"Q_Max_{tr}a"] = max(0, val)
         else:
-            # Si no hay suficientes años, llenar con NaN o promedios simples
-            tr_list = [2.33, 5, 10, 25, 50, 100]
+            # Datos insuficientes: Rellenar con 0
+            for tr in tr_list: stats_dict[f"Q_Max_{tr}a"] = 0
+
+        # --- MÍNIMOS (SEQUÍAS) ---
+        if len(q_min_anual) >= 2:
+            # Gumbel inversa para mínimos (ajuste sobre negativos)
+            loc_min, scale_min = stats.gumbel_r.fit(-q_min_anual)
             for tr in tr_list:
-                stats_dict[f"Q_Max_{tr}a"] = 0
-                stats_dict[f"Q_Min_{tr}a"] = 0
+                prob = 1 - (1/tr)
+                val_inv = stats.gumbel_r.ppf(prob, loc_min, scale_min)
+                stats_dict[f"Q_Min_{tr}a"] = max(0, -val_inv)
+        else:
+            for tr in tr_list: stats_dict[f"Q_Min_{tr}a"] = 0
 
     except Exception as e:
-        print(f"Error estadísticas extremas: {e}")
-        # Rellenar ceros para no romper la tabla
-        tr_list = [2.33, 5, 10, 25, 50, 100]
-        for tr in tr_list:
-            stats_dict[f"Q_Max_{tr}a"] = 0
-            stats_dict[f"Q_Min_{tr}a"] = 0
+        # Si falla Gumbel, devolvemos al menos los medios
+        print(f"Error Gumbel: {e}")
+        pass
 
     return stats_dict

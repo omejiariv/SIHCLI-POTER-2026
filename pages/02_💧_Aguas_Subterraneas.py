@@ -833,22 +833,30 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
         from rasterio.mask import mask
         
         try:
+
             # A. CARGAR DATOS
-            with st.spinner("Cargando geometrías..."):
-                # Cuencas en Metros Bogotá (3116) para áreas y buffer
+            with st.spinner("Cargando datos y normalizando formatos..."):
+                # Geometrías
                 gdf_all = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry")
                 if gdf_all.crs and gdf_all.crs.to_string() != "EPSG:3116":
                     gdf_all = gdf_all.to_crs("EPSG:3116")
                 
-                # Estaciones en Metros Bogotá (3116)
                 gdf_est = gpd.read_postgis("SELECT id_estacion, geom FROM estaciones", engine, geom_col="geom")
                 if gdf_est.crs and gdf_est.crs.to_string() != "EPSG:3116":
                     gdf_est = gdf_est.to_crs("EPSG:3116")
+                
+                # 🔥 CLAVE 1: Forzar ID Estación a STRING para que el cruce funcione
+                gdf_est['id_estacion'] = gdf_est['id_estacion'].astype(str)
 
-                # Lluvia
+                # Lluvias
                 df_rain_anual = pd.read_sql("SELECT id_estacion_fk, AVG(precipitation)*12 as ppt_anual FROM precipitacion_mensual GROUP BY id_estacion_fk", engine)
+                # 🔥 CLAVE 2: Forzar ID FK a STRING
+                df_rain_anual['id_estacion_fk'] = df_rain_anual['id_estacion_fk'].astype(str)
+
                 df_rain_mensual = pd.read_sql("SELECT id_estacion_fk, fecha_mes_año, precipitation FROM precipitacion_mensual", engine)
                 df_rain_mensual['fecha'] = pd.to_datetime(df_rain_mensual['fecha_mes_año'])
+                # 🔥 CLAVE 3: Forzar ID FK a STRING
+                df_rain_mensual['id_estacion_fk'] = df_rain_mensual['id_estacion_fk'].astype(str)
 
             # B. PREPARAR DEM
             path_dem = "data/DemAntioquia_EPSG3116.tif"
@@ -907,46 +915,49 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                     except: pass
 
                 # --- 2. HIDROLOGÍA (Buffer 20km) ---
-                buffer_geom = geom_base.buffer(20000) 
+ 
+                buffer_geom = geom_base.buffer(20000)
                 est_in = gdf_est[gdf_est.geometry.within(buffer_geom)]
                 n_est = len(est_in)
                 
                 ppt_cuenca = 0
                 ec_fdc = "N/A"
-                
-                # Diccionario para guardar estadísticas extremas
-                stats_ext = {} 
+                stats_ext = {} # Inicializar vacío
                 
                 if n_est > 0:
-                    ids = est_in['id_estacion'].unique()
-                    # Lluvia Media
+                    # 🔥 CLAVE 4: IDs de vecinos como lista de strings
+                    ids = est_in['id_estacion'].astype(str).unique().tolist()
+                    
+                    # Filtro Anual
                     ppt_vals = df_rain_anual[df_rain_anual['id_estacion_fk'].isin(ids)]['ppt_anual']
                     if not ppt_vals.empty: ppt_cuenca = ppt_vals.mean()
                     
-                    # Serie Mensual para FDC y Extremos
+                    # Filtro Mensual (Serie Sintética)
                     if analysis:
                         try:
+                            # Filtrar usando IDs corregidos
                             s_mensual = df_rain_mensual[df_rain_mensual['id_estacion_fk'].isin(ids)]
-                            # Promedio espacial por fecha
-                            s_sintetica = s_mensual.groupby('fecha')['precipitation'].mean()
                             
-                            # Coeficientes
-                            h_ref = alt_med if alt_med > 0 else 1500
-                            temp = max(0, 28 - 0.006 * h_ref)
-                            L = 300 + 25*temp + 0.05*(temp**3)
-                            etr_e = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L>0 and ppt_cuenca>0) else 0
-                            c_run = (ppt_cuenca - etr_e)/ppt_cuenca if ppt_cuenca > 0 else 0.4
-                            
-                            # A. Curva Duración (FDC)
-                            fdc = analysis.calculate_duration_curve(s_sintetica, runoff_coeff=c_run, area_km2=area_km2)
-                            if fdc: ec_fdc = fdc.get("equation", "N/A")
+                            if not s_mensual.empty:
+                                # Agrupar por fecha para tener UNA serie temporal única para la cuenca
+                                s_sintetica = s_mensual.groupby('fecha')['precipitation'].mean()
+                                
+                                # Coeficientes
+                                h_ref = alt_med if alt_med > 0 else 1500
+                                temp = max(0, 28 - 0.006 * h_ref)
+                                L = 300 + 25*temp + 0.05*(temp**3)
+                                etr_e = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L>0 and ppt_cuenca>0) else 0
+                                c_run = (ppt_cuenca - etr_e)/ppt_cuenca if ppt_cuenca > 0 else 0.4
+                                
+                                # A. FDC
+                                fdc = analysis.calculate_duration_curve(s_sintetica, runoff_coeff=c_run, area_km2=area_km2)
+                                if fdc: ec_fdc = fdc.get("equation", "N/A")
 
-                            # B. ESTADÍSTICAS EXTREMAS (NUEVO)
-                            # Llamamos a la nueva función en analysis.py
-                            stats_ext = analysis.calculate_hydrological_statistics(s_sintetica, runoff_coeff=c_run, area_km2=area_km2)
-                            
-                        except Exception as e: 
-                            print(f"Error hidro {nom}: {e}")
+                                # B. ESTADÍSTICAS EXTREMAS
+                                # Pasamos la serie sintética (que ya tiene índice Datetime)
+                                stats_ext = analysis.calculate_hydrological_statistics(s_sintetica, runoff_coeff=c_run, area_km2=area_km2)
+                        except Exception as e:
+                            print(f"Error cálculo hidro {nom}: {e}")
                 else:
                     ppt_cuenca = 2000 
 
