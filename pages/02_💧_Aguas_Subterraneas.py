@@ -864,7 +864,8 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 if not crs_dem_objetivo and src_dem.transform[2] > 4000000:
                     crs_dem_objetivo = "EPSG:9377" # Forzamos CTM12
 
-            # C. BUCLE
+
+            # C. BUCLE DE CÁLCULO
             progreso = st.progress(0)
             status = st.empty()
             lista_resultados = []
@@ -885,36 +886,27 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 
                 if src_dem:
                     try:
-                        # TRUCO MAESTRO: Reproyectar la geometría AL SISTEMA DEL DEM
-                        # Convertimos de 3116 (Bogotá) -> al CRS del DEM (probablemente 9377)
+                        # Reproyectar a CTM12 (o CRS del DEM)
                         geom_para_dem = gpd.GeoSeries([geom_base], crs="EPSG:3116").to_crs(crs_dem_objetivo).iloc[0]
-                        
                         out_image, _ = mask(src_dem, [geom_para_dem], crop=True, nodata=src_dem.nodata)
                         data = out_image[0]
-                        validos = data[(data != src_dem.nodata) & (data > -500)] # Filtro vacíos
+                        validos = data[(data != src_dem.nodata) & (data > -500)]
                         
                         if validos.size > 0:
-                            alt_min = float(np.min(validos))
-                            alt_max = float(np.max(validos))
-                            alt_med = float(np.mean(validos))
-                            
-                            # Pendiente Aprox (%)
-                            l_caracteristica = np.sqrt(area_km2 * 1e6)
-                            if l_caracteristica > 0:
-                                pend_med = ((alt_max - alt_min) / l_caracteristica) * 100
+                            alt_min, alt_max, alt_med = float(np.min(validos)), float(np.max(validos)), float(np.mean(validos))
+                            l_caract = np.sqrt(area_km2 * 1e6)
+                            if l_caract > 0: pend_med = ((alt_max - alt_min) / l_caract) * 100
 
-                            # Hipsometría (Cálculo In-Line para evitar errores de módulos)
+                            # Hipsometría Inline
                             try:
                                 hist, bins = np.histogram(validos, bins=50)
-                                areas_acum = np.cumsum(hist[::-1]) / validos.size * 100 # % Área acumulada
-                                cotas = bins[:-1][::-1]
-                                # Ajuste Polinómico
-                                z = np.polyfit(areas_acum, cotas, 3)
+                                areas_acum = np.cumsum(hist[::-1]) / validos.size * 100
+                                z = np.polyfit(areas_acum, bins[:-1][::-1], 3)
                                 ec_hyp = f"H = {z[0]:.2e}A³ + {z[1]:.2e}A² + {z[2]:.2e}A + {z[3]:.0f}"
                             except: pass
                     except: pass
 
-                # --- 2. HIDROLOGÍA (Buffer 20km en 3116) ---
+                # --- 2. HIDROLOGÍA (Buffer 20km) ---
                 buffer_geom = geom_base.buffer(20000) 
                 est_in = gdf_est[gdf_est.geometry.within(buffer_geom)]
                 n_est = len(est_in)
@@ -922,43 +914,52 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 ppt_cuenca = 0
                 ec_fdc = "N/A"
                 
+                # Diccionario para guardar estadísticas extremas
+                stats_ext = {} 
+                
                 if n_est > 0:
                     ids = est_in['id_estacion'].unique()
+                    # Lluvia Media
                     ppt_vals = df_rain_anual[df_rain_anual['id_estacion_fk'].isin(ids)]['ppt_anual']
                     if not ppt_vals.empty: ppt_cuenca = ppt_vals.mean()
                     
-                    # FDC Real
+                    # Serie Mensual para FDC y Extremos
                     if analysis:
                         try:
                             s_mensual = df_rain_mensual[df_rain_mensual['id_estacion_fk'].isin(ids)]
+                            # Promedio espacial por fecha
                             s_sintetica = s_mensual.groupby('fecha')['precipitation'].mean()
                             
+                            # Coeficientes
                             h_ref = alt_med if alt_med > 0 else 1500
                             temp = max(0, 28 - 0.006 * h_ref)
                             L = 300 + 25*temp + 0.05*(temp**3)
                             etr_e = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L>0 and ppt_cuenca>0) else 0
                             c_run = (ppt_cuenca - etr_e)/ppt_cuenca if ppt_cuenca > 0 else 0.4
                             
+                            # A. Curva Duración (FDC)
                             fdc = analysis.calculate_duration_curve(s_sintetica, runoff_coeff=c_run, area_km2=area_km2)
                             if fdc: ec_fdc = fdc.get("equation", "N/A")
-                        except: pass
-                else:
-                    ppt_cuenca = 2000 # Fallback
 
-                # --- 3. BALANCE FINAL ---
+                            # B. ESTADÍSTICAS EXTREMAS (NUEVO)
+                            # Llamamos a la nueva función en analysis.py
+                            stats_ext = analysis.calculate_hydrological_statistics(s_sintetica, runoff_coeff=c_run, area_km2=area_km2)
+                            
+                        except Exception as e: 
+                            print(f"Error hidro {nom}: {e}")
+                else:
+                    ppt_cuenca = 2000 
+
+                # --- 3. BALANCE FINAL Y GUARDADO ---
                 if alt_med == 0: alt_med = 1500
                 temp = max(0, 28 - 0.006 * alt_med)
                 L = 300 + 25*temp + 0.05*(temp**3)
                 etr = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L>0 and ppt_cuenca>0) else 0
                 esc = ppt_cuenca - etr
-                inf = esc * 0.3
-                rec = inf * 0.5
-                caudal = (esc * area_km2 * 1000) / 31536000
+                caudal_med = (esc * area_km2 * 1000) / 31536000
                 
-                im = ppt_cuenca / (temp + 10)
-                ifow = (ppt_cuenca**2) / ppt_cuenca if ppt_cuenca > 0 else 0
-
-                lista_resultados.append({
+                # Construir fila maestra
+                fila = {
                     "Cuenca": nom,
                     "Área (km²)": round(area_km2, 2),
                     "Perímetro (km)": round(perim_km, 2),
@@ -968,16 +969,34 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                     "Pendiente (%)": round(pend_med, 2),
                     "Lluvia (mm)": round(ppt_cuenca, 0),
                     "ETR (mm)": round(etr, 0),
-                    "Infiltración": round(inf, 0),
-                    "Recarga": round(rec, 0),
-                    "Escorrentía": round(esc, 0),
-                    "Caudal (m³/s)": round(caudal, 3),
+                    "Escorrentía (mm)": round(esc, 0),
+                    "Caudal Medio (m³/s)": round(caudal_med, 3),
                     "Estaciones": n_est,
-                    "I. Martonne": round(im, 2),
-                    "I. Fournier": round(ifow, 2),
                     "Ec. Hipsométrica": ec_hyp,
-                    "Ec. FDC": ec_fdc
-                })
+                    "Ec. FDC": ec_fdc,
+                    
+                    # --- NUEVAS COLUMNAS ESTADÍSTICAS ---
+                    "Desviación Std (m³/s)": round(stats_ext.get("Desviacion_Std", 0), 3),
+                    "Q Ecológico (Q95)": round(stats_ext.get("Q_Ecologico_Q95", 0), 3),
+                    
+                    # Máximos (Tr)
+                    "Q Max 2.33a": round(stats_ext.get("Q_Max_2.33a", 0), 2),
+                    "Q Max 5a": round(stats_ext.get("Q_Max_5a", 0), 2),
+                    "Q Max 10a": round(stats_ext.get("Q_Max_10a", 0), 2),
+                    "Q Max 25a": round(stats_ext.get("Q_Max_25a", 0), 2),
+                    "Q Max 50a": round(stats_ext.get("Q_Max_50a", 0), 2),
+                    "Q Max 100a": round(stats_ext.get("Q_Max_100a", 0), 2),
+
+                    # Mínimos (Tr)
+                    "Q Min 2.33a": round(stats_ext.get("Q_Min_2.33a", 0), 3),
+                    "Q Min 5a": round(stats_ext.get("Q_Min_5a", 0), 3),
+                    "Q Min 10a": round(stats_ext.get("Q_Min_10a", 0), 3),
+                    "Q Min 25a": round(stats_ext.get("Q_Min_25a", 0), 3),
+                    "Q Min 50a": round(stats_ext.get("Q_Min_50a", 0), 3),
+                    "Q Min 100a": round(stats_ext.get("Q_Min_100a", 0), 3),
+                }
+
+                lista_resultados.append(fila)
                 progreso.progress((i+1)/total)
 
             # GUARDAR
