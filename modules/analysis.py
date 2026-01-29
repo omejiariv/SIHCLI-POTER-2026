@@ -1023,59 +1023,64 @@ def calculate_bias_correction_metrics(df_stations, df_satellite):
         return None
 
 
-def calculate_hydrological_statistics(series_mensual, runoff_coeff, area_km2):
+def calculate_hydrological_statistics(series_mensual, runoff_coeff, area_km2, q_base_m3s=0):
     """
-    Calcula estadísticas hidrológicas.
-    Si falla Gumbel (scipy), retorna al menos los históricos observados.
+    Calcula estadísticas hidrológicas usando un MODELO ADITIVO (Superficial + Base).
+    
+    Args:
+        q_base_m3s (float): Caudal base promedio proveniente de la recarga del acuífero.
+                            Este valor actúa como "suelo" en épocas de sequía.
     """
     stats_dict = {}
     
-    # 1. Validación de Datos
+    # 1. Validación
     if series_mensual is None or series_mensual.empty:
-        return {"Error": "Serie Vacía"}
+        return {}
     
-    # Asegurar índice Datetime
     if not isinstance(series_mensual.index, pd.DatetimeIndex):
         try:
             series_mensual.index = pd.to_datetime(series_mensual.index)
         except:
-            return {"Error": "Fallo Fecha"}
+            return {} 
 
-    # 2. Convertir Lluvia a Caudal
-    # Q = P * C * A / Tiempo
-    factor = (area_km2 * 1000) / (30.4375 * 86400)
-    q_series = series_mensual * runoff_coeff * factor
+    # 2. CONSTRUCCIÓN DE LA SERIE DE CAUDAL TOTAL
+    # Componente A: Flujo Rápido (Respuesta directa a la lluvia)
+    # Factor = Area(m2) / Tiempo(s)
+    factor_conv = (area_km2 * 1000) / (30.4375 * 86400)
+    q_rapid = series_mensual * runoff_coeff * factor_conv
     
-    # 3. Estadísticas Básicas (No requieren Scipy)
-    try:
-        stats_dict["Q_Medio"] = q_series.mean()
-        stats_dict["Desviacion_Std"] = q_series.std()
-        stats_dict["Q_Ecologico_Q95"] = q_series.quantile(0.05)
-        
-        # Históricos Reales (Sin distribución probabilística)
-        stats_dict["Q_Max_Historico"] = q_series.max()
-        stats_dict["Q_Min_Historico"] = q_series.min()
-    except Exception as e:
-        return {"Error": str(e)}
+    # Componente B: Flujo Base (Aporte del Acuífero)
+    # Asumimos que el caudal base es constante mes a mes (simplificación válida para balance anual)
+    # o podríamos modularlo, pero sumarlo constante es el mejor "piso" de seguridad.
+    q_total_series = q_rapid + q_base_m3s
 
-    # 4. Análisis Probabilístico (Gumbel) - Requiere Scipy
+    # 3. ESTADÍSTICAS BÁSICAS (Sobre el Caudal Total)
+    try:
+        stats_dict["Q_Medio"] = q_total_series.mean()
+        stats_dict["Desviacion_Std"] = q_total_series.std()
+        
+        # Q95 (Caudal Ecológico)
+        # Ahora será mucho más realista, pues nunca bajará del aporte base.
+        stats_dict["Q_Ecologico_Q95"] = q_total_series.quantile(0.05) 
+        
+        stats_dict["Q_Max_Historico"] = q_total_series.max()
+        stats_dict["Q_Min_Historico"] = q_total_series.min()
+    except:
+        return {}
+
+    # 4. PROYECCIONES PROBABILÍSTICAS
     if not HAS_SCIPY:
-        # Marcamos con -1 para avisar que falta la librería
-        for tr in [2.33, 5, 10, 25, 50, 100]:
-            stats_dict[f"Q_Max_{tr}a"] = -1
-            stats_dict[f"Q_Min_{tr}a"] = -1
         return stats_dict
 
     try:
-        # Agrupación Anual ('A' o 'YE')
-        # Usamos 'A' por compatibilidad general
-        q_max_anual = q_series.resample('A').max().dropna()
-        q_min_anual = q_series.resample('A').min().dropna()
-
+        # Agrupación Anual
+        q_max_anual = q_total_series.resample('A').max().dropna()
+        q_min_anual = q_total_series.resample('A').min().dropna()
+        
         tr_list = [2.33, 5, 10, 25, 50, 100]
 
-        # Ajuste Gumbel Máximos
-        if len(q_max_anual) >= 2:
+        # --- A. MÁXIMOS (Crecientes) -> GUMBEL ---
+        if len(q_max_anual) >= 3:
             loc_max, scale_max = stats.gumbel_r.fit(q_max_anual)
             for tr in tr_list:
                 prob = 1 - (1/tr)
@@ -1084,19 +1089,36 @@ def calculate_hydrological_statistics(series_mensual, runoff_coeff, area_km2):
         else:
             for tr in tr_list: stats_dict[f"Q_Max_{tr}a"] = 0
 
-        # Ajuste Gumbel Mínimos
-        if len(q_min_anual) >= 2:
-            loc_min, scale_min = stats.gumbel_r.fit(-q_min_anual)
+        # --- B. MÍNIMOS (Sequías) -> LOG-NORMAL ---
+        if len(q_min_anual) >= 3:
+            # Factor de Agotamiento de Acuífero para Sequías Extremas:
+            # En una sequía de 100 años, el acuífero también baja. 
+            # El modelo estadístico Log-Normal capturará esa tendencia de bajada natural.
+            
+            # Protección para logaritmo
+            q_min_safe = q_min_anual.clip(lower=0.001) 
+            
+            log_q = np.log(q_min_safe)
+            mu_log, sigma_log = stats.norm.fit(log_q)
+            
             for tr in tr_list:
-                prob = 1 - (1/tr)
-                val = stats.gumbel_r.ppf(prob, loc_min, scale_min)
-                stats_dict[f"Q_Min_{tr}a"] = max(0, -val)
+                prob = 1 / tr
+                val_log = stats.norm.ppf(prob, mu_log, sigma_log)
+                prediccion = np.exp(val_log)
+                
+                # SUELO FÍSICO (CONTROL DE REALIDAD RÍO CHICO)
+                # Incluso en sequía de 100 años, asumimos que el acuífero retiene 
+                # al menos un % de su capacidad de descarga base (ej: 20%).
+                # Esto evita que la estadística pura diga "0.0001" si la física dice otra cosa.
+                suelo_fisico = q_base_m3s * 0.20 
+                
+                stats_dict[f"Q_Min_{tr}a"] = max(prediccion, suelo_fisico)
+
         else:
             for tr in tr_list: stats_dict[f"Q_Min_{tr}a"] = 0
 
     except Exception as e:
-        # Si falla el ajuste, dejamos los valores en 0
-        print(f"Error Gumbel: {e}")
+        print(f"Error estadistico: {e}")
         pass
 
     return stats_dict

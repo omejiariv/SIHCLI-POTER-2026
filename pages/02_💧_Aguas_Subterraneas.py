@@ -961,13 +961,88 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 else:
                     ppt_cuenca = 2000 
 
-                # --- 3. BALANCE FINAL Y GUARDADO ---
+
+                # --- 3. BALANCE HÍDRICO (Turc) ---
                 if alt_med == 0: alt_med = 1500
                 temp = max(0, 28 - 0.006 * alt_med)
                 L = 300 + 25*temp + 0.05*(temp**3)
+                
+                # ETR y Escorrentía Total (Turc calcula el "Yield" total)
                 etr = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L>0 and ppt_cuenca>0) else 0
-                esc = ppt_cuenca - etr
-                caudal_med = (esc * area_km2 * 1000) / 31536000
+                etr = min(etr, ppt_cuenca)
+                esc_total_anual = ppt_cuenca - etr # Esto es Superficial + Base
+                
+                # Desglose (Factores empíricos o del Sidebar)
+                # Asumimos que del Total:
+                # 30% Infiltra -> de eso 50% Recarga
+                inf = esc_total_anual * 0.3 
+                recarga_mm = inf * 0.5 
+                
+                # Escorrentía Directa (Rápida) = Total - Infiltración
+                # Esta es la que responde a la lluvia mensual
+                esc_directa_mm = esc_total_anual - inf 
+                
+                # CÁLCULO DEL CAUDAL BASE (La clave del Río Chico)
+                # Convertimos la Recarga anual (mm) a Caudal continuo (m3/s)
+                q_base_m3s = (recarga_mm * area_km2 * 1000) / 31536000
+                
+                # Coeficiente de Escorrentía DIRECTA para la serie mensual
+                # (Solo la fracción que escurre rápido, pues la base la sumaremos fija)
+                if ppt_cuenca > 0:
+                    c_directo = esc_directa_mm / ppt_cuenca
+                else:
+                    c_directo = 0.3 # Fallback
+
+                # --- 4. ESTADÍSTICAS CON SUELO HIDROLÓGICO ---
+                # Ahora recalculamos las estadísticas pasando el Q_Base
+                ppt_cuenca_val = 0
+                ec_fdc = "N/A"
+                stats_ext = {}
+                
+                if n_est > 0:
+                    # (Tu código de filtros de estaciones...)
+                    ids = est_in['id_estacion'].astype(str).unique().tolist()
+                    ppt_vals = df_rain_anual[df_rain_anual['id_estacion_fk'].isin(ids)]['ppt_anual']
+                    if not ppt_vals.empty: ppt_cuenca_val = ppt_vals.mean() # Lluvia real observada
+                    
+                    if analysis:
+                        try:
+                            s_mensual = df_rain_mensual[df_rain_mensual['id_estacion_fk'].isin(ids)]
+                            if not s_mensual.empty:
+                                s_sintetica = s_mensual.groupby('fecha')['precipitation'].mean()
+                                
+                                # A. FDC (Usando la serie combinada implícitamente o solo runoff?)
+                                # Para FDC usamos el caudal total estimado
+                                # Ajustamos la función FDC para que sea consistente o la dejamos simple
+                                # Por ahora la dejamos simple basada en lluvia, la clave son los extremos.
+                                
+                                # B. ESTADÍSTICAS EXTREMAS (AQUÍ OCURRE LA MAGIA)
+                                stats_ext = analysis.calculate_hydrological_statistics(
+                                    s_sintetica, 
+                                    runoff_coeff=c_directo, 
+                                    area_km2=area_km2,
+                                    q_base_m3s=q_base_m3s  # <--- NUEVO PARÁMETRO
+                                )
+                                # Extraemos la ecuación FDC re-calculada dentro si quisieramos, 
+                                # pero mantenemos la lógica actual de FDC basada en lluvia directa para la visualización rápida
+                                # O mejor aún: usamos stats_ext para llenar todo.
+                        except: pass
+                
+                # Caudal Medio Total (Directo + Base) para la tabla
+                q_medio_total = ((esc_directa_mm * area_km2 * 1000)/31536000) + q_base_m3s
+
+                # Guardar Fila
+                lista_resultados.append({
+                    "Cuenca": nom,
+                    "Área (km²)": round(area_km2, 2),
+                    # ... (resto de columnas) ...
+                    "Recarga (mm)": round(recarga_mm, 0),
+                    "Caudal Base (m³/s)": round(q_base_m3s, 3), # Dato valioso para ver
+                    "Caudal Medio Total (m³/s)": round(q_medio_total, 3),
+                    
+                    # Las estadísticas ahora vendrán "curadas"
+                    "Q Min 100a": round(stats_ext.get("Q_Min_100a", 0), 3),
+
                 
                 # Construir fila maestra
                 fila = {
