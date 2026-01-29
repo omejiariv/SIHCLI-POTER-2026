@@ -184,43 +184,59 @@ if gdf_zona is not None:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
         
         if not df_hist.empty:
-            # 1. CÁLCULO DE ÁREA REAL (Evitando distorsión por Buffer)
+ 
+            # 1. CÁLCULO DE ÁREA REAL (Búsqueda Multifuente Blindada)
             area_km2 = 0
             try:
-                # ESTRATEGIA: Consultar BD Original
-                # Ignoramos gdf_zona porque puede traer el Buffer (Geometría inflada).
-                # Buscamos el área física de la cuenca original usando su nombre.
-                q_area = text("""
-                    SELECT area_km2, ST_Area(ST_Transform(geometry, 3116))/1000000 as area_geom 
+                # ESTRATEGIA 1: Buscar en tabla 'cuencas' (Normalizando texto)
+                # Usamos UPPER y TRIM para que "Rio Chico" coincida con "RIO CHICO "
+                q_cuenca = text("""
+                    SELECT area_km2 
                     FROM cuencas 
-                    WHERE subc_lbl = :n OR nombre_cuenca = :n OR n_nss3 = :n 
+                    WHERE UPPER(TRIM(CAST(subc_lbl AS TEXT))) = UPPER(TRIM(:n)) 
+                       OR UPPER(TRIM(CAST(nombre_cuenca AS TEXT))) = UPPER(TRIM(:n))
+                       OR UPPER(TRIM(CAST(n_nss3 AS TEXT))) = UPPER(TRIM(:n))
                     LIMIT 1
                 """)
-                df_a = pd.read_sql(q_area, engine, params={'n': nombre_zona})
+                df_c = pd.read_sql(q_cuenca, engine, params={'n': str(nombre_zona)})
                 
-                if not df_a.empty:
-                    val_db = df_a.iloc[0]['area_km2']
-                    val_geom = df_a.iloc[0]['area_geom']
-                    # Prioridad: Dato en columna > Dato geométrico original
-                    area_km2 = val_db if (val_db and val_db > 0) else val_geom
+                if not df_c.empty:
+                    val = df_c.iloc[0]['area_km2']
+                    if val and val > 0: area_km2 = val
                 
-                # Fallback: Si no hallamos en BD, usamos gdf_zona (con riesgo)
+                # ESTRATEGIA 2: Si falló, buscar en tabla 'municipios'
                 if area_km2 == 0:
+                    q_mun = text("""
+                        SELECT area_km2 
+                        FROM municipios 
+                        WHERE UPPER(TRIM(CAST(nombre_municipio AS TEXT))) = UPPER(TRIM(:n))
+                        LIMIT 1
+                    """)
+                    df_m = pd.read_sql(q_mun, engine, params={'n': str(nombre_zona)})
+                    if not df_m.empty:
+                        val = df_m.iloc[0]['area_km2']
+                        if val and val > 0: area_km2 = val
+
+                # ESTRATEGIA 3: Buscar columna 'area_km2' si sobrevivió en el objeto
+                if area_km2 == 0:
+                    # Si es GeoDataFrame y tiene la columna
                     if isinstance(gdf_zona, gpd.GeoDataFrame) and 'area_km2' in gdf_zona.columns:
                         area_km2 = gdf_zona['area_km2'].iloc[0]
-                    else:
-                        # Último recurso: Proyectar geometría actual (puede ser buffer)
-                        # Convertimos a DF si es Series
-                        gdf_temp = gpd.GeoDataFrame(geometry=gdf_zona) if isinstance(gdf_zona, gpd.GeoSeries) else gdf_zona
-                        
-                        if gdf_temp.crs is None: gdf_temp.set_crs("EPSG:4326", inplace=True) # Asumir WGS84
-                        area_km2 = gdf_temp.to_crs("EPSG:3116").area.iloc[0] / 1e6
+
+                # ESTRATEGIA 4: Último recurso (Geometría proyectada)
+                # Solo si todo lo anterior falló (ej: Buffer manual sin nombre en BD)
+                if area_km2 == 0:
+                    gdf_temp = gpd.GeoDataFrame(geometry=gdf_zona) if isinstance(gdf_zona, gpd.GeoSeries) else gdf_zona
+                    if gdf_temp.crs is None: gdf_temp.set_crs("EPSG:4326", inplace=True)
+                    area_km2 = gdf_temp.to_crs("EPSG:3116").area.iloc[0] / 1e6
 
             except Exception as e:
-                print(f"Error área: {e}")
-                area_km2 = 1.0
+                print(f"Error calculando área: {e}")
+                area_km2 = 1.0 # Valor de seguridad final
 
-            if area_km2 <= 0: area_km2 = 1.0
+            # Validación final para evitar divisiones por cero o negativos
+            if area_km2 is None or area_km2 <= 0: area_km2 = 1.0
+
 
             # 2. MEDIAS ANUALES (Balance Hídrico)
             p_med = df_hist['p_final'].mean() * 12
