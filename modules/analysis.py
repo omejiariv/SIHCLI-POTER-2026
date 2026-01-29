@@ -459,50 +459,59 @@ def calculate_hydrological_balance(precip_mm, alt_m, gdf_basin, delta_temp_c=0):
     }
 
 
-def calculate_morphometry(gdf_basin):
-    """Calcula métricas morfométricas básicas."""
-    if gdf_basin is None or gdf_basin.empty:
-        return {
-            k: 0
-            for k in [
-                "area_km2",
-                "perimetro_km",
-                "indice_forma",
-                "alt_max",
-                "alt_min",
-                "alt_med",
-                "pendiente_prom",
-            ]
-        }
+# --- 2. CÁLCULOS MORFOMÉTRICOS Y TOPOGRÁFICOS (CORREGIDO) ---
 
-    # Proyectar a metros (EPSG:3116) para cálculos de área/distancia
-    try:
-        gdf_proj = gdf_basin.to_crs(epsg=3116)
-    except:
-        gdf_proj = gdf_basin  # Fallback si falla la proyección
+def calculate_morphometry(gdf_basin, dem_path=None):
+    """
+    Calcula métricas morfométricas. 
+    CORRECCIÓN: Ahora acepta 'dem_path' para calcular altitudes REALES usando Zonal Statistics.
+    """
+    if gdf_basin is None or gdf_basin.empty:
+        return {"area_km2":0, "perimetro_km":0, "alt_max_m":0, "alt_min_m":0, "alt_prom_m":0, "pendiente_prom":0}
+
+    # Proyección para área
+    try: gdf_proj = gdf_basin.to_crs(epsg=3116)
+    except: gdf_proj = gdf_basin
 
     area_km2 = gdf_proj.area.sum() / 1e6
     perimetro_km = gdf_proj.length.sum() / 1000
-
-    # Índice de compacidad (Gravelius) -> Kc = 0.28 * P / raiz(A)
     indice_forma = (0.28 * perimetro_km) / np.sqrt(area_km2) if area_km2 > 0 else 0
 
-    # --- ESTIMACIÓN DE ALTITUDES ---
-    # Como no estamos procesando el DEM pixel por pixel aquí (sería muy lento),
-    # usamos valores típicos o los calculados previamente si existen.
-    # Si tuviéramos el DEM cargado en memoria, haríamos zonal statistics.
-    # Valores simulados coherentes para la región (a falta de Zonal Stats):
-    alt_max = 2800
-    alt_min = 800
-    alt_med = (alt_max + alt_min) / 2
+    # --- CÁLCULO REAL DE ALTITUDES CON DEM ---
+    alt_max, alt_min, alt_med, pendiente_prom = 0, 0, 0, 0
+    
+    if dem_path:
+        try:
+            with rasterio.open(dem_path) as src:
+                # Asegurar CRS
+                if gdf_basin.crs != src.crs:
+                    geom_for_mask = gdf_basin.to_crs(src.crs).geometry
+                else:
+                    geom_for_mask = gdf_basin.geometry
 
-    # Estimación de Pendiente Global (%) (Relief Ratio simplificado)
-    # Pendiente ~ (Desnivel / Longitud Característica)
-    longitud_aprox_km = np.sqrt(area_km2)  # Asumiendo forma cuadrada
-    if longitud_aprox_km > 0:
-        pendiente_prom = ((alt_max - alt_min) / (longitud_aprox_km * 1000)) * 100
+                # Máscara
+                out_image, _ = mask(src, geom_for_mask, crop=True, nodata=src.nodata)
+                data = out_image[0]
+                validos = data[data != src.nodata]
+                validos = validos[validos > -100] # Filtro ruido
+
+                if validos.size > 0:
+                    alt_max = float(np.max(validos))
+                    alt_min = float(np.min(validos))
+                    alt_med = float(np.mean(validos))
+                    
+                    # Pendiente aproximada (Relief Ratio) o Gradiente Numpy
+                    # Pendiente (%) ≈ (Rango Altitud / Raiz(Area)) * 100
+                    longitud_aprox = np.sqrt(area_km2 * 1e6) 
+                    if longitud_aprox > 0:
+                        pendiente_prom = ((alt_max - alt_min) / longitud_aprox) * 100
+        except Exception as e:
+            print(f"Error procesando DEM en morphometry: {e}")
+            # Fallback a simulación si falla DEM
+            alt_max, alt_min, alt_med = 2800, 800, 1800
     else:
-        pendiente_prom = 0
+        # Fallback si no hay ruta DEM
+        alt_max, alt_min, alt_med = 2800, 800, 1800
 
     return {
         "area_km2": area_km2,
@@ -588,10 +597,10 @@ def calculate_hypsometric_curve(gdf_basin, dem_path=None):
         poly_model = np.poly1d(coeffs)
         
         eq_str = (
-            f"H = {coeffs[0]:.4f}A³ "
-            f"{'+' if coeffs[1]>=0 else '-'} {abs(coeffs[1]):.3f}A² "
-            f"{'+' if coeffs[2]>=0 else '-'} {abs(coeffs[2]):.2f}A "
-            f"{'+' if coeffs[3]>=0 else '-'} {abs(coeffs[3]):.0f}"
+            f"H = {coeffs[0]:.2e}A³ "
+            f"{'+' if coeffs[1]>=0 else '-'} {abs(coeffs[1]):.2e}A² "
+            f"{'+' if coeffs[2]>=0 else '-'} {abs(coeffs[2]):.2e}A "
+            f"{'+' if coeffs[3]>=0 else '-'} {abs(coeffs[3]):.2f}"
         )
     except:
         eq_str = "N/A"
@@ -948,8 +957,8 @@ def calculate_duration_curve(series_mensual, runoff_coeff, area_km2):
 
         eq_str = (
             f"Q = {coeffs[0]:.6f}P^3 "
-            f"{sign_b} {abs(coeffs[1]):.4f}P^2 "
-            f"{sign_c} {abs(coeffs[2]):.2f}P "
+            f"{sign_b} {abs(coeffs[1]):.2e}P^2 "
+            f"{sign_c} {abs(coeffs[2]):.2e}P "
             f"{sign_d} {abs(coeffs[3]):.2f}"
         )
 
