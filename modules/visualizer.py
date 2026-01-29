@@ -2899,9 +2899,18 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
                             else:
                                 df_avg[Config.STATION_NAME_COL] = df_avg.index
 
-                        # MERGE SEGURO
-                        df_int = pd.merge(df_avg, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])
+                        # --- CORRECCIÓN: GARANTIZAR LATITUD/LONGITUD ---
+                        # Al venir de BD, a veces solo tenemos 'geometry'. Extraemos las coordenadas.
+                        if 'latitude' not in gdf_stations.columns or 'longitude' not in gdf_stations.columns:
+                            gdf_stations = gdf_stations.copy()
+                            gdf_stations["latitude"] = gdf_stations.geometry.y
+                            gdf_stations["longitude"] = gdf_stations.geometry.x
                         
+                        # --- FIN CORRECCIÓN ---
+
+                        # MERGE SEGURO (La línea original que fallaba, ahora funcionará)
+                        df_int = pd.merge(df_avg, gdf_stations, on=Config.STATION_NAME_COL).dropna(subset=["latitude", "longitude"])                     
+
                         if Config.ALTITUDE_COL not in df_int.columns: 
                             df_int[Config.ALTITUDE_COL] = 1500
                         
