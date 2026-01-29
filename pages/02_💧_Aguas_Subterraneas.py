@@ -167,52 +167,84 @@ if gdf_zona is not None:
 
     st.markdown(f"### 📍 {nombre_zona}")
     
-    # --- VISUALIZACIÓN KPIs ACTUALIZADA (8 COLUMNAS) ---
+    # ==============================================================================
+    # SECCIÓN: INDICADORES PRINCIPALES (PANEL SUPERIOR CON 10 COLUMNAS)
+    # ==============================================================================
     if not df_res.empty:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
+        
         if not df_hist.empty:
-            
-            # 1. Cálculo de Área en km2 (Proyectando para precisión)
+            # 1. CÁLCULO DE ÁREA (Proyección Segura)
             try:
-                # Si viene de BD y tiene columna de área
                 if 'area_km2' in gdf_zona.columns:
                     area_km2 = gdf_zona['area_km2'].iloc[0]
-                elif 'Shape_Area' in gdf_zona.columns:
-                    # Asumiendo que Shape_Area está en grados cuadrados si es WGS84, esto es impreciso.
-                    # Mejor proyectamos al vuelo:
-                    geom_proj = gdf_zona.to_crs("EPSG:3116") # MAGNA-SIRGAS Colombia
-                    area_km2 = geom_proj.area.iloc[0] / 1e6
                 else:
-                    # Fallback proyección
                     geom_proj = gdf_zona.to_crs("EPSG:3116")
                     area_km2 = geom_proj.area.iloc[0] / 1e6
             except:
-                area_km2 = 1.0 # Valor seguro para evitar división por cero
-                
-            # 2. Medias Anuales (mm)
-            p_med = df_hist['p_final'].mean()*12
-            etr_med = df_hist['etr_mm'].mean()*12
-            rec_med = df_hist['recarga_mm'].mean()*12
-            esc_med = df_hist['escorrentia_mm'].mean()*12 # P - ETR - Infiltración
-            inf_med = df_hist['infiltracion_mm'].mean()*12
-            
-            # 3. Cálculo de Caudal (m3/s)
-            # Q = (Escorrentia_mm * Area_km2 * 1000) / (365 * 24 * 3600)
-            q_m3s = (esc_med * area_km2 * 1000) / 31536000
+                area_km2 = 1.0
 
-            # 4. Panel de 8 Columnas
+            # 2. MEDIAS ANUALES (Balance Hídrico)
+            p_med = df_hist['p_final'].mean() * 12
+            etr_med = df_hist['etr_mm'].mean() * 12
+            rec_med = df_hist['recarga_mm'].mean() * 12
+            inf_med = df_hist['infiltracion_mm'].mean() * 12
+            esc_med = df_hist['escorrentia_mm'].mean() * 12  # Superficial + Base
+
+            # 3. CAUDALES (Modelo Aditivo)
+            # Caudal Base (Aporte Acuífero)
+            q_base_m3s = (rec_med * area_km2 * 1000) / 31536000
+            
+            # Caudal Medio Total
+            q_medio_m3s = (esc_med * area_km2 * 1000) / 31536000
+            
+            # 4. ESTADÍSTICAS EXTREMAS (Q Min 50a y Q Eco)
+            q_min_50a = 0
+            q_eco = 0
+            
+            if analysis: # Usamos el módulo analysis si está importado
+                try:
+                    # Preparamos la serie temporal para el cálculo
+                    # df_hist tiene índice numérico, pero columna 'fecha'. Usamos esa.
+                    serie_temporal = df_hist.set_index('fecha')['p_final']
+                    
+                    # Coeficiente de Escorrentía Directa (aprox para el estadístico)
+                    # Escorrentía directa = Total - Base(Recarga aprox)
+                    esc_directa = esc_med - rec_med
+                    c_directo = esc_directa / p_med if p_med > 0 else 0.3
+                    
+                    stats_panel = analysis.calculate_hydrological_statistics(
+                        serie_temporal, 
+                        runoff_coeff=c_directo, 
+                        area_km2=area_km2,
+                        q_base_m3s=q_base_m3s
+                    )
+                    q_min_50a = stats_panel.get("Q_Min_50a", 0)
+                    q_eco = stats_panel.get("Q_Ecologico_Q95", 0)
+                except Exception as e:
+                    print(f"Error calculando stats panel: {e}")
+                    pass
+
+            # 5. VISUALIZACIÓN (10 COLUMNAS)
             st.markdown("##### 💧 Balance Hídrico y Oferta")
-            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
+            cols = st.columns(10)
             
-            c1.metric("📏 Área", f"{area_km2:,.1f} km²")
-            c2.metric("🌧️ Lluvia", f"{p_med:,.0f} mm")
-            c3.metric("☀️ ETR", f"{etr_med:,.0f} mm")
-            c4.metric("🌱 Infiltración", f"{inf_med:,.0f} mm", help="Suelo")
-            c5.metric("💧 Recarga", f"{rec_med:,.0f} mm", help="Acuífero")
-            c6.metric("🌊 Escorrentía", f"{esc_med:,.0f} mm")
-            c7.metric("🚿 Caudal", f"{q_m3s:.2f} m³/s")
-            c8.metric("📡 Estaciones", len(df_puntos))
+            cols[0].metric("📏 Área", f"{area_km2:,.1f} km²")
+            cols[1].metric("🌧️ Lluvia", f"{p_med:,.0f} mm")
+            cols[2].metric("☀️ ETR", f"{etr_med:,.0f} mm")
+            cols[3].metric("🌱 Infiltración", f"{inf_med:,.0f} mm")
+            cols[4].metric("💧 Recarga", f"{rec_med:,.0f} mm")
+            cols[5].metric("🌊 Escorrentía", f"{esc_med:,.0f} mm")
             
+            # Nuevas Métricas Clave
+            cols[6].metric("⚖️ Q. Medio", f"{q_medio_m3s:.2f} m³/s")
+            cols[7].metric("📉 Q. Min 50a", f"{q_min_50a:.3f} m³/s", delta_color="inverse", help="Caudal mínimo en sequía de 50 años (Log-Normal + Base)")
+            cols[8].metric("🐟 Q. Ecológico", f"{q_eco:.3f} m³/s", help="Caudal Q95 (Sostenibilidad)")
+            
+            # Estaciones
+            n_estaciones = len(df_puntos) if 'df_puntos' in locals() else 0
+            cols[9].metric("📡 Estaciones", f"{n_estaciones}")
+
             st.divider()
 
             with st.expander("📘 Guía Técnica, Metodología y Fuentes de Información", expanded=False):
@@ -997,6 +1029,7 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                         if not s_mensual.empty:
                             s_sintetica = s_mensual.groupby('fecha')['precipitation'].mean()
                             
+                            
                             # Estadísticas con Suelo Hidrológico
                             stats_ext = analysis.calculate_hydrological_statistics(
                                 s_sintetica, 
@@ -1005,10 +1038,15 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                                 q_base_m3s=q_base_m3s
                             )
                             
-                            # FDC
-                            fdc = analysis.calculate_duration_curve(s_sintetica, runoff_coeff=c_directo, area_km2=area_km2)
+                            # FDC (ACTUALIZADO: Pasando q_base_m3s)
+                            fdc = analysis.calculate_duration_curve(
+                                s_sintetica, 
+                                runoff_coeff=c_directo, 
+                                area_km2=area_km2,
+                                q_base_m3s=q_base_m3s # <--- NUEVO ARGUMENTO
+                            )
+                            
                             if fdc: ec_fdc = fdc.get("equation", "N/A")
-                    except: pass
 
                 # Índices
                 im = ppt_cuenca / (temp + 10)

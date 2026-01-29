@@ -920,67 +920,50 @@ def calculate_percentiles_extremes(df_long, station_name, p_low=10, p_high=90):
     return df_station, thresh_low, thresh_high
 
 
-def calculate_duration_curve(series_mensual, runoff_coeff, area_km2):
+def calculate_duration_curve(series_mensual, runoff_coeff, area_km2, q_base_m3s=0):
     """
-    Calcula la Curva de Duración de Caudales (FDC) con ajuste polinómico y R².
-    CORRECCIÓN: Formato en Notación Científica (Scientific Notation) para la ecuación.
+    Calcula Curva de Duración (FDC) usando Caudal Total (Directo + Base).
+    Args:
+        q_base_m3s: Caudal base constante (aporte acuífero).
     """
     if series_mensual is None or series_mensual.empty:
         return None
 
-    # Q (m3/s) = P(mm/mes) * C * Area(km2) * 1000 / (30.4375 * 86400)
+    # 1. Caudal Directo (Rápido)
+    # Q_rapid = P * C * Area / Tiempo
     factor = (area_km2 * 1000) / (30.4375 * 86400)
-    q_m3s = series_mensual * runoff_coeff * factor
+    q_rapid = series_mensual * runoff_coeff * factor
+    
+    # 2. Caudal Total (Modelo Aditivo)
+    # Aquí sumamos el aporte base a CADA mes de la serie
+    q_total = q_rapid + q_base_m3s
 
-    # Ordenar descendente (Duración)
-    sorted_q = q_m3s.sort_values(ascending=False)
+    # 3. Ordenar (Duración)
+    sorted_q = q_total.sort_values(ascending=False)
     n = len(sorted_q)
+    if n < 5: return None
 
-    if n < 5:
-        return None
-
-    # Probabilidad de Excedencia (Weibull: i / (n+1))
+    # 4. Probabilidades (Weibull)
     probs = np.arange(1, n + 1) / (n + 1) * 100
 
     try:
-        # Ajuste Polinómico Grado 3
+        # Ajuste Polinómico Grado 3 (Q vs Probabilidad)
         coeffs = np.polyfit(probs, sorted_q.values, 3)
-        poly_model = np.poly1d(coeffs)
-
-        # Calcular R² (Coeficiente de Determinación)
-        y_pred = poly_model(probs)
-        y_true = sorted_q.values
-        ss_res = np.sum((y_true - y_pred) ** 2)
-        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-        r_squared = 1 - (ss_res / ss_tot)
-
-        # --- FORMATO CIENTÍFICO APLICADO AQUÍ ---
-        # Usamos :.2e para asegurar que coeficientes pequeños (ej: 4.5e-06) se vean bien
+        
+        # Ecuación en Notación Científica
+        # P = Probabilidad de Excedencia (%)
         eq_str = (
             f"Q = {coeffs[0]:.2e}P³ "
             f"{'+' if coeffs[1]>=0 else '-'} {abs(coeffs[1]):.2e}P² "
             f"{'+' if coeffs[2]>=0 else '-'} {abs(coeffs[2]):.2e}P "
             f"{'+' if coeffs[3]>=0 else '-'} {abs(coeffs[3]):.2e}"
         )
-
-        # Generar línea de tendencia para graficar
-        trend_x = np.linspace(0, 100, 100)
-        trend_y = poly_model(trend_x)
-        trend_y = np.maximum(trend_y, 0)  # Caudal no negativo
-
     except:
         eq_str = "N/A"
-        r_squared = 0
-        trend_x, trend_y = [], []
 
     return {
-        "data": pd.DataFrame(
-            {"Probabilidad Excedencia (%)": probs, "Caudal (m³/s)": sorted_q.values}
-        ),
-        "equation": eq_str,
-        "r_squared": r_squared,
-        "trend_x": trend_x,
-        "trend_y": trend_y,
+        "data": pd.DataFrame({"Probabilidad": probs, "Caudal": sorted_q.values}),
+        "equation": eq_str
     }
 
 # --- 4. CORRECCIÓN DE SESGO (BIAS CORRECTION) ---
