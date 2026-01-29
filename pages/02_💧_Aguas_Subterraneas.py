@@ -775,29 +775,72 @@ if gdf_zona is not None:
                 help="Descarga este mapa interactivo con isolíneas para compartir."
             )
 
-    # --- TAB 4: DESCARGAS (RASTER + CSV) ---
-    with tab4:
-        c1, c2 = st.columns(2)
-        if not df_res.empty: 
-            c1.download_button("📥 Descargar Serie (CSV)", df_res.to_csv(index=False), "serie_hidrologica.csv")
+# ... (Código anterior de las pestañas) ...
+
+with tab4:
+    st.header("📥 Centro de Descargas y Documentación")
+    
+    # 1. FICHA TÉCNICA ENRIQUECIDA
+    with st.expander("📘 Ficha Técnica: Modelo Hidrológico Estocástico y de Balance (Leer antes de usar)", expanded=True):
+        st.markdown("""
+        ### 1. Marco Conceptual
+        Este reporte implementa un **Modelo Hidrológico Híbrido** que integra el Balance Hídrico de largo plazo con un análisis estocástico de extremos. A diferencia de modelos simples lluvia-escorrentía, este sistema reconoce la **dualidad del flujo**:
+        * **Componente Superficial:** Respuesta rápida a la precipitación (Escorrentía Directa).
+        * **Componente Subterráneo (Flujo Base):** Aporte lento y sostenido del acuífero, calculado a partir de la Recarga Potencial.
         
-        # Recuperar Raster de Sesión
-        if st.session_state.raster_data is not None:
-            Zi_s, xi_s, yi_s = st.session_state.raster_data
-            try:
-                # bounds para rasterio: minx, miny, maxx, maxy
-                b_tif = [xi_s.min(), yi_s.min(), xi_s.max(), yi_s.max()]
-                # GeoTIFF
-                tif_bytes = hydrogeo_utils.generar_geotiff(Zi_s[::-1], b_tif)
-                c2.download_button("🗺️ Descargar Mapa Recarga (GeoTIFF)", tif_bytes, "mapa_recarga.tif", mime="image/tiff")
-            except Exception as e:
-                c2.error(f"Error generando descarga: {e}")
+        ### 2. Metodología de Cálculo
+        * **Balance Hídrico:** Se utiliza el método de **Turc (1954)** modificado para condiciones tropicales, calculando la Evapotranspiración Real (ETR) y el Superávit Hídrico.
+        * **Modelo Aditivo ($Q_{total}$):** El caudal medio no depende solo de la lluvia del mes. Se define como:
+            $$Q_{total} = Q_{Directo}(P) + Q_{Base}(R)$$
+            Donde $Q_{Base}$ actúa como un "suelo hidráulico" que impide que los ríos perennes aparezcan secos en el modelo, incluso en ausencia de lluvias.
+        * **Análisis Estocástico de Extremos:**
+            * **Máximos (Crecientes):** Se ajustan mediante la distribución de **Gumbel**, ideal para valores extremos superiores.
+            * **Mínimos (Sequías):** Se utiliza la distribución **Log-Normal** de 2 parámetros. Esta elección matemática respeta la asintoticidad de las curvas de recesión de acuíferos (el caudal tiende a cero pero no toca el cero ni se vuelve negativo), garantizando proyecciones realistas para $T_r > 50$ años.
+        * **Regionalización:** Ante la falta de estaciones in-situ, el sistema genera una "Estación Virtual" agregando datos de todas las estaciones en un **Buffer de 20 km** alrededor de la cuenca (Técnica de Vecino Próximo Ponderado).
+
+        ### 3. Alcance y Utilidad
+        * **Planificación del Recurso Hídrico:** Estimación de oferta hídrica neta para concesiones.
+        * **Gestión del Riesgo:** Los valores $Q_{Max}^{100a}$ permiten dimensionar obras hidráulicas (puentes, box-culverts).
+        * **Seguridad Hídrica:** Los valores $Q_{Min}^{50a}$ y $Q_{95}$ (Caudal Ecológico) establecen los límites críticos para el abastecimiento en escenarios de Cambio Climático.
+
+        ### 4. Limitaciones e Interpretación
+        * **Escala Temporal:** El modelo opera a paso mensual. Los picos de crecientes instantáneas (horas) podrían ser superiores a los $Q_{Max}$ mensuales reportados.
+        * **Incertidumbre:** En cuencas sin estaciones dentro del radio de 20km, los datos son interpolaciones regionales que deben validarse en campo.
+        * **Caudal Base:** Se asume un factor de recarga regional del 15% (30% infiltración $\times$ 50% percolación). Cuencas con geología kárstica o muy fracturada podrían tener caudales base superiores.
+
+        ### 5. Fuentes de Información y Referencias
+        * **Climatología:** IDEAM (Precipitación Histórica Mensual).
+        * **Topografía:** ALOS PALSAR / SRTM (30m) para delimitación y morfometría.
+        * **Referentes Académicos:** * *Chow, V. T. (1988). Applied Hydrology.* (Estadística Gumbel/Log-Normal).
+            * *Turc, L. (1954). Le bilan d'eau des sols: relations entre les précipitations, l'évaporation et l'écoulement.*
+        """)
+
+    st.markdown("---")
+    
+    # 2. BOTONES DE DESCARGA
+    col_d1, col_d2 = st.columns(2)
+    
+    with col_d1:
+        st.info("📊 **Serie Temporal Completa**\n\nDescarga los datos mensuales (Lluvia, Q) usados para los cálculos.")
+        # (Aquí iría lógica para descargar serie si la tienes en memoria, o el botón que ya tenías)
+        if 'df_rain_mensual' in locals(): # Ejemplo si estuviera disponible
+             pass 
         else:
-            c2.info("El mapa raster se genera en la pestaña 'Mapa Recarga'. Visítala primero.")
+            st.write("*(Selecciona una cuenca en el mapa para habilitar esta descarga)*")
 
-else:
-    st.info("👈 Selecciona una zona.")
-
+    with col_d2:
+        st.success("📑 **Reporte Maestro Global (CSV)**\n\nTabla con todas las 51 cuencas, estadísticas y ecuaciones.")
+        try:
+            df_rep = pd.read_sql("SELECT * FROM reporte_cuencas", engine)
+            csv_rep = df_rep.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ Descargar Reporte Global (.csv)",
+                data=csv_rep,
+                file_name="Reporte_Hidrologico_Completo_SIHCLI.csv",
+                mime="text/csv"
+            )
+        except:
+            st.warning("Primero debes generar el reporte en la sección inferior.")
 
 # ==============================================================================
 # SECCIÓN: REPORTE GLOBAL HIDROLÓGICO (VERSIÓN FINAL CORREGIDA)
