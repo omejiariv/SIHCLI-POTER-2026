@@ -184,72 +184,61 @@ if gdf_zona is not None:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
         
         if not df_hist.empty:
-            # 1. CÁLCULO DE ÁREA (ROBUSTO Y COMPATIBLE CON BUFFER)
+            # 1. CÁLCULO DE ÁREA REAL (Evitando distorsión por Buffer)
             area_km2 = 0
             try:
-                # --- CORRECCIÓN CRÍTICA: Normalizar GeoSeries ---
-                # Si gdf_zona viene de un Buffer, es una GeoSeries sin columnas.
-                # La convertimos a GeoDataFrame para que el resto del código no falle.
-                if isinstance(gdf_zona, gpd.GeoSeries):
-                    gdf_zona = gpd.GeoDataFrame(geometry=gdf_zona)
-
-                # Opción A: Si la columna ya viene calculada desde la BD (y no se perdió en el buffer)
-                if 'area_km2' in gdf_zona.columns:
-                     val = gdf_zona['area_km2'].iloc[0]
-                     if val > 0: area_km2 = val
-
-                # Opción B: Calcular desde la geometría (Si A falló, no existe, o es un Buffer)
+                # ESTRATEGIA: Consultar BD Original
+                # Ignoramos gdf_zona porque puede traer el Buffer (Geometría inflada).
+                # Buscamos el área física de la cuenca original usando su nombre.
+                q_area = text("""
+                    SELECT area_km2, ST_Area(ST_Transform(geometry, 3116))/1000000 as area_geom 
+                    FROM cuencas 
+                    WHERE subc_lbl = :n OR nombre_cuenca = :n OR n_nss3 = :n 
+                    LIMIT 1
+                """)
+                df_a = pd.read_sql(q_area, engine, params={'n': nombre_zona})
+                
+                if not df_a.empty:
+                    val_db = df_a.iloc[0]['area_km2']
+                    val_geom = df_a.iloc[0]['area_geom']
+                    # Prioridad: Dato en columna > Dato geométrico original
+                    area_km2 = val_db if (val_db and val_db > 0) else val_geom
+                
+                # Fallback: Si no hallamos en BD, usamos gdf_zona (con riesgo)
                 if area_km2 == 0:
-                    gdf_calc = gdf_zona.copy()
-                    
-                    # Si no tiene CRS definido, adivinamos por los valores
-                    if gdf_calc.crs is None:
-                        minx = gdf_calc.total_bounds[0]
-                        if -180 <= minx <= 180:
-                            gdf_calc.set_crs("EPSG:4326", inplace=True)
-                        else:
-                            gdf_calc.set_crs("EPSG:3116", inplace=True)
-                    
-                    # Proyectamos a Metros para medir
-                    gdf_metros = gdf_calc.to_crs("EPSG:3116")
-                    area_km2 = gdf_metros.area.iloc[0] / 1e6
+                    if isinstance(gdf_zona, gpd.GeoDataFrame) and 'area_km2' in gdf_zona.columns:
+                        area_km2 = gdf_zona['area_km2'].iloc[0]
+                    else:
+                        # Último recurso: Proyectar geometría actual (puede ser buffer)
+                        # Convertimos a DF si es Series
+                        gdf_temp = gpd.GeoDataFrame(geometry=gdf_zona) if isinstance(gdf_zona, gpd.GeoSeries) else gdf_zona
+                        
+                        if gdf_temp.crs is None: gdf_temp.set_crs("EPSG:4326", inplace=True) # Asumir WGS84
+                        area_km2 = gdf_temp.to_crs("EPSG:3116").area.iloc[0] / 1e6
 
             except Exception as e:
-                # Fallback seguro
-                if hasattr(gdf_zona, 'columns') and 'Shape_Area' in gdf_zona.columns:
-                     try: area_km2 = gdf_zona['Shape_Area'].iloc[0] / 1e6
-                     except: area_km2 = 1.0
-                else:
-                     area_km2 = 1.0 
-            
-            # Validación final anti-cero
+                print(f"Error área: {e}")
+                area_km2 = 1.0
+
             if area_km2 <= 0: area_km2 = 1.0
 
- 
             # 2. MEDIAS ANUALES (Balance Hídrico)
             p_med = df_hist['p_final'].mean() * 12
             etr_med = df_hist['etr_mm'].mean() * 12
             rec_med = df_hist['recarga_mm'].mean() * 12
             inf_med = df_hist['infiltracion_mm'].mean() * 12
-            esc_med = df_hist['escorrentia_mm'].mean() * 12  # Superficial + Base
+            esc_med = df_hist['escorrentia_mm'].mean() * 12
 
             # 3. CAUDALES (Modelo Aditivo)
-            # Caudal Base (Aporte Acuífero)
             q_base_m3s = (rec_med * area_km2 * 1000) / 31536000
-            
-            # Caudal Medio Total
             q_medio_m3s = (esc_med * area_km2 * 1000) / 31536000
             
-            # 4. ESTADÍSTICAS EXTREMAS (Q Min 50a y Q Eco)
+            # 4. ESTADÍSTICAS EXTREMAS
             q_min_50a = 0
             q_eco = 0
-            
-            if analysis: 
+            if analysis:
                 try:
-                    # Serie temporal
                     serie_temporal = df_hist.set_index('fecha')['p_final']
-                    
-                    # Coeficiente directo
                     esc_directa = esc_med - rec_med
                     c_directo = esc_directa / p_med if p_med > 0 else 0.3
                     
@@ -261,14 +250,18 @@ if gdf_zona is not None:
                     )
                     q_min_50a = stats_panel.get("Q_Min_50a", 0)
                     q_eco = stats_panel.get("Q_Ecologico_Q95", 0)
-                except Exception as e:
-                    pass
+                except: pass
 
-            # 5. VISUALIZACIÓN (10 COLUMNAS)
+            # 5. VISUALIZACIÓN
             st.markdown("##### 💧 Balance Hídrico y Oferta")
             cols = st.columns(10)
             
-            cols[0].metric("📏 Área", f"{area_km2:,.1f} km²")
+            # FORMATO DE ÁREA SOLICITADO
+            def fmt_area(val):
+                if val < 1.0: return f"{val:.3f} km²" # Decimales solo si es pequeña
+                return f"{val:,.0f} km²" # Entero si es grande
+            
+            cols[0].metric("📏 Área", fmt_area(area_km2))
             cols[1].metric("🌧️ Lluvia", f"{p_med:,.0f} mm")
             cols[2].metric("☀️ ETR", f"{etr_med:,.0f} mm")
             cols[3].metric("🌱 Infiltración", f"{inf_med:,.0f} mm")
@@ -276,11 +269,11 @@ if gdf_zona is not None:
             cols[5].metric("🌊 Escorrentía", f"{esc_med:,.0f} mm")
             
             cols[6].metric("⚖️ Q. Medio", f"{q_medio_m3s:.2f} m³/s")
-            cols[7].metric("📉 Q. Min 50a", f"{q_min_50a:.3f} m³/s", delta_color="inverse", help="Caudal mínimo en sequía de 50 años (Log-Normal + Base)")
-            cols[8].metric("🐟 Q. Ecológico", f"{q_eco:.3f} m³/s", help="Caudal Q95 (Sostenibilidad)")
+            cols[7].metric("📉 Q. Min 50a", f"{q_min_50a:.3f} m³/s", delta_color="inverse", help="Log-Normal + Base")
+            cols[8].metric("🐟 Q. Ecológico", f"{q_eco:.3f} m³/s")
             
-            n_estaciones = len(df_puntos) if 'df_puntos' in locals() else 0
-            cols[9].metric("📡 Estaciones", f"{n_estaciones}")
+            n_est = len(df_puntos) if 'df_puntos' in locals() else 0
+            cols[9].metric("📡 Estaciones", f"{n_est}")
 
             st.divider()
 
