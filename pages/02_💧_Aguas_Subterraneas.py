@@ -184,15 +184,43 @@ if gdf_zona is not None:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
         
         if not df_hist.empty:
-            # 1. CÁLCULO DE ÁREA (Proyección Segura)
+            # 1. CÁLCULO DE ÁREA (ROBUSTO - A PRUEBA DE FALLOS)
+            area_km2 = 0
             try:
+                # Opción A: Si la columna ya viene calculada desde la BD
                 if 'area_km2' in gdf_zona.columns:
-                    area_km2 = gdf_zona['area_km2'].iloc[0]
+                     val = gdf_zona['area_km2'].iloc[0]
+                     if val > 0: area_km2 = val
+
+                # Opción B: Calcular desde la geometría (Si A falló o no existe)
+                if area_km2 == 0 and 'geometry' in gdf_zona.columns:
+                    # Copia para no romper el original
+                    gdf_calc = gdf_zona.copy()
+                    
+                    # SI NO TIENE CRS DEFINIDO, LO ADIVINAMOS POR LOS VALORES
+                    if gdf_calc.crs is None:
+                        minx = gdf_calc.total_bounds[0]
+                        if -180 <= minx <= 180:
+                            # Son Grados (Lat/Lon) -> EPSG:4326
+                            gdf_calc.set_crs("EPSG:4326", inplace=True)
+                        else:
+                            # Son Metros (Bogotá u Origen Nacional) -> EPSG:3116 (Asumido)
+                            gdf_calc.set_crs("EPSG:3116", inplace=True)
+                    
+                    # Ahora sí, proyectamos a Metros Bogotá para medir
+                    gdf_metros = gdf_calc.to_crs("EPSG:3116")
+                    area_km2 = gdf_metros.area.iloc[0] / 1e6
+
+            except Exception as e:
+                print(f"Error calculando área: {e}")
+                # Fallback final si todo falla: Intentar leer Shape_Area si existe
+                if 'Shape_Area' in gdf_zona.columns:
+                     area_km2 = gdf_zona['Shape_Area'].iloc[0] / 1e6 # Asumiendo m2
                 else:
-                    geom_proj = gdf_zona.to_crs("EPSG:3116")
-                    area_km2 = geom_proj.area.iloc[0] / 1e6
-            except:
-                area_km2 = 1.0
+                     area_km2 = 1.0 # Valor por defecto para no romper divisiones
+            
+            # Validación final anti-cero
+            if area_km2 <= 0: area_km2 = 1.0
 
             # 2. MEDIAS ANUALES (Balance Hídrico)
             p_med = df_hist['p_final'].mean() * 12
@@ -212,14 +240,12 @@ if gdf_zona is not None:
             q_min_50a = 0
             q_eco = 0
             
-            if analysis: # Usamos el módulo analysis si está importado
+            if analysis: 
                 try:
-                    # Preparamos la serie temporal para el cálculo
-                    # df_hist tiene índice numérico, pero columna 'fecha'. Usamos esa.
+                    # Serie temporal
                     serie_temporal = df_hist.set_index('fecha')['p_final']
                     
-                    # Coeficiente de Escorrentía Directa (aprox para el estadístico)
-                    # Escorrentía directa = Total - Base(Recarga aprox)
+                    # Coeficiente directo
                     esc_directa = esc_med - rec_med
                     c_directo = esc_directa / p_med if p_med > 0 else 0.3
                     
@@ -232,7 +258,6 @@ if gdf_zona is not None:
                     q_min_50a = stats_panel.get("Q_Min_50a", 0)
                     q_eco = stats_panel.get("Q_Ecologico_Q95", 0)
                 except Exception as e:
-                    print(f"Error calculando stats panel: {e}")
                     pass
 
             # 5. VISUALIZACIÓN (10 COLUMNAS)
@@ -246,12 +271,10 @@ if gdf_zona is not None:
             cols[4].metric("💧 Recarga", f"{rec_med:,.0f} mm")
             cols[5].metric("🌊 Escorrentía", f"{esc_med:,.0f} mm")
             
-            # Nuevas Métricas Clave
             cols[6].metric("⚖️ Q. Medio", f"{q_medio_m3s:.2f} m³/s")
             cols[7].metric("📉 Q. Min 50a", f"{q_min_50a:.3f} m³/s", delta_color="inverse", help="Caudal mínimo en sequía de 50 años (Log-Normal + Base)")
             cols[8].metric("🐟 Q. Ecológico", f"{q_eco:.3f} m³/s", help="Caudal Q95 (Sostenibilidad)")
             
-            # Estaciones
             n_estaciones = len(df_puntos) if 'df_puntos' in locals() else 0
             cols[9].metric("📡 Estaciones", f"{n_estaciones}")
 
