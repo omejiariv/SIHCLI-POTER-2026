@@ -189,13 +189,46 @@ def get_fuzzy_col(df, keywords):
 # ==============================================================================
 def main():
     
-    # --- 1. SELECTOR ESPACIAL (NUEVO & UNIFICADO) ---
+# --- 1. SELECTOR ESPACIAL (NUEVO & UNIFICADO) ---
     # Reemplaza la antigua barra lateral de filtros dispersos
     ids_estaciones, nombre_zona, altitud_ref, gdf_zona = selectors.render_selector_espacial()
 
+    # LÓGICA DE VECINDAD (BUFFER):
+    # Si no hay estaciones EXACTAMENTE dentro, buscamos en un radio de 20km.
+    if not ids_estaciones and gdf_zona is not None and not gdf_zona.empty:
+        with st.spinner(f"🔎 No hay estaciones dentro de {nombre_zona}. Buscando cercanas (20km)..."):
+            try:
+                # 1. Crear Buffer de 20km (0.2 grados aprox si es WGS84, o 20000m si es proyectado)
+                # Detectamos CRS para saber si usar grados o metros
+                es_geografico = gdf_zona.crs.is_geographic if gdf_zona.crs else True
+                radio_buffer = 0.18 if es_geografico else 20000 # ~20km
+                
+                buffer_geom = gdf_zona.geometry.buffer(radio_buffer).iloc[0]
+                
+                # 2. Consultar Estaciones en BD que caigan en el buffer
+                engine_temp = get_engine()
+                # Traemos geom de todas las estaciones
+                gdf_all_est = gpd.read_postgis("SELECT id_estacion, geom FROM estaciones", engine_temp, geom_col="geom")
+                
+                # 3. Intersección Espacial
+                est_cercanas = gdf_all_est[gdf_all_est.geometry.within(buffer_geom)]
+                
+                if not est_cercanas.empty:
+                    ids_estaciones = est_cercanas['id_estacion'].astype(str).unique().tolist()
+                    st.toast(f"✅ Se encontraron {len(ids_estaciones)} estaciones cercanas.", icon="📡")
+                
+            except Exception as e:
+                print(f"Error calculando buffer: {e}")
+
+    # VALIDACIÓN FINAL
+    # Solo detenemos si DESPUÉS del buffer sigue sin haber nada.
     if not ids_estaciones:
-        st.info("👈 Selecciona una Cuenca o Municipio en el menú lateral para comenzar.")
+        if gdf_zona is None:
+            st.info("👈 Selecciona una Cuenca o Municipio en el menú lateral para comenzar.")
+        else:
+            st.warning(f"⚠️ No se encontraron estaciones ni dentro ni cerca (20km) de {nombre_zona}.")
         st.stop()
+
 
     # --- 2. CARGA DE DATOS ---
     (gdf_stations, gdf_municipios, df_all_rain, df_enso, gdf_subcuencas, gdf_predios) = load_data_from_db()
