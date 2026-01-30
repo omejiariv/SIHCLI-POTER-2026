@@ -176,7 +176,11 @@ if gdf_zona is not None:
         df_res = hydrogeo_utils.ejecutar_pronostico_prophet(df_raw, meses_futuros, alt_calc, ki_final, ruido, kg=kg_factor, kc=kc_ponderado)
 
     st.markdown(f"### 📍 {nombre_zona}")
-    
+
+    # --- DEFINICIÓN DE PESTAÑAS (GLOBAL) ---
+    # Al ponerlo aquí, garantizamos que 'tab4' exista siempre, incluso si no hay datos.
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "💧 Mapa Recarga", "📥 Descargas"])
+
     # ==============================================================================
     # SECCIÓN: INDICADORES PRINCIPALES (PANEL SUPERIOR CON 10 COLUMNAS)
     # ==============================================================================
@@ -185,58 +189,53 @@ if gdf_zona is not None:
         
         if not df_hist.empty:
  
-            # 1. CÁLCULO DE ÁREA REAL (Búsqueda Multifuente Blindada)
+            # 1. CÁLCULO DE ÁREA REAL (Estrategia Nuclear ☢️)
             area_km2 = 0
+            
+            # A. Sanitizar el nombre (Quitar corchetes, comillas, espacios extra)
+            nombre_limpio = str(nombre_zona).replace("['", "").replace("']", "").replace('["', '').replace('"]', '').strip()
+            
             try:
-                # ESTRATEGIA 1: Buscar en tabla 'cuencas' (Normalizando texto)
-                # Usamos UPPER y TRIM para que "Rio Chico" coincida con "RIO CHICO "
-                q_cuenca = text("""
-                    SELECT area_km2 
-                    FROM cuencas 
-                    WHERE UPPER(TRIM(CAST(subc_lbl AS TEXT))) = UPPER(TRIM(:n)) 
-                       OR UPPER(TRIM(CAST(nombre_cuenca AS TEXT))) = UPPER(TRIM(:n))
-                       OR UPPER(TRIM(CAST(n_nss3 AS TEXT))) = UPPER(TRIM(:n))
+                # B. Intentar Búsqueda Flexible en BD (Cuencas y Municipios)
+                # Usamos comodines % para saltarnos problemas de tildes o espacios
+                q_nuclear = text("""
+                    SELECT area_km2 FROM cuencas WHERE nombre_cuenca ILIKE :n OR subc_lbl ILIKE :n OR n_nss3 ILIKE :n
+                    UNION ALL
+                    SELECT area_km2 FROM municipios WHERE nombre_municipio ILIKE :n
                     LIMIT 1
                 """)
-                df_c = pd.read_sql(q_cuenca, engine, params={'n': str(nombre_zona)})
                 
-                if not df_c.empty:
-                    val = df_c.iloc[0]['area_km2']
+                # Intento 1: Coincidencia exacta
+                df_a = pd.read_sql(q_nuclear, engine, params={'n': nombre_limpio})
+                
+                # Intento 2: Coincidencia parcial (LIKE %nombre%)
+                if df_a.empty:
+                    df_a = pd.read_sql(q_nuclear, engine, params={'n': f"%{nombre_limpio}%"})
+                
+                if not df_a.empty:
+                    val = df_a.iloc[0]['area_km2']
                     if val and val > 0: area_km2 = val
-                
-                # ESTRATEGIA 2: Si falló, buscar en tabla 'municipios'
-                if area_km2 == 0:
-                    q_mun = text("""
-                        SELECT area_km2 
-                        FROM municipios 
-                        WHERE UPPER(TRIM(CAST(nombre_municipio AS TEXT))) = UPPER(TRIM(:n))
-                        LIMIT 1
-                    """)
-                    df_m = pd.read_sql(q_mun, engine, params={'n': str(nombre_zona)})
-                    if not df_m.empty:
-                        val = df_m.iloc[0]['area_km2']
-                        if val and val > 0: area_km2 = val
 
-                # ESTRATEGIA 3: Buscar columna 'area_km2' si sobrevivió en el objeto
+                # C. Si BD falla, usar la geometría del objeto (IGNORANDO BUFFER)
                 if area_km2 == 0:
-                    # Si es GeoDataFrame y tiene la columna
-                    if isinstance(gdf_zona, gpd.GeoDataFrame) and 'area_km2' in gdf_zona.columns:
+                    # Si gdf_zona es el buffer (geometría inflada), esto dará mal, 
+                    # pero es mejor intentar calcular sobre la geometría ORIGINAL si existe.
+                    # Truco: Si gdf_zona tiene columna 'area_km2' (a veces sobrevive), úsala.
+                    if hasattr(gdf_zona, 'columns') and 'area_km2' in gdf_zona.columns:
                         area_km2 = gdf_zona['area_km2'].iloc[0]
-
-                # ESTRATEGIA 4: Último recurso (Geometría proyectada)
-                # Solo si todo lo anterior falló (ej: Buffer manual sin nombre en BD)
-                if area_km2 == 0:
-                    gdf_temp = gpd.GeoDataFrame(geometry=gdf_zona) if isinstance(gdf_zona, gpd.GeoSeries) else gdf_zona
-                    if gdf_temp.crs is None: gdf_temp.set_crs("EPSG:4326", inplace=True)
-                    area_km2 = gdf_temp.to_crs("EPSG:3116").area.iloc[0] / 1e6
+                    else:
+                        # Fallback final: Proyectar geometría actual
+                        # Si es una serie (buffer), la convertimos
+                        gdf_temp = gpd.GeoDataFrame(geometry=gdf_zona) if isinstance(gdf_zona, gpd.GeoSeries) else gdf_zona
+                        if gdf_temp.crs is None: gdf_temp.set_crs("EPSG:4326", inplace=True)
+                        area_km2 = gdf_temp.to_crs("EPSG:3116").area.iloc[0] / 1e6
 
             except Exception as e:
-                print(f"Error calculando área: {e}")
-                area_km2 = 1.0 # Valor de seguridad final
+                print(f"⚠️ Error Área: {e}")
+                area_km2 = 1.0
 
-            # Validación final para evitar divisiones por cero o negativos
-            if area_km2 is None or area_km2 <= 0: area_km2 = 1.0
-
+            # Validación final anti-crash
+            if area_km2 <= 0.01: area_km2 = 1.0
 
             # 2. MEDIAS ANUALES (Balance Hídrico)
             p_med = df_hist['p_final'].mean() * 12
@@ -351,9 +350,6 @@ if gdf_zona is not None:
                         * **Google Earth Engine:** Datos satelitales complementarios (CHIRPS/GOES).
                         """)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "🌈 Mapa Recarga", "📥 Descargas"])
-
-    # --- TAB 1: GRÁFICO COMPLETO Y TABLA ---
     # --- TAB 1: ANÁLISIS COMPLETO (AGREGADO POR CUENCA) ---
     with tab1:
         if not df_res.empty:
