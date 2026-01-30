@@ -175,24 +175,21 @@ if gdf_zona is not None:
         alt_calc = altitud_ref if altitud_ref else df_puntos['alt_est'].mean()
         df_res = hydrogeo_utils.ejecutar_pronostico_prophet(df_raw, meses_futuros, alt_calc, ki_final, ruido, kg=kg_factor, kc=kc_ponderado)
 
-    st.markdown(f"### {nombre_zona}")
+st.markdown(f"### {nombre_zona}")
 
     # ==============================================================================
     # 1. PANEL SUPERIOR DE INDICADORES (10 COLUMNAS)
     # ==============================================================================
-    # Calculamos y mostramos esto ANTES de las pestañas para que siempre se vea arriba.
-    
     if not df_res.empty:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
         
         if not df_hist.empty:
-            # --- A. CÁLCULO DE ÁREA BLINDADO (Estrategia Nuclear ☢️) ---
+            # --- A. CÁLCULO DE ÁREA BLINDADO (Estrategia Nuclear) ---
             area_km2 = 0
-            # Limpieza de caracteres basura del selector
             nombre_limpio = str(nombre_zona).replace("['", "").replace("']", "").replace('["', '').replace('"]', '').strip()
             
             try:
-                # Consulta SQL Multifuente (Ignora mayúsculas y acentos con ILIKE)
+                # Consulta SQL Multifuente (Ignora mayúsculas/acentos)
                 q_nuclear = text("""
                     SELECT area_km2 FROM cuencas 
                     WHERE nombre_cuenca ILIKE :n OR CAST(subc_lbl AS TEXT) ILIKE :n OR CAST(n_nss3 AS TEXT) ILIKE :n
@@ -200,34 +197,29 @@ if gdf_zona is not None:
                     SELECT area_km2 FROM municipios WHERE nombre_municipio ILIKE :n
                     LIMIT 1
                 """)
-                
-                # Intento 1: Nombre exacto o con comodines
-                params = {'n': nombre_limpio}
-                df_a = pd.read_sql(q_nuclear, engine, params=params)
-                
-                if df_a.empty: # Intento 2: Con comodines %...%
+                # Intento 1: Exacto
+                df_a = pd.read_sql(q_nuclear, engine, params={'n': nombre_limpio})
+                # Intento 2: Comodines
+                if df_a.empty:
                     df_a = pd.read_sql(q_nuclear, engine, params={'n': f"%{nombre_limpio}%"})
                 
                 if not df_a.empty:
                     val = df_a.iloc[0]['area_km2']
                     if val and val > 0: area_km2 = val
                 
-                # Fallback: Usar geometría del objeto (Si BD falla)
+                # Fallback Geométrico
                 if area_km2 == 0:
-                    # Si tiene columna area_km2 (a veces sobrevive al buffer)
                     if hasattr(gdf_zona, 'columns') and 'area_km2' in gdf_zona.columns:
                          area_km2 = gdf_zona['area_km2'].iloc[0]
                     else:
-                         # Proyectar geometría actual
                          temp_gdf = gpd.GeoDataFrame(geometry=gdf_zona) if isinstance(gdf_zona, gpd.GeoSeries) else gdf_zona
                          if temp_gdf.crs is None: temp_gdf.set_crs("EPSG:4326", inplace=True)
                          area_km2 = temp_gdf.to_crs("EPSG:3116").area.iloc[0] / 1e6
 
             except Exception as e:
-                print(f"⚠️ Error Área Panel: {e}")
                 area_km2 = 1.0
             
-            if area_km2 <= 0.01: area_km2 = 1.0 # Suelo de seguridad
+            if area_km2 <= 0.01: area_km2 = 1.0
 
             # --- B. CÁLCULOS HIDROLÓGICOS ---
             p_med = df_hist['p_final'].mean() * 12
@@ -236,11 +228,9 @@ if gdf_zona is not None:
             inf_med = df_hist['infiltracion_mm'].mean() * 12
             esc_med = df_hist['escorrentia_mm'].mean() * 12
             
-            # Modelo Aditivo
             q_base_m3s = (rec_med * area_km2 * 1000) / 31536000
             q_medio_m3s = (esc_med * area_km2 * 1000) / 31536000
             
-            # Estadísticas Extremas
             q_min_50a = 0
             q_eco = 0
             if analysis:
@@ -250,10 +240,7 @@ if gdf_zona is not None:
                     c_directo = esc_directa / p_med if p_med > 0 else 0.3
                     
                     stats_panel = analysis.calculate_hydrological_statistics(
-                        serie_temporal, 
-                        runoff_coeff=c_directo, 
-                        area_km2=area_km2,
-                        q_base_m3s=q_base_m3s
+                        serie_temporal, runoff_coeff=c_directo, area_km2=area_km2, q_base_m3s=q_base_m3s
                     )
                     q_min_50a = stats_panel.get("Q_Min_50a", 0)
                     q_eco = stats_panel.get("Q_Ecologico_Q95", 0)
@@ -263,8 +250,7 @@ if gdf_zona is not None:
             st.markdown("##### 💧 Balance Hídrico y Oferta")
             cols = st.columns(10)
             
-            def fmt_area(val):
-                return f"{val:.3f} km²" if val < 1.0 else f"{val:,.0f} km²"
+            def fmt_area(val): return f"{val:.3f} km²" if val < 1.0 else f"{val:,.0f} km²"
             
             cols[0].metric("📏 Área", fmt_area(area_km2))
             cols[1].metric("🌧️ Lluvia", f"{p_med:,.0f} mm")
@@ -273,79 +259,81 @@ if gdf_zona is not None:
             cols[4].metric("💧 Recarga", f"{rec_med:,.0f} mm")
             cols[5].metric("🌊 Escorrentía", f"{esc_med:,.0f} mm")
             cols[6].metric("⚖️ Q. Medio", f"{q_medio_m3s:.2f} m³/s")
-            cols[7].metric("📉 Q. Min 50a", f"{q_min_50a:.3f} m³/s", delta_color="inverse", help="Log-Normal + Base")
+            cols[7].metric("📉 Q. Min 50a", f"{q_min_50a:.3f} m³/s", delta_color="inverse", help="Sequía 50 años")
             cols[8].metric("🐟 Q. Ecológico", f"{q_eco:.3f} m³/s")
-            
             n_est = len(df_puntos) if 'df_puntos' in locals() else 0
             cols[9].metric("📡 Estaciones", f"{n_est}")
-            
+
     st.divider()
 
-    # =======================================================================
-            with st.expander("📘 Guía Técnica, Metodología y Fuentes de Información", expanded=False):
-                tab_guia1, tab_guia2, tab_guia3 = st.tabs(["📚 Conceptos & Ecuaciones", "🛠️ Metodología", "Fuentes de Datos"])
-                
-                with tab_guia1:
-                    st.markdown(r"""
-                    ### 💧 Balance Hídrico Simplificado
-                    El modelo se basa en la ecuación fundamental de conservación de masa:
+    # ==============================================================================
+    # 2. GUÍA TÉCNICA (Restaurada y Ordenada)
+    # ==============================================================================
+    with st.expander("📘 Guía Técnica, Metodología y Fuentes de Información", expanded=False):
+        tg1, tg2, tg3 = st.tabs(["📚 Conceptos & Ecuaciones", "🛠️ Metodología", "Fuentes de Datos"])
+
+        with tg1:
+            st.markdown(r"""
+            ### 💧 Balance Hídrico Simplificado
+            El modelo se basa en la ecuación fundamental de conservación de masa:
                     
-                    $$ P = ETR + E_s + R + \Delta S $$
+            $$ P = ETR + E_s + R + \Delta S $$
                     
-                    Donde:
-                    * $P$: Precipitación (Lluvia).
-                    * $ETR$: Evapotranspiración Real (Agua que vuelve a la atmósfera).
-                    * $E_s$: Escorrentía Superficial (Agua que corre por ríos/quebradas).
-                    * $R$: Recarga (Agua que entra al acuífero).
+            Donde:
+            * $P$: Precipitación (Lluvia).
+            * $ETR$: Evapotranspiración Real (Agua que vuelve a la atmósfera).
+            * $E_s$: Escorrentía Superficial (Agua que corre por ríos/quebradas).
+            * $R$: Recarga (Agua que entra al acuífero).
                     
-                    ### 🧠 Factores Clave
-                    * **Infiltración ($I$):** Es el agua que logra atravesar la superficie del suelo. Depende de la **Cobertura Vegetal** (Bosques infiltran más que Cemento) y la **Textura del Suelo** (Arenas infiltran más que Arcillas).
-                    * **Recarga Real ($R$):** Es la fracción de la infiltración que efectivamente llega al almacenamiento subterráneo profundo, condicionada por la **Geología** (Permeabilidad de la roca).
-                    """)
+            ### 🧠 Factores Clave
+            * **Infiltración ($I$):** Es el agua que logra atravesar la superficie del suelo. Depende de la **Cobertura Vegetal** (Bosques infiltran más que Cemento) y la **Textura del Suelo** (Arenas infiltran más que Arcillas).
+            * **Recarga Real ($R$):** Es la fracción de la infiltración que efectivamente llega al almacenamiento subterráneo profundo, condicionada por la **Geología** (Permeabilidad de la roca).
+            """)
+
+        with tg2:
+            st.markdown("""
+            ### ⚙️ Motor de Cálculo
+            1.  **Climatología:** Se utiliza el método de **Turc Modificado** para estimar la ETR mensual, ajustada por un coeficiente de cultivo ($K_c$) dependiente de la cobertura vegetal satelital.
+            2.  **Proyección:** Se implementa el algoritmo **Facebook Prophet** (Regresión Aditiva Generalizada) para proyectar tendencias climáticas y detectar estacionalidad en la lluvia.
+            3.  **Espacialización:** Los mapas de isoyetas y recarga se generan mediante interpolación lineal o IDW (Inverse Distance Weighting) sobre la red de estaciones activas.
                     
-                with tab_guia2:
-                    st.markdown("""
-                    ### ⚙️ Motor de Cálculo
-                    1.  **Climatología:** Se utiliza el método de **Turc Modificado** para estimar la ETR mensual, ajustada por un coeficiente de cultivo ($K_c$) dependiente de la cobertura vegetal satelital.
-                    2.  **Proyección:** Se implementa el algoritmo **Facebook Prophet** (Regresión Aditiva Generalizada) para proyectar tendencias climáticas y detectar estacionalidad en la lluvia.
-                    3.  **Espacialización:** Los mapas de isoyetas y recarga se generan mediante interpolación lineal o IDW (Inverse Distance Weighting) sobre la red de estaciones activas.
-                    
-                    ### 🚦 Interpretación del Mapa de Potencial
-                    * 🟢 **Muy Alto / Alto:** Zonas estratégicas de recarga. Acuíferos productivos o zonas de alta permeabilidad.
-                    * 🟡 **Medio:** Zonas de transición.
-                    * 🔴 **Bajo / Muy Bajo:** Zonas impermeables, rocas cristalinas o áreas con baja capacidad de almacenamiento.
-                    """)
-                    
-                with tab_guia3:
-                    st.info("Este sistema integra información de múltiples entidades oficiales y académicas.")
-                    
-                    col_f1, col_f2 = st.columns(2)
-                    
-                    with col_f1:
-                        st.markdown("**🗺️ Información Cartográfica**")
-                        st.caption("""
-                        * **Potencial Hidrogeológico:** Teresita Betancur V. (Universidad de Antioquia).
-                        * **Coberturas de la Tierra:** Corine Land Cover (2020).
-                        * **Suelos y Litología:** Secretaría de Agricultura, Gobernación de Antioquia.
-                        * **Bocatomas:** Secretaría de Agricultura, Gobernación de Antioquia.
-                        """)
-                        
-                    with col_f2:
-                        st.markdown("**🌧️ Red de Monitoreo Hidroclimático**")
-                        st.caption("""
-                        * **IDEAM:** Instituto de Hidrología, Meteorología y Estudios Ambientales.
-                        * **EPM:** Empresas Públicas de Medellín.
-                        * **Piragua:** Corantioquia.
-                        * **CuencaVerde:** Fondo de Agua.
-                        * **Google Earth Engine:** Datos satelitales complementarios (CHIRPS/GOES).
-                        """)
+            ### 🚦 Interpretación del Mapa de Potencial
+            * 🟢 **Muy Alto / Alto:** Zonas estratégicas de recarga. Acuíferos productivos o zonas de alta permeabilidad.
+            * 🟡 **Medio:** Zonas de transición.
+            * 🔴 **Bajo / Muy Bajo:** Zonas impermeables, rocas cristalinas o áreas con baja capacidad de almacenamiento.
+            """)
+
+
+        with tg3:
+            st.info("Este sistema integra información de múltiples entidades oficiales y académicas.")
+
+            col_f1, col_f2 = st.columns(2)
+                                
+            with col_f1:
+                st.markdown("**🗺️ Información Cartográfica**")
+                st.caption("""
+                * **Potencial Hidrogeológico:** Teresita Betancur V. (Universidad de Antioquia).
+                * **Coberturas de la Tierra:** Corine Land Cover (2020).
+                * **Suelos y Litología:** Secretaría de Agricultura, Gobernación de Antioquia.
+                * **Bocatomas:** Secretaría de Agricultura, Gobernación de Antioquia.
+                """)
+
+            with col_f2:
+                st.markdown("**🌧️ Red de Monitoreo Hidroclimático**")
+                st.caption("""
+                * **IDEAM:** Instituto de Hidrología, Meteorología y Estudios Ambientales.
+                * **EPM:** Empresas Públicas de Medellín.
+                * **Piragua:** Corantioquia.
+                * **CuencaVerde:** Fondo de Agua.
+                * **Google Earth Engine:** Datos satelitales complementarios (CHIRPS/GOES).
+                """)
 
     # ==============================================================================
-    # 2. DEFINICIÓN DE PESTAÑAS
+    # 3. PESTAÑAS PRINCIPALES
     # ==============================================================================
-    # Definimos las pestañas AQUÍ, fuera de cualquier 'if' restrictivo para evitar NameError.
     tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "💧 Mapa Recarga", "📥 Descargas"])
 
+ 
     # --- TAB 1: ANÁLISIS COMPLETO (AGREGADO POR CUENCA) ---
     with tab1:
         if not df_res.empty:
