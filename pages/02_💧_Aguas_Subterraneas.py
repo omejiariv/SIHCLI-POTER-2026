@@ -178,18 +178,36 @@ if gdf_zona is not None:
     st.markdown(f"### {nombre_zona}")
 
     # ==============================================================================
-    # 1. PANEL SUPERIOR DE INDICADORES (10 COLUMNAS)
+    # 1. DEFINICIÓN DE PESTAÑAS (GLOBAL)
+    # ==============================================================================
+    # CRÍTICO: Las definimos AQUÍ para que existan siempre, sin importar la selección.
+    # Esto soluciona el "NameError: tab4 not defined" en Departamento.
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "💧 Mapa Recarga", "📥 Descargas"])
+
+    # ==============================================================================
+    # 2. PANEL SUPERIOR DE INDICADORES (10 COLUMNAS)
     # ==============================================================================
     if not df_res.empty:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
         
         if not df_hist.empty:
-            # --- A. CÁLCULO DE ÁREA BLINDADO (Estrategia Nuclear) ---
+            # --- A. CÁLCULO DE ÁREA BLINDADO ---
             area_km2 = 0
+            
+            # 1. Sanitizar el nombre para búsqueda SQL
             nombre_limpio = str(nombre_zona).replace("['", "").replace("']", "").replace('["', '').replace('"]', '').strip()
             
+            # 2. Normalizar Geometría (Arregla el error de GeoSeries/Columns)
+            # Si gdf_zona es una Serie (pasa con buffers), la volvemos DataFrame
+            if isinstance(gdf_zona, gpd.GeoSeries):
+                gdf_zona = gpd.GeoDataFrame(geometry=gdf_zona)
+            
+            # Asignar CRS si falta (Asumimos WGS84 por defecto)
+            if gdf_zona.crs is None: 
+                gdf_zona.set_crs("EPSG:4326", inplace=True)
+
             try:
-                # Consulta SQL Multifuente (Ignora mayúsculas/acentos)
+                # ESTRATEGIA 1: Consulta SQL (La más precisa)
                 q_nuclear = text("""
                     SELECT area_km2 FROM cuencas 
                     WHERE nombre_cuenca ILIKE :n OR CAST(subc_lbl AS TEXT) ILIKE :n OR CAST(n_nss3 AS TEXT) ILIKE :n
@@ -197,9 +215,10 @@ if gdf_zona is not None:
                     SELECT area_km2 FROM municipios WHERE nombre_municipio ILIKE :n
                     LIMIT 1
                 """)
-                # Intento 1: Exacto
-                df_a = pd.read_sql(q_nuclear, engine, params={'n': nombre_limpio})
-                # Intento 2: Comodines
+                
+                # Intento exacto y con comodines
+                params = {'n': nombre_limpio}
+                df_a = pd.read_sql(q_nuclear, engine, params=params)
                 if df_a.empty:
                     df_a = pd.read_sql(q_nuclear, engine, params={'n': f"%{nombre_limpio}%"})
                 
@@ -207,18 +226,22 @@ if gdf_zona is not None:
                     val = df_a.iloc[0]['area_km2']
                     if val and val > 0: area_km2 = val
                 
-                # Fallback Geométrico
+                # ESTRATEGIA 2: Si SQL falla, usar Geometría PROYECTADA
                 if area_km2 == 0:
-                    if hasattr(gdf_zona, 'columns') and 'area_km2' in gdf_zona.columns:
+                    # Intentamos leer columna si existe
+                    if 'area_km2' in gdf_zona.columns and gdf_zona['area_km2'].iloc[0] > 0:
                          area_km2 = gdf_zona['area_km2'].iloc[0]
                     else:
-                         temp_gdf = gpd.GeoDataFrame(geometry=gdf_zona) if isinstance(gdf_zona, gpd.GeoSeries) else gdf_zona
-                         if temp_gdf.crs is None: temp_gdf.set_crs("EPSG:4326", inplace=True)
-                         area_km2 = temp_gdf.to_crs("EPSG:3116").area.iloc[0] / 1e6
+                         # Proyectar a Metros (EPSG:3116) y calcular
+                         # Esto evita el error de "area en grados" que da 0.0001
+                         gdf_metros = gdf_zona.to_crs("EPSG:3116")
+                         area_km2 = gdf_metros.area.iloc[0] / 1e6
 
             except Exception as e:
-                area_km2 = 1.0
+                print(f"⚠️ Warning Área: {e}")
+                area_km2 = 1.0 # Solo si todo lo anterior explota
             
+            # Validación final
             if area_km2 <= 0.01: area_km2 = 1.0
 
             # --- B. CÁLCULOS HIDROLÓGICOS ---
@@ -228,9 +251,11 @@ if gdf_zona is not None:
             inf_med = df_hist['infiltracion_mm'].mean() * 12
             esc_med = df_hist['escorrentia_mm'].mean() * 12
             
+            # Modelo Aditivo
             q_base_m3s = (rec_med * area_km2 * 1000) / 31536000
             q_medio_m3s = (esc_med * area_km2 * 1000) / 31536000
             
+            # Estadísticas Extremas
             q_min_50a = 0
             q_eco = 0
             if analysis:
@@ -250,7 +275,7 @@ if gdf_zona is not None:
             st.markdown("##### 💧 Balance Hídrico y Oferta")
             cols = st.columns(10)
             
-            def fmt_area(val): return f"{val:.3f} km²" if val < 1.0 else f"{val:,.0f} km²"
+            def fmt_area(val): return f"{val:.3f} km²" if val < 1.0 else f"{val:,.1f} km²"
             
             cols[0].metric("📏 Área", fmt_area(area_km2))
             cols[1].metric("🌧️ Lluvia", f"{p_med:,.0f} mm")
@@ -267,74 +292,25 @@ if gdf_zona is not None:
     st.divider()
 
     # ==============================================================================
-    # 2. GUÍA TÉCNICA (Restaurada y Ordenada)
+    # 3. GUÍA TÉCNICA (Restaurada)
     # ==============================================================================
     with st.expander("📘 Guía Técnica, Metodología y Fuentes de Información", expanded=False):
-        tg1, tg2, tg3 = st.tabs(["📚 Conceptos & Ecuaciones", "🛠️ Metodología", "Fuentes de Datos"])
-
+        tg1, tg2, tg3 = st.tabs(["🧮 Conceptos", "⚙️ Metodología", "📚 Fuentes"])
         with tg1:
             st.markdown(r"""
-            ### 💧 Balance Hídrico Simplificado
-            El modelo se basa en la ecuación fundamental de conservación de masa:
-                    
-            $$ P = ETR + E_s + R + \Delta S $$
-                    
-            Donde:
-            * $P$: Precipitación (Lluvia).
-            * $ETR$: Evapotranspiración Real (Agua que vuelve a la atmósfera).
-            * $E_s$: Escorrentía Superficial (Agua que corre por ríos/quebradas).
-            * $R$: Recarga (Agua que entra al acuífero).
-                    
-            ### 🧠 Factores Clave
-            * **Infiltración ($I$):** Es el agua que logra atravesar la superficie del suelo. Depende de la **Cobertura Vegetal** (Bosques infiltran más que Cemento) y la **Textura del Suelo** (Arenas infiltran más que Arcillas).
-            * **Recarga Real ($R$):** Es la fracción de la infiltración que efectivamente llega al almacenamiento subterráneo profundo, condicionada por la **Geología** (Permeabilidad de la roca).
+            **Balance Hídrico:** $P = ETR + E_s + R + \Delta S$
+            * **$P$:** Precipitación. **$R$:** Recarga.
             """)
-
         with tg2:
             st.markdown("""
-            ### ⚙️ Motor de Cálculo
-            1.  **Climatología:** Se utiliza el método de **Turc Modificado** para estimar la ETR mensual, ajustada por un coeficiente de cultivo ($K_c$) dependiente de la cobertura vegetal satelital.
-            2.  **Proyección:** Se implementa el algoritmo **Facebook Prophet** (Regresión Aditiva Generalizada) para proyectar tendencias climáticas y detectar estacionalidad en la lluvia.
-            3.  **Espacialización:** Los mapas de isoyetas y recarga se generan mediante interpolación lineal o IDW (Inverse Distance Weighting) sobre la red de estaciones activas.
-                    
-            ### 🚦 Interpretación del Mapa de Potencial
-            * 🟢 **Muy Alto / Alto:** Zonas estratégicas de recarga. Acuíferos productivos o zonas de alta permeabilidad.
-            * 🟡 **Medio:** Zonas de transición.
-            * 🔴 **Bajo / Muy Bajo:** Zonas impermeables, rocas cristalinas o áreas con baja capacidad de almacenamiento.
+            1. **Climatología:** Turc Modificado.
+            2. **Proyección:** Facebook Prophet.
+            3. **Estadística:** Gumbel (Máximos) y Log-Normal (Mínimos).
             """)
-
-
         with tg3:
-            st.info("Este sistema integra información de múltiples entidades oficiales y académicas.")
+            st.info("Datos: IDEAM, EPM, Corantioquia, CuencaVerde, NASA (CHIRPS).")
 
-            col_f1, col_f2 = st.columns(2)
-                                
-            with col_f1:
-                st.markdown("**🗺️ Información Cartográfica**")
-                st.caption("""
-                * **Potencial Hidrogeológico:** Teresita Betancur V. (Universidad de Antioquia).
-                * **Coberturas de la Tierra:** Corine Land Cover (2020).
-                * **Suelos y Litología:** Secretaría de Agricultura, Gobernación de Antioquia.
-                * **Bocatomas:** Secretaría de Agricultura, Gobernación de Antioquia.
-                """)
-
-            with col_f2:
-                st.markdown("**🌧️ Red de Monitoreo Hidroclimático**")
-                st.caption("""
-                * **IDEAM:** Instituto de Hidrología, Meteorología y Estudios Ambientales.
-                * **EPM:** Empresas Públicas de Medellín.
-                * **Piragua:** Corantioquia.
-                * **CuencaVerde:** Fondo de Agua.
-                * **Google Earth Engine:** Datos satelitales complementarios (CHIRPS/GOES).
-                """)
-
-    # ==============================================================================
-    # 3. PESTAÑAS PRINCIPALES
-    # ==============================================================================
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "💧 Mapa Recarga", "📥 Descargas"])
-
- 
-    # --- TAB 1: ANÁLISIS COMPLETO (AGREGADO POR CUENCA) ---
+    # --- TAB 1: ANÁLISIS COMPLETO ---
     with tab1:
         if not df_res.empty:
             # --- CORRECCIÓN: AGRUPAR POR FECHA (1 Fila = 1 Mes) ---
