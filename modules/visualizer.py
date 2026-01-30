@@ -2485,33 +2485,55 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         elif "Oferta" in map_type:
              st.info("Estimación de Recarga Potencial (15% de P - Método Turc Simplificado).")
 
-    # --- 2. PREPARACIÓN DE DATOS (PROMEDIOS) ---
+
+    # --- 2. PREPARACIÓN DE DATOS (BLINDADA) ---
     if df_long is None or df_long.empty:
         st.error("No hay datos cargados para generar mapas.")
         return
 
-    # Calculamos medias anuales para Fournier (Erosión)
-    df_long['year'] = df_long['fecha'].dt.year
-    
+    # A. DETECCIÓN AUTOMÁTICA DE COLUMNAS
+    # Buscamos la columna de Fecha
+    col_date = next((c for c in df_long.columns if c.lower() in ['fecha', 'date', 'fecha_mes_año', 'timestamp']), None)
+    # Buscamos la columna de Valor (Lluvia)
+    col_val = next((c for c in df_long.columns if c.lower() in ['valor', 'value', 'precipitation', 'ppt', 'lluvia', 'precipitacion']), None)
+
+    if not col_date or not col_val:
+        st.error(f"⚠️ Error de Estructura: No se encontraron columnas de Fecha o Valor. Cols disponibles: {list(df_long.columns)}")
+        return
+
+    # B. ESTANDARIZACIÓN PARA EL PROCESO
+    # Trabajamos sobre una copia para no afectar el original
+    df_work = df_long.copy()
+    df_work['fecha_proc'] = pd.to_datetime(df_work[col_date])
+    df_work['valor_proc'] = pd.to_numeric(df_work[col_val], errors='coerce').fillna(0)
+    df_work['year'] = df_work['fecha_proc'].dt.year
+
+    # C. CÁLCULOS SOBRE 'df_work'
     # Lluvia Total Anual Promedio
-    df_annual = df_long.groupby(['id_estacion', 'year'])['valor'].sum().reset_index()
-    df_annual_mean = df_annual.groupby('id_estacion')['valor'].mean().reset_index(name='ppt_media')
+    df_annual = df_work.groupby(['id_estacion', 'year'])['valor_proc'].sum().reset_index()
+    df_annual_mean = df_annual.groupby('id_estacion')['valor_proc'].mean().reset_index(name='ppt_media')
     
     # Índice de Fournier Modificado (MFI) para Factor R de USLE
     # MFI = Sum(p_mes^2) / P_anual
-    df_long['p2'] = df_long['valor'] ** 2
-    df_mfi_y = df_long.groupby(['id_estacion', 'year']).agg({'p2': 'sum', 'valor': 'sum'}).reset_index()
+    df_work['p2'] = df_work['valor_proc'] ** 2
+    df_mfi_y = df_work.groupby(['id_estacion', 'year']).agg({'p2': 'sum', 'valor_proc': 'sum'}).reset_index()
     # Evitar división por cero
-    df_mfi_y['mfi_anual'] = df_mfi_y['p2'] / df_mfi_y['valor'].replace(0, 1)
+    df_mfi_y['mfi_anual'] = df_mfi_y['p2'] / df_mfi_y['valor_proc'].replace(0, 1)
     df_mfi = df_mfi_y.groupby('id_estacion')['mfi_anual'].mean().reset_index(name='mfi_val')
     
     # Unimos con geometría
-    gdf_map = gdf_stations.merge(df_annual_mean, left_on='id_estacion', right_on='id_estacion')
+    # Aseguramos que id_estacion sea del mismo tipo (string)
+    gdf_stations['id_estacion'] = gdf_stations['id_estacion'].astype(str)
+    df_annual_mean['id_estacion'] = df_annual_mean['id_estacion'].astype(str)
+    df_mfi['id_estacion'] = df_mfi['id_estacion'].astype(str)
+    
+    gdf_map = gdf_stations.merge(df_annual_mean, on='id_estacion')
     gdf_map = gdf_map.merge(df_mfi, on='id_estacion')
 
     if len(gdf_map) < 3:
-        st.warning("⚠️ Se requieren al menos 3 estaciones para interpolar mapas.")
+        st.warning("⚠️ Se requieren al menos 3 estaciones con datos válidos para interpolar mapas.")
         return
+
 
     # --- 3. MOTOR DE INTERPOLACIÓN (GRID) ---
     pad = 0.05
@@ -2523,12 +2545,13 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # Función auxiliar para interpolar
     def interpolar(variable_col):
         try:
-            # Intentamos RBF (más suave)
             from scipy.interpolate import Rbf
-            rbf = Rbf(gdf_map.geometry.x, gdf_map.geometry.y, gdf_map[variable_col], function='linear')
+            # Usamos coordenadas planas si es posible, si no lat/lon
+            x_vals = gdf_map.geometry.x
+            y_vals = gdf_map.geometry.y
+            rbf = Rbf(x_vals, y_vals, gdf_map[variable_col], function='linear')
             return rbf(Xi, Yi)
         except:
-            # Fallback a linear
             return griddata((gdf_map.geometry.x, gdf_map.geometry.y), gdf_map[variable_col], (Xi, Yi), method='linear')
 
     # --- 4. CÁLCULO DE CAPAS ESPECÍFICAS ---
@@ -2542,7 +2565,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         title_legend = "Lluvia (mm)"
         
     elif "Lang" in map_type:
-        # T = 28 - 0.006 * Altitud
         if 'alt_est' not in gdf_map.columns: gdf_map['alt_est'] = 1500
         gdf_map['temp_est'] = 28 - (0.006 * gdf_map['alt_est'])
         gdf_map['lang_idx'] = gdf_map['ppt_media'] / gdf_map['temp_est']
@@ -2551,30 +2573,36 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         title_legend = "Índice Lang"
 
     elif "Erosión" in map_type:
-        # --- IMPLEMENTACIÓN USLE (A = R * K * LS * C * P) ---
-        # 1. Factor R (Erosividad) ≈ 2.5 * MFI^1.3
+        # USLE Simplificado
         gdf_map['factor_r'] = 2.5 * (gdf_map['mfi_val'] ** 1.3)
         Z_R = interpolar('factor_r')
         
-        # 2. Factores K (Suelo), LS (Pendiente), C (Cobertura)
-        # Aquí usamos aproximaciones regionales. Si kwargs trae rasters, se usarían.
-        Z_K = np.full_like(Xi, 0.3) # Valor medio
-        Z_LS = np.full_like(Xi, 1.5) # Pendiente media
-        Z_C = np.full_like(Xi, 0.05) # Cobertura media (Bosque/Cultivo mixto)
+        # Factores aproximados
+        Z_K = np.full_like(Xi, 0.3) 
+        Z_LS = np.full_like(Xi, 1.5) 
+        Z_C = np.full_like(Xi, 0.05) 
         
-        # Erosión Potencial (t/ha/año)
         Z_final = Z_R * Z_K * Z_LS * Z_C
         colors = 'YlOrRd'
         title_legend = "Pérdida Suelo (t/ha/año)"
         
     elif "Oferta" in map_type:
         Z_ppt = interpolar('ppt_media')
-        Z_final = Z_ppt * 0.15 # 15% Recarga
+        Z_final = Z_ppt * 0.15 
         colors = 'Teal'
         title_legend = "Recarga Potencial (mm)"
 
     # --- 5. VISUALIZACIÓN EN FOLIUM ---
     m = folium.Map(location=[gdf_map.geometry.y.mean(), gdf_map.geometry.x.mean()], zoom_start=10, tiles="CartoDB positron")
+    
+    # Agregar Polígono de Cuenca (Contexto)
+    gdf_zona = kwargs.get('gdf_zona', None)
+    if gdf_zona is not None and not gdf_zona.empty:
+        folium.GeoJson(
+            gdf_zona,
+            name="Cuenca Seleccionada",
+            style_function=lambda x: {'color': 'black', 'fill': False, 'weight': 2, 'dashArray': '5, 5'}
+        ).add_to(m)
     
     if Z_final is not None:
         Z_final = np.nan_to_num(Z_final)
@@ -2584,8 +2612,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         cmap = plt.get_cmap(colors)
         norm_data = (Z_final - vmin) / (vmax - vmin)
         rgba_img = cmap(norm_data)
-        
-        # Transparencia en valores bajos para ver el mapa base
         rgba_img[..., 3] = 0.7 
 
         folium.raster_layers.ImageOverlay(
@@ -2595,11 +2621,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             name=map_type
         ).add_to(m)
         
-        # Leyenda
         colormap = cm.LinearColormap(colors=[cmap(0.), cmap(1.)], vmin=vmin, vmax=vmax, caption=title_legend)
         colormap.add_to(m)
 
-    # Estaciones
     for _, row in gdf_map.iterrows():
         val = row['ppt_media']
         if "Erosión" in map_type: val = row.get('factor_r', 0)
@@ -2619,19 +2643,22 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # --- 6. CURVA FDC INTEGRADA ---
     st.divider()
     st.subheader("📉 Curva de Duración de Caudales (FDC)")
+    
+    # Selector de estación
     sel_est = st.selectbox("Analizar Estación:", gdf_map['nom_est'].unique())
     id_sel = gdf_map[gdf_map['nom_est'] == sel_est].iloc[0]['id_estacion']
     
-    df_single = df_long[df_long['id_estacion'] == id_sel].copy()
+    # Filtrar datos de la estación usando 'df_work' (ya tiene cols estandarizadas)
+    df_single = df_work[df_work['id_estacion'].astype(str) == id_sel].copy()
+    
     if not df_single.empty:
-        # Ordenar caudales (simulados como P * Área unitaria)
-        q_vals = df_single['valor'].sort_values(ascending=False).values
+        # Calcular FDC
+        q_vals = df_single['valor_proc'].sort_values(ascending=False).values
         probs = np.arange(1, len(q_vals) + 1) / (len(q_vals) + 1) * 100
         
         fig_fdc = px.line(x=probs, y=q_vals, labels={'x': '% Excedencia', 'y': 'Lluvia/Caudal Transformado'})
         fig_fdc.update_layout(title=f"Curva FDC: {sel_est}", yaxis_type="log")
         st.plotly_chart(fig_fdc, use_container_width=True)
-
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
