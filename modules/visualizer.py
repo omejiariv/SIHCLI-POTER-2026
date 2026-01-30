@@ -2450,7 +2450,7 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión SIHCLI-POTER 2.5: Fix GeoPandas Active Geometry (Total Bounds Error).
+    Versión SIHCLI-POTER 2.6: Fix 'Teal' Color + Negative Values Clamp.
     """
     import plotly.express as px
     import folium
@@ -2526,15 +2526,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     gdf_map = gdf_stations.merge(df_annual_mean, on='id_estacion')
     gdf_map = gdf_map.merge(df_mfi, on='id_estacion')
     
-    # --- CRÍTICO: NORMALIZACIÓN DE GEOMETRÍA (FIX DEFINITIVO) ---
-    # 1. Identificar qué columna tiene la geometría
+    # --- CRÍTICO: NORMALIZACIÓN DE GEOMETRÍA ---
     geom_col_name = None
-    if 'geometry' in gdf_map.columns:
-        geom_col_name = 'geometry'
-    elif 'geom' in gdf_map.columns:
-        geom_col_name = 'geom'
+    if 'geometry' in gdf_map.columns: geom_col_name = 'geometry'
+    elif 'geom' in gdf_map.columns: geom_col_name = 'geom'
     
-    # 2. Si no existe, intentar crearla desde lat/lon
     if not geom_col_name:
         c_lat = next((c for c in gdf_map.columns if 'lat' in c.lower()), None)
         c_lon = next((c for c in gdf_map.columns if 'lon' in c.lower()), None)
@@ -2542,18 +2538,12 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             gdf_map['geometry'] = [Point(xy) for xy in zip(gdf_map[c_lon], gdf_map[c_lat])]
             geom_col_name = 'geometry'
     
-    # 3. ACTIVAR GEOMETRÍA (Esto soluciona el AttributeError de GeoPandas)
     if geom_col_name:
-        # Aseguramos que sea GeoDataFrame
         if not isinstance(gdf_map, gpd.GeoDataFrame):
             gdf_map = gpd.GeoDataFrame(gdf_map, geometry=geom_col_name)
-        
-        # Renombrar a 'geometry' estándar si se llama 'geom'
         if geom_col_name != 'geometry':
             gdf_map = gdf_map.rename(columns={geom_col_name: 'geometry'})
-            gdf_map = gdf_map.set_geometry('geometry') # <--- CLAVE: Avisar a GeoPandas el cambio
-        else:
-            gdf_map = gdf_map.set_geometry('geometry') # <--- CLAVE: Reconfirmar activo
+        gdf_map = gdf_map.set_geometry('geometry')
     else:
         st.error("Error Crítico: No se encontró información geométrica en las estaciones.")
         return
@@ -2565,7 +2555,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # --- 3. MOTOR DE INTERPOLACIÓN ---
     try:
         pad = 0.05
-        # Ahora total_bounds funcionará porque la geometría está activa y correcta
         minx, miny, maxx, maxy = gdf_map.total_bounds 
         xi = np.linspace(minx - pad, maxx + pad, 100)
         yi = np.linspace(miny - pad, maxy + pad, 100)
@@ -2612,7 +2601,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     elif "Oferta" in map_type:
         Z_ppt = interpolar('ppt_media')
         Z_final = Z_ppt * 0.15 
-        colors = 'Teal'
+        # FIX COLOR: 'GnBu' es un mapa válido de Matplotlib (Green-Blue)
+        colors = 'GnBu' 
         title_legend = "Recarga Potencial (mm)"
 
     # --- 5. VISUALIZACIÓN ---
@@ -2627,7 +2617,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         ).add_to(m)
     
     if Z_final is not None:
-        Z_final = np.nan_to_num(Z_final)
+        # FIX FÍSICA: Prohibir valores negativos
+        Z_final = np.maximum(Z_final, 0)
+        
         vmin, vmax = np.min(Z_final), np.max(Z_final)
         if vmax == vmin: vmax += 1
         
@@ -2653,9 +2645,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         val = row['ppt_media']
         if "Erosión" in map_type: val = row.get('factor_r', 0)
         
-        # Acceso seguro a geometry
         geom = row['geometry']
-        
         folium.CircleMarker(
             location=[geom.y, geom.x],
             radius=4,
@@ -2673,7 +2663,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     st.subheader("📉 Curva de Duración de Caudales (FDC)")
     sel_est = st.selectbox("Analizar Estación:", gdf_map['nom_est'].unique())
     
-    # Manejo seguro si la selección está vacía
     if sel_est:
         id_sel = gdf_map[gdf_map['nom_est'] == sel_est].iloc[0]['id_estacion']
         df_single = df_work[df_work['id_estacion'].astype(str) == id_sel].copy()
