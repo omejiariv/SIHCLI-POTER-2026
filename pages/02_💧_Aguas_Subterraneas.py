@@ -181,7 +181,6 @@ if gdf_zona is not None:
     # 1. DEFINICIÓN DE PESTAÑAS (GLOBAL)
     # ==============================================================================
     # CRÍTICO: Las definimos AQUÍ para que existan siempre, sin importar la selección.
-    # Esto soluciona el "NameError: tab4 not defined" en Departamento.
     tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "💧 Mapa Recarga", "📥 Descargas"])
 
     # ==============================================================================
@@ -191,59 +190,40 @@ if gdf_zona is not None:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
         
         if not df_hist.empty:
-            # --- A. CÁLCULO DE ÁREA BLINDADO ---
+
+            # --- A. CÁLCULO DE ÁREA (Consulta Directa BD) ---
             area_km2 = 0
-            
-            # 1. Sanitizar el nombre para búsqueda SQL
+            # Limpiamos el nombre de caracteres extraños que deja el selector
             nombre_limpio = str(nombre_zona).replace("['", "").replace("']", "").replace('["', '').replace('"]', '').strip()
             
-            # 2. Normalizar Geometría (Arregla el error de GeoSeries/Columns)
-            # Si gdf_zona es una Serie (pasa con buffers), la volvemos DataFrame
-            if isinstance(gdf_zona, gpd.GeoSeries):
-                gdf_zona = gpd.GeoDataFrame(geometry=gdf_zona)
-            
-            # Asignar CRS si falta (Asumimos WGS84 por defecto)
-            if gdf_zona.crs is None: 
-                gdf_zona.set_crs("EPSG:4326", inplace=True)
-
             try:
-                # ESTRATEGIA 1: Consulta SQL (La más precisa)
-                q_nuclear = text("""
+                # Prioridad ABSOLUTA: Leer el campo 'area_km2' de la base de datos
+                # Buscamos coincidencias flexibles (mayúsculas/minúsculas)
+                q_area = text("""
                     SELECT area_km2 FROM cuencas 
-                    WHERE nombre_cuenca ILIKE :n OR CAST(subc_lbl AS TEXT) ILIKE :n OR CAST(n_nss3 AS TEXT) ILIKE :n
-                    UNION ALL
-                    SELECT area_km2 FROM municipios WHERE nombre_municipio ILIKE :n
+                    WHERE nombre_cuenca ILIKE :n OR CAST(subc_lbl AS TEXT) ILIKE :n
                     LIMIT 1
                 """)
-                
-                # Intento exacto y con comodines
-                params = {'n': nombre_limpio}
-                df_a = pd.read_sql(q_nuclear, engine, params=params)
+                # Intentamos búsqueda exacta y luego con comodines %
+                df_a = pd.read_sql(q_area, engine, params={'n': nombre_limpio})
                 if df_a.empty:
-                    df_a = pd.read_sql(q_nuclear, engine, params={'n': f"%{nombre_limpio}%"})
+                    df_a = pd.read_sql(q_area, engine, params={'n': f"%{nombre_limpio}%"})
                 
                 if not df_a.empty:
-                    val = df_a.iloc[0]['area_km2']
-                    if val and val > 0: area_km2 = val
+                    area_km2 = df_a.iloc[0]['area_km2']
                 
-                # ESTRATEGIA 2: Si SQL falla, usar Geometría PROYECTADA
+                # Si falló la consulta (ej: es un municipio), buscamos en tabla municipios
                 if area_km2 == 0:
-                    # Intentamos leer columna si existe
-                    if 'area_km2' in gdf_zona.columns and gdf_zona['area_km2'].iloc[0] > 0:
-                         area_km2 = gdf_zona['area_km2'].iloc[0]
-                    else:
-                         # Proyectar a Metros (EPSG:3116) y calcular
-                         # Esto evita el error de "area en grados" que da 0.0001
-                         gdf_metros = gdf_zona.to_crs("EPSG:3116")
-                         area_km2 = gdf_metros.area.iloc[0] / 1e6
+                    q_mun = text("SELECT area_km2 FROM municipios WHERE nombre_municipio ILIKE :n LIMIT 1")
+                    df_m = pd.read_sql(q_mun, engine, params={'n': f"%{nombre_limpio}%"})
+                    if not df_m.empty:
+                        area_km2 = df_m.iloc[0]['area_km2']
 
             except Exception as e:
-                print(f"⚠️ Warning Área: {e}")
-                area_km2 = 1.0 # Solo si todo lo anterior explota
+                print(f"Error consultando área: {e}")
             
-            # Validación final
-            if area_km2 <= 0.01: area_km2 = 1.0
-
+            # Valor de seguridad solo si todo falla
+            if area_km2 <= 0.1: area_km2 = 1.0
             # --- B. CÁLCULOS HIDROLÓGICOS ---
             p_med = df_hist['p_final'].mean() * 12
             etr_med = df_hist['etr_mm'].mean() * 12
@@ -809,72 +789,69 @@ if gdf_zona is not None:
                 help="Descarga este mapa interactivo con isolíneas para compartir."
             )
 
-# ... (Código anterior de las pestañas) ...
-
-with tab4:
-    st.header("📥 Centro de Descargas y Documentación")
-    
-    # 1. FICHA TÉCNICA ENRIQUECIDA
-    with st.expander("📘 Ficha Técnica: Modelo Hidrológico Estocástico y de Balance (Leer antes de usar)", expanded=True):
-        st.markdown("""
-        ### 1. Marco Conceptual
-        Este reporte implementa un **Modelo Hidrológico Híbrido** que integra el Balance Hídrico de largo plazo con un análisis estocástico de extremos. A diferencia de modelos simples lluvia-escorrentía, este sistema reconoce la **dualidad del flujo**:
-        * **Componente Superficial:** Respuesta rápida a la precipitación (Escorrentía Directa).
-        * **Componente Subterráneo (Flujo Base):** Aporte lento y sostenido del acuífero, calculado a partir de la Recarga Potencial.
+    with tab4:
+        st.header("📥 Centro de Descargas y Documentación")
         
-        ### 2. Metodología de Cálculo
-        * **Balance Hídrico:** Se utiliza el método de **Turc (1954)** modificado para condiciones tropicales, calculando la Evapotranspiración Real (ETR) y el Superávit Hídrico.
-        * **Modelo Aditivo ($Q_{total}$):** El caudal medio no depende solo de la lluvia del mes. Se define como:
-            $$Q_{total} = Q_{Directo}(P) + Q_{Base}(R)$$
-            Donde $Q_{Base}$ actúa como un "suelo hidráulico" que impide que los ríos perennes aparezcan secos en el modelo, incluso en ausencia de lluvias.
-        * **Análisis Estocástico de Extremos:**
-            * **Máximos (Crecientes):** Se ajustan mediante la distribución de **Gumbel**, ideal para valores extremos superiores.
-            * **Mínimos (Sequías):** Se utiliza la distribución **Log-Normal** de 2 parámetros. Esta elección matemática respeta la asintoticidad de las curvas de recesión de acuíferos (el caudal tiende a cero pero no toca el cero ni se vuelve negativo), garantizando proyecciones realistas para $T_r > 50$ años.
-        * **Regionalización:** Ante la falta de estaciones in-situ, el sistema genera una "Estación Virtual" agregando datos de todas las estaciones en un **Buffer de 20 km** alrededor de la cuenca (Técnica de Vecino Próximo Ponderado).
+        # 1. FICHA TÉCNICA ENRIQUECIDA
+        with st.expander("📘 Ficha Técnica: Modelo Hidrológico Estocástico y de Balance (Leer antes de usar)", expanded=True):
+            st.markdown("""
+            ### 1. Marco Conceptual
+            Este reporte implementa un **Modelo Hidrológico Híbrido** que integra el Balance Hídrico de largo plazo con un análisis estocástico de extremos. A diferencia de modelos simples lluvia-escorrentía, este sistema reconoce la **dualidad del flujo**:
+            * **Componente Superficial:** Respuesta rápida a la precipitación (Escorrentía Directa).
+            * **Componente Subterráneo (Flujo Base):** Aporte lento y sostenido del acuífero, calculado a partir de la Recarga Potencial.
+            
+            ### 2. Metodología de Cálculo
+            * **Balance Hídrico:** Se utiliza el método de **Turc (1954)** modificado para condiciones tropicales, calculando la Evapotranspiración Real (ETR) y el Superávit Hídrico.
+            * **Modelo Aditivo ($Q_{total}$):** El caudal medio no depende solo de la lluvia del mes. Se define como:
+                $$Q_{total} = Q_{Directo}(P) + Q_{Base}(R)$$
+                Donde $Q_{Base}$ actúa como un "suelo hidráulico" que impide que los ríos perennes aparezcan secos en el modelo, incluso en ausencia de lluvias.
+            * **Análisis Estocástico de Extremos:**
+                * **Máximos (Crecientes):** Se ajustan mediante la distribución de **Gumbel**, ideal para valores extremos superiores.
+                * **Mínimos (Sequías):** Se utiliza la distribución **Log-Normal** de 2 parámetros. Esta elección matemática respeta la asintoticidad de las curvas de recesión de acuíferos (el caudal tiende a cero pero no toca el cero ni se vuelve negativo), garantizando proyecciones realistas para $T_r > 50$ años.
+            * **Regionalización:** Ante la falta de estaciones in-situ, el sistema genera una "Estación Virtual" agregando datos de todas las estaciones en un **Buffer de 20 km** alrededor de la cuenca (Técnica de Vecino Próximo Ponderado).
 
-        ### 3. Alcance y Utilidad
-        * **Planificación del Recurso Hídrico:** Estimación de oferta hídrica neta para concesiones.
-        * **Gestión del Riesgo:** Los valores $Q_{Max}^{100a}$ permiten dimensionar obras hidráulicas (puentes, box-culverts).
-        * **Seguridad Hídrica:** Los valores $Q_{Min}^{50a}$ y $Q_{95}$ (Caudal Ecológico) establecen los límites críticos para el abastecimiento en escenarios de Cambio Climático.
+            ### 3. Alcance y Utilidad
+            * **Planificación del Recurso Hídrico:** Estimación de oferta hídrica neta para concesiones.
+            * **Gestión del Riesgo:** Los valores $Q_{Max}^{100a}$ permiten dimensionar obras hidráulicas (puentes, box-culverts).
+            * **Seguridad Hídrica:** Los valores $Q_{Min}^{50a}$ y $Q_{95}$ (Caudal Ecológico) establecen los límites críticos para el abastecimiento en escenarios de Cambio Climático.
 
-        ### 4. Limitaciones e Interpretación
-        * **Escala Temporal:** El modelo opera a paso mensual. Los picos de crecientes instantáneas (horas) podrían ser superiores a los $Q_{Max}$ mensuales reportados.
-        * **Incertidumbre:** En cuencas sin estaciones dentro del radio de 20km, los datos son interpolaciones regionales que deben validarse en campo.
-        * **Caudal Base:** Se asume un factor de recarga regional del 15% (30% infiltración $\times$ 50% percolación). Cuencas con geología kárstica o muy fracturada podrían tener caudales base superiores.
+            ### 4. Limitaciones e Interpretación
+            * **Escala Temporal:** El modelo opera a paso mensual. Los picos de crecientes instantáneas (horas) podrían ser superiores a los $Q_{Max}$ mensuales reportados.
+            * **Incertidumbre:** En cuencas sin estaciones dentro del radio de 20km, los datos son interpolaciones regionales que deben validarse en campo.
+            * **Caudal Base:** Se asume un factor de recarga regional del 15% (30% infiltración $\times$ 50% percolación). Cuencas con geología kárstica o muy fracturada podrían tener caudales base superiores.
 
-        ### 5. Fuentes de Información y Referencias
-        * **Climatología:** IDEAM (Precipitación Histórica Mensual).
-        * **Topografía:** ALOS PALSAR / SRTM (30m) para delimitación y morfometría.
-        * **Referentes Académicos:** * *Chow, V. T. (1988). Applied Hydrology.* (Estadística Gumbel/Log-Normal).
-            * *Turc, L. (1954). Le bilan d'eau des sols: relations entre les précipitations, l'évaporation et l'écoulement.*
-        """)
+            ### 5. Fuentes de Información y Referencias
+            * **Climatología:** IDEAM (Precipitación Histórica Mensual).
+            * **Topografía:** ALOS PALSAR / SRTM (30m) para delimitación y morfometría.
+            * **Referentes Académicos:** * *Chow, V. T. (1988). Applied Hydrology.* (Estadística Gumbel/Log-Normal).
+                * *Turc, L. (1954). Le bilan d'eau des sols: relations entre les précipitations, l'évaporation et l'écoulement.*
+            """)
 
-    st.markdown("---")
-    
-    # 2. BOTONES DE DESCARGA
-    col_d1, col_d2 = st.columns(2)
-    
-    with col_d1:
-        st.info("📊 **Serie Temporal Completa**\n\nDescarga los datos mensuales (Lluvia, Q) usados para los cálculos.")
-        # (Aquí iría lógica para descargar serie si la tienes en memoria, o el botón que ya tenías)
-        if 'df_rain_mensual' in locals(): # Ejemplo si estuviera disponible
-             pass 
-        else:
-            st.write("*(Selecciona una cuenca en el mapa para habilitar esta descarga)*")
+        st.markdown("---")
+        
+        # 2. BOTONES DE DESCARGA
+        col_d1, col_d2 = st.columns(2)
+        
+        with col_d1:
+            st.info("📊 **Serie Temporal Completa**\n\nDescarga los datos mensuales (Lluvia, Q) usados para los cálculos.")
+            if 'df_rain_mensual' in locals():
+                 pass 
+            else:
+                st.write("*(Selecciona una cuenca en el mapa para habilitar esta descarga)*")
 
-    with col_d2:
-        st.success("📑 **Reporte Maestro Global (CSV)**\n\nTabla con todas las 51 cuencas, estadísticas y ecuaciones.")
-        try:
-            df_rep = pd.read_sql("SELECT * FROM reporte_cuencas", engine)
-            csv_rep = df_rep.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="⬇️ Descargar Reporte Global (.csv)",
-                data=csv_rep,
-                file_name="Reporte_Hidrologico_Completo_SIHCLI.csv",
-                mime="text/csv"
-            )
-        except:
-            st.warning("Primero debes generar el reporte en la sección inferior.")
+        with col_d2:
+            st.success("📑 **Reporte Maestro Global (CSV)**\n\nTabla con todas las 51 cuencas, estadísticas y ecuaciones.")
+            try:
+                df_rep = pd.read_sql("SELECT * FROM reporte_cuencas", engine)
+                csv_rep = df_rep.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="⬇️ Descargar Reporte Global (.csv)",
+                    data=csv_rep,
+                    file_name="Reporte_Hidrologico_Completo_SIHCLI.csv",
+                    mime="text/csv"
+                )
+            except:
+                st.warning("Primero debes generar el reporte en la sección inferior.")
 
 # ==============================================================================
 # SECCIÓN: REPORTE GLOBAL HIDROLÓGICO (VERSIÓN FINAL CORREGIDA)
