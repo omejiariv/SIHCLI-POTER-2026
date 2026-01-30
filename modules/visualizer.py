@@ -2448,10 +2448,6 @@ def display_satellite_imagery_tab(gdf_filtered):
                 f"[Haga clic aquí para verla directamente en la NOAA]({url_gif})"
             )
 
-st.write("Columnas Estaciones:", gdf_stations.columns.tolist())
-st.write("Columnas Lluvia:", df_long.columns.tolist())
-st.stop()
-
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
     Versión SIHCLI-POTER 2.4: Geometry Column Normalization (Fix KeyError 'geometry').
