@@ -283,6 +283,34 @@ def main():
         )
         st.markdown("---")
 
+        # --- [INICIO BLOQUE NUEVO] FILTRO POR REGIÓN ---
+        # Detectar columnas que parezcan región en los datos cargados
+        col_region = get_fuzzy_col(gdf_filtered, ["region", "subregion", "zona", "dpto"])
+        sel_regions = []
+        
+        if col_region:
+            # Extraer regiones únicas
+            unique_regions = sorted(gdf_filtered[col_region].astype(str).unique())
+            
+            # Solo mostramos el filtro si hay más de una región
+            if len(unique_regions) > 1:
+                with st.expander("📍 Filtrar por Región", expanded=True):
+                    sel_regions = st.multiselect("Seleccionar:", unique_regions)
+                    
+                    if sel_regions:
+                        # APLICAR FILTRO EN CASCADA
+                        # 1. Filtramos las estaciones geográficas
+                        gdf_filtered = gdf_filtered[gdf_filtered[col_region].isin(sel_regions)]
+                        
+                        # 2. Obtenemos los IDs válidos
+                        valid_ids = gdf_filtered['id_estacion'].unique()
+                        
+                        # 3. Filtramos la tabla de datos climáticos (df_long)
+                        df_long = df_long[df_long['id_estacion'].isin(valid_ids)]
+                        
+                        st.caption(f"✅ Filtrado: {len(valid_ids)} estaciones")
+        # --- [FIN BLOQUE NUEVO] ---
+
         # Filtro de Tiempo (Conservado porque es útil)
         with st.expander("⏳ Tiempo y Limpieza", expanded=False):
             min_year = int(df_long[Config.YEAR_COL].min())
