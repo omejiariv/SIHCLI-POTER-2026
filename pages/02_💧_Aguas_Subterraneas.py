@@ -175,7 +175,7 @@ if gdf_zona is not None:
         alt_calc = altitud_ref if altitud_ref else df_puntos['alt_est'].mean()
         df_res = hydrogeo_utils.ejecutar_pronostico_prophet(df_raw, meses_futuros, alt_calc, ki_final, ruido, kg=kg_factor, kc=kc_ponderado)
 
-st.markdown(f"### {nombre_zona}")
+    st.markdown(f"### {nombre_zona}")
 
     # ==============================================================================
     # 1. PANEL SUPERIOR DE INDICADORES (10 COLUMNAS)
