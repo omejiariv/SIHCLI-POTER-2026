@@ -2450,7 +2450,7 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión SIHCLI-POTER 2.2: Fix AttributeError (branca vs matplotlib).
+    Versión SIHCLI-POTER 2.3: Fix Row Geometry + Branca Colormap.
     """
     import plotly.express as px
     import folium
@@ -2458,10 +2458,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     import numpy as np
     from scipy.interpolate import griddata
     import matplotlib.pyplot as plt
-    import matplotlib.cm as cm          # Para obtener mapas de color (Viridis, etc)
-    import matplotlib.colors as mcolors # Para convertir colores a Hex
-    import branca.colormap as bcm       # Para la leyenda del mapa (LinearColormap)
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+    import branca.colormap as bcm # Alias para evitar conflicto
     import pandas as pd
+    import geopandas as gpd
 
     # --- 1. CONFIGURACIÓN Y SELECTORES ---
     st.markdown("### 🗺️ Análisis Espacial Avanzado")
@@ -2511,7 +2512,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     df_annual = df_work.groupby(['id_estacion', 'year'])['valor_proc'].sum().reset_index()
     df_annual_mean = df_annual.groupby('id_estacion')['valor_proc'].mean().reset_index(name='ppt_media')
     
-    # Índice de Fournier Modificado (MFI) para Factor R
+    # Índice de Fournier Modificado (MFI)
     df_work['p2'] = df_work['valor_proc'] ** 2
     df_mfi_y = df_work.groupby(['id_estacion', 'year']).agg({'p2': 'sum', 'valor_proc': 'sum'}).reset_index()
     df_mfi_y['mfi_anual'] = df_mfi_y['p2'] / df_mfi_y['valor_proc'].replace(0, 1)
@@ -2522,8 +2523,16 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     df_annual_mean['id_estacion'] = df_annual_mean['id_estacion'].astype(str)
     df_mfi['id_estacion'] = df_mfi['id_estacion'].astype(str)
     
+    # Merge y Aseguramiento de Tipo GeoDataFrame
     gdf_map = gdf_stations.merge(df_annual_mean, on='id_estacion')
     gdf_map = gdf_map.merge(df_mfi, on='id_estacion')
+    
+    if not isinstance(gdf_map, gpd.GeoDataFrame):
+        # Si pandas degradó el objeto, lo volvemos GeoDataFrame
+        if 'geometry' in gdf_map.columns:
+            gdf_map = gpd.GeoDataFrame(gdf_map, geometry='geometry')
+        elif 'geom' in gdf_map.columns:
+             gdf_map = gpd.GeoDataFrame(gdf_map, geometry='geom')
 
     if len(gdf_map) < 3:
         st.warning("⚠️ Se requieren al menos 3 estaciones con datos válidos para interpolar mapas.")
@@ -2583,7 +2592,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # --- 5. VISUALIZACIÓN EN FOLIUM ---
     m = folium.Map(location=[gdf_map.geometry.y.mean(), gdf_map.geometry.x.mean()], zoom_start=10, tiles="CartoDB positron")
     
-    # Agregar Polígono de Cuenca (Contexto)
+    # Contexto
     gdf_zona = kwargs.get('gdf_zona', None)
     if gdf_zona is not None and not gdf_zona.empty:
         folium.GeoJson(
@@ -2597,13 +2606,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         vmin, vmax = np.min(Z_final), np.max(Z_final)
         if vmax == vmin: vmax += 1
         
-        # Mapa de colores (Matplotlib)
         cmap = plt.get_cmap(colors)
         norm_data = (Z_final - vmin) / (vmax - vmin)
         rgba_img = cmap(norm_data)
         rgba_img[..., 3] = 0.7 
 
-        # Capa Raster
         folium.raster_layers.ImageOverlay(
             image=rgba_img,
             bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]],
@@ -2611,24 +2618,22 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             name=map_type
         ).add_to(m)
         
-        # Leyenda (Usando Branca con nombres Hex seguros)
+        # Leyenda Segura
         color_min = mcolors.to_hex(cmap(0.0))
         color_max = mcolors.to_hex(cmap(1.0))
-        
-        colormap = bcm.LinearColormap(
-            colors=[color_min, color_max], 
-            vmin=vmin, vmax=vmax, 
-            caption=title_legend
-        )
+        colormap = bcm.LinearColormap(colors=[color_min, color_max], vmin=vmin, vmax=vmax, caption=title_legend)
         colormap.add_to(m)
 
-    # Estaciones
+    # Estaciones (FIXED LOOP)
     for _, row in gdf_map.iterrows():
         val = row['ppt_media']
         if "Erosión" in map_type: val = row.get('factor_r', 0)
         
+        # ACCESO SEGURO A GEOMETRÍA (Diccionario, no atributo)
+        geom = row['geometry']
+        
         folium.CircleMarker(
-            location=[row.geometry.y, row.geometry.x],
+            location=[geom.y, geom.x],
             radius=4,
             color='black',
             fill=True,
@@ -2655,6 +2660,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         fig_fdc = px.line(x=probs, y=q_vals, labels={'x': '% Excedencia', 'y': 'Lluvia/Caudal Transformado'})
         fig_fdc.update_layout(title=f"Curva FDC: {sel_est}", yaxis_type="log")
         st.plotly_chart(fig_fdc, use_container_width=True)
+
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
