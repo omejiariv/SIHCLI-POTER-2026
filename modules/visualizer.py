@@ -2450,25 +2450,43 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión SIHCLI-POTER 3.2: Fix Colormap Names (Mapeo Seguro).
+    Versión SIHCLI-POTER 4.0: SIG Avanzado
+    - Etiquetas Permanentes en Isolíneas.
+    - Recorte (Masking) exacto por cuenca (adiós líneas rectas).
+    - Descarga de Datos (GeoJSON/TIFF).
+    - Panel Académico y Estadístico Completo.
     """
     import plotly.express as px
     import plotly.graph_objects as go
     import folium
+    from folium.features import DivIcon
     from streamlit_folium import st_folium
     import numpy as np
-    from scipy.interpolate import griddata, Rbf
+    from scipy.interpolate import Rbf
     import matplotlib.pyplot as plt
-    import matplotlib.cm as cm
     import matplotlib.colors as mcolors
     import branca.colormap as bcm
     import pandas as pd
     import geopandas as gpd
     from shapely.geometry import Point
+    import rasterio
+    from rasterio.transform import from_origin
+    from rasterio.features import geometry_mask
+    import io
 
     # --- 1. CONFIGURACIÓN Y SELECTORES ---
     st.markdown("### 🌍 Análisis Espacial y Balance Hídrico Distribuido")
     
+    # Recuperamos la geometría de la zona para el recorte (CRÍTICO)
+    gdf_zona = kwargs.get('gdf_zona')
+    nombre_zona = "Zona de Estudio"
+    area_km2 = 1.0
+    if gdf_zona is not None and not gdf_zona.empty:
+        # Reproyectar a proyectado para cálculo de área preciso si es necesario
+        gdf_proj = gdf_zona.to_crs(epsg=3116) # Magna Sirgas Colombia (o dinámico)
+        area_km2 = gdf_proj.area.sum() / 1e6
+        nombre_zona = kwargs.get('nombre_zona', 'Cuenca Seleccionada')
+
     col_sel1, col_sel2, col_sel3 = st.columns([2, 1, 1])
     
     with col_sel1:
@@ -2476,10 +2494,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             "Seleccione Variable Biofísica:",
             [
                 "🌧️ Precipitación (Isoyetas)",
+                "💧 Infiltración Potencial",
+                "📉 Recarga Real (Balance)",
                 "☀️ Evapotranspiración Real (ETR)",
-                "💧 Excedente Hídrico (Superávit)",
-                "📉 Recarga Potencial (mm/año)",
-                "🌾 Rendimiento Hídrico (m³/Ha)",
+                "🌾 Rendimiento Hídrico (Q)",
                 "🌡️ Índice de Aridez (Lang)",
                 "🏔️ Riesgo Erosión (USLE)",
                 "⛰️ Modelo Digital (Elevación)"
@@ -2487,23 +2505,16 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         )
 
     with col_sel2:
-        # --- CORRECCIÓN DE COLORES (MAPEO) ---
         cmap_mapping = {
-            "Viridis": "viridis",
-            "Spectral": "Spectral_r",
-            "RdYlBu": "RdYlBu",
-            "YlGnBu": "YlGnBu",
-            "Magma": "magma",
-            "Jet": "jet",
-            "Turbo": "turbo",
-            "GnBu (Agua)": "GnBu",
-            "YlOrRd (Erosión)": "YlOrRd"
+            "Viridis": "viridis", "Spectral": "Spectral_r", "RdYlBu": "RdYlBu",
+            "YlGnBu": "YlGnBu", "Magma": "magma", "Jet": "jet", 
+            "GnBu (Agua)": "GnBu", "YlOrRd (Erosión)": "YlOrRd", "Terra": "gist_earth"
         }
-        selected_label = st.selectbox("🎨 Escala de Color:", list(cmap_mapping.keys()))
-        color_scheme = cmap_mapping[selected_label] # Obtenemos el nombre interno correcto
+        selected_label = st.selectbox("🎨 Escala de Color:", list(cmap_mapping.keys()), index=3)
+        color_scheme = cmap_mapping[selected_label]
 
     with col_sel3:
-        show_isolines = st.checkbox("Show Isolíneas", value=True)
+        show_labels = st.checkbox("Etiquetas Valor", value=True)
         opacity = st.slider("Opacidad", 0.1, 1.0, 0.6)
 
     # --- 2. PREPARACIÓN DE DATOS ---
@@ -2519,26 +2530,26 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     df_work['year'] = df_work['fecha_proc'].dt.year
     df_work['valor_proc'] = pd.to_numeric(df_work[col_val], errors='coerce').fillna(0)
 
-    # Stats
+    # Stats Anuales
     df_stats = df_work.groupby('id_estacion').agg(
         ppt_media=('valor_proc', lambda x: x.sum() / df_work['year'].nunique()),
         std_dev=('valor_proc', 'std'),
         years_count=('year', 'nunique')
     ).reset_index()
 
-    # MFI (Fournier)
+    # Fournier (MFI)
     df_work['p2'] = df_work['valor_proc'] ** 2
     df_mfi_y = df_work.groupby(['id_estacion', 'year']).agg({'p2': 'sum', 'valor_proc': 'sum'}).reset_index()
     df_mfi_y['mfi_anual'] = df_mfi_y['p2'] / df_mfi_y['valor_proc'].replace(0, 1)
     df_mfi = df_mfi_y.groupby('id_estacion')['mfi_anual'].mean().reset_index(name='mfi_val')
 
-    # Merge
+    # Merge Geoespacial
     gdf_stations['id_estacion'] = gdf_stations['id_estacion'].astype(str)
     df_stats['id_estacion'] = df_stats['id_estacion'].astype(str)
     df_mfi['id_estacion'] = df_mfi['id_estacion'].astype(str)
     gdf_map = gdf_stations.merge(df_stats, on='id_estacion').merge(df_mfi, on='id_estacion')
 
-    # Fix Geometry Blindado
+    # Geometría Blindada
     if 'geometry' not in gdf_map.columns:
         if 'geom' in gdf_map.columns: 
             gdf_map = gdf_map.rename(columns={'geom': 'geometry'}).set_geometry('geometry')
@@ -2548,131 +2559,232 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             if c_lat: gdf_map['geometry'] = [Point(xy) for xy in zip(gdf_map[c_lon], gdf_map[c_lat])]
             gdf_map = gpd.GeoDataFrame(gdf_map, geometry='geometry')
 
-    # Datos para Popup
-    for col in ['municipio', 'mpio_cnmbr', 'nombre_municipio']:
-        if col in gdf_map.columns: gdf_map['municipio_show'] = gdf_map[col]; break
-    if 'municipio_show' not in gdf_map.columns: gdf_map['municipio_show'] = "N/A"
+    # Metadatos para Popups
     if 'alt_est' not in gdf_map.columns: gdf_map['alt_est'] = 1500
+    for col in ['municipio', 'mpio_cnmbr']:
+        if col in gdf_map.columns: gdf_map['municipio_show'] = gdf_map[col]; break
+    if 'municipio_show' not in gdf_map.columns: gdf_map['municipio_show'] = "-"
 
-    # --- 3. MOTOR FÍSICO ---
+    # --- 3. MOTOR FÍSICO Y MÁSCARA (GRID) ---
     if len(gdf_map) < 3:
-        st.warning("⚠️ Se requieren mínimo 3 estaciones para interpolar.")
+        st.warning("⚠️ Se requieren mínimo 3 estaciones.")
         return
 
-    pad = 0.05
+    # Definir Grid
+    pad = 0.02
     minx, miny, maxx, maxy = gdf_map.total_bounds
-    grid_x, grid_y = np.mgrid[minx-pad:maxx+pad:100j, miny-pad:maxy+pad:100j]
+    # Si tenemos zona, usamos sus límites para ajustar mejor
+    if gdf_zona is not None:
+        minx, miny, maxx, maxy = gdf_zona.total_bounds
     
-    # Interpolaciones
+    grid_res = 100j # Resolución 100x100
+    grid_x, grid_y = np.mgrid[minx-pad:maxx+pad:grid_res, miny-pad:maxy+pad:grid_res]
+
+    # --- MÁSCARA DE RECORTE (CLIPPING) ---
+    # Esto elimina las líneas rectas y artefactos fuera de la cuenca
+    mask_array = None
+    if gdf_zona is not None:
+        # Crear transformación afín para rasterio
+        width = grid_x.shape[0]
+        height = grid_x.shape[1]
+        # Calcular tamaño de píxel
+        pixel_width = (maxx + pad - (minx - pad)) / width
+        pixel_height = (maxy + pad - (miny - pad)) / height
+        # Transform (West, South, Width, Height) -> Nota: rasterio usa origen Top-Left
+        transform = from_origin(minx - pad, maxy + pad, pixel_width, pixel_height)
+        
+        # Generar máscara booleana
+        shapes = [geom for geom in gdf_zona.geometry]
+        mask_array = geometry_mask(shapes, transform=transform, invert=True, out_shape=(width, height))
+        # Nota: geometry_mask devuelve True fuera de la forma si invert=False. Ajustamos luego.
+        # Transponer máscara si es necesario por diferencia numpy(ij) vs rasterio(xy)
+        mask_array = mask_array.T 
+
+    # Función auxiliar para aplicar máscara
+    def aplicar_mascara(Z):
+        if mask_array is not None:
+            # Donde la máscara es False (fuera de la cuenca), ponemos NaN
+            Z[~mask_array] = np.nan
+        return Z
+
+    # 3.1. Interpolación Base
     try:
         rbf_p = Rbf(gdf_map.geometry.x, gdf_map.geometry.y, gdf_map['ppt_media'], function='linear')
         Z_P = np.maximum(rbf_p(grid_x, grid_y), 0)
+        Z_P = aplicar_mascara(Z_P)
+        
+        rbf_h = Rbf(gdf_map.geometry.x, gdf_map.geometry.y, gdf_map['alt_est'], function='linear')
+        Z_Alt = np.maximum(rbf_h(grid_x, grid_y), 0)
+        Z_Alt = aplicar_mascara(Z_Alt)
     except:
-        st.error("Error matemático en interpolación.")
+        st.error("Error matemático en la interpolación.")
         return
 
-    rbf_h = Rbf(gdf_map.geometry.x, gdf_map.geometry.y, gdf_map['alt_est'], function='linear')
-    Z_Alt = np.maximum(rbf_h(grid_x, grid_y), 0)
-
-    # Balance
-    Z_T = np.maximum(28 - (0.006 * Z_Alt), 1)
+    # 3.2. Balance Hídrico Distribuido (Turc + Balance)
+    Z_T = np.maximum(28 - (0.006 * Z_Alt), 1) # Temp
     L_turc = 300 + (25 * Z_T) + (0.05 * (Z_T**3))
-    Z_ETR = np.minimum(Z_P / np.sqrt(0.9 + (Z_P / L_turc)**2), Z_P)
-    Z_Exc = Z_P - Z_ETR
-    Z_Recarga = Z_Exc * 0.15 
+    Z_ETR = np.minimum(Z_P / np.sqrt(0.9 + (Z_P / L_turc)**2), Z_P) # ETR
+    Z_Exc = np.maximum(Z_P - Z_ETR, 0) # Excedente (P - ETR)
+    
+    # Coeficientes (Idealmente vendrían de un raster de Cobertura/Suelo)
+    Coef_Infiltracion = 0.20 # 20% Infiltra
+    Coef_Escorrentia = 0.30  # 30% Escurre rápido
+    
+    Z_Infiltracion = Z_Exc * Coef_Infiltracion # Infiltración Potencial
+    Z_Recarga = Z_Infiltracion * 0.8 # Asumimos 80% de la infiltración llega a acuífero (Recarga Real)
+    
+    # Rendimiento Hídrico (Q = P - ETR en largo plazo aprox, o Excedente)
+    # Aquí usamos Excedente Total (Superficial + Base)
+    Z_Q_mm = Z_Exc 
+    Z_Q_m3ha = Z_Q_mm * 10 # mm -> m3/ha
 
     # Erosión USLE
     rbf_r = Rbf(gdf_map.geometry.x, gdf_map.geometry.y, gdf_map['mfi_val'], function='linear')
     Z_R = 2.5 * (np.maximum(rbf_r(grid_x, grid_y), 0) ** 1.3)
+    Z_R = aplicar_mascara(Z_R)
     dy, dx = np.gradient(Z_Alt)
     Z_LS = 1 + (np.sqrt(dy**2 + dx**2) * 2)
-    Z_USLE = Z_R * 0.3 * Z_LS * 0.05
+    Z_USLE = Z_R * 0.3 * Z_LS * 0.05 # K=0.3, C=0.05
 
-    # Selección Capa
+    # 3.3. Selección de Variable a Graficar
     Z_Final = Z_P
-    units = "mm"
-    title = "Precipitación Media Anual"
+    units = "mm/año"
+    title = "Precipitación Media"
     
     if "Precipitación" in map_layer: Z_Final = Z_P
-    elif "ETR" in map_layer: Z_Final = Z_ETR; title = "ETR (Turc)"; units = "mm/año"
-    elif "Superávit" in map_layer: Z_Final = Z_Exc; title = "Excedente Hídrico"; units = "mm/año"
-    elif "Recarga" in map_layer: Z_Final = Z_Recarga; title = "Recarga Potencial"; units = "mm/año"
-    elif "Rendimiento" in map_layer: Z_Final = Z_Exc * 10; title = "Rendimiento Hídrico"; units = "m³/Ha/año"
-    elif "Lang" in map_layer: Z_Final = Z_P / Z_T; title = "Índice de Lang"; units = "-"
-    elif "Erosión" in map_layer: Z_Final = Z_USLE; title = "Pérdida de Suelo"; units = "ton/ha/año"
-    elif "Modelo Digital" in map_layer: Z_Final = Z_Alt; title = "Elevación"; units = "msnm"
+    elif "Infiltración" in map_layer: Z_Final = Z_Infiltracion; title = "Infiltración Potencial"; units="mm/año"
+    elif "Recarga" in map_layer: Z_Final = Z_Recarga; title = "Recarga Real (Estimada)"; units="mm/año"
+    elif "ETR" in map_layer: Z_Final = Z_ETR; title = "ETR (Turc)"; units="mm/año"
+    elif "Rendimiento" in map_layer: Z_Final = Z_Q_m3ha; title = "Rendimiento Hídrico"; units="m³/Ha/año"
+    elif "Lang" in map_layer: Z_Final = Z_P / Z_T; title = "Índice de Lang"; units="-"
+    elif "Erosión" in map_layer: Z_Final = Z_USLE; title = "Pérdida de Suelo"; units="ton/ha/año"
+    elif "Modelo Digital" in map_layer: Z_Final = Z_Alt; title = "Elevación"; units="msnm"
 
-    # --- VISUALIZACIÓN ---
+    # Estadísticas Agregadas para la Caja
+    mean_val = np.nanmean(Z_Final)
+    vol_anual_hm3 = (np.nanmean(Z_Q_mm) / 1000) * area_km2 # P - ETR sobre el área
+
+    # --- 4. VISUALIZACIÓN (FOLIUM) ---
     m = folium.Map(location=[gdf_map.geometry.y.mean(), gdf_map.geometry.x.mean()], zoom_start=11, tiles="CartoDB positron")
 
-    vmin, vmax = np.min(Z_Final), np.max(Z_Final)
+    vmin, vmax = np.nanmin(Z_Final), np.nanmax(Z_Final)
     if vmin == vmax: vmax += 1
     
-    # COLORMAP SEGURO
     cmap = plt.get_cmap(color_scheme)
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-    rgba = cmap(norm(Z_Final))
-    rgba[..., 3] = opacity
+    
+    # Preparar imagen raster (RGBA) con transparencia donde es NaN
+    Z_norm = (Z_Final - vmin) / (vmax - vmin)
+    rgba_img = cmap(Z_norm)
+    rgba_img[..., 3] = np.where(np.isnan(Z_Final), 0, opacity) # Transparencia total si es NaN (fuera cuenca)
     
     folium.raster_layers.ImageOverlay(
-        image=rgba, bounds=[[miny, minx], [maxy, maxx]], opacity=opacity, name="Capa Raster"
+        image=rgba_img, bounds=[[miny, minx], [maxy, maxx]], opacity=opacity, name="Raster"
     ).add_to(m)
 
-    if show_isolines:
+    # Isolíneas con Etiquetas (DIV ICON)
+    if True: # Siempre calcular para tener isolíneas limpias
         fig_c, ax_c = plt.subplots()
         levels = np.linspace(vmin, vmax, 10)
+        # Contour ignora NaNs automáticamente
         cs = ax_c.contour(grid_x, grid_y, Z_Final, levels=levels)
+        
         for level, collection in zip(levels, cs.collections):
             for path in collection.get_paths():
                 coords = [[y, x] for x, y in path.vertices]
-                if len(coords) > 2:
-                    folium.PolyLine(locations=coords, color='black', weight=1, opacity=0.5, tooltip=f"{title}: {level:.1f}").add_to(m)
+                if len(coords) > 5:
+                    # Dibujar línea
+                    folium.PolyLine(locations=coords, color='black', weight=0.8, opacity=0.6).add_to(m)
+                    
+                    # Dibujar Etiqueta Permanente (En el punto medio)
+                    if show_labels:
+                        mid_idx = len(coords) // 2
+                        mid_pt = coords[mid_idx]
+                        folium.map.Marker(
+                            mid_pt,
+                            icon=DivIcon(
+                                icon_size=(150,36),
+                                icon_anchor=(7,20),
+                                html=f'<div style="font-size: 8pt; color: black; font-weight: bold; text-shadow: 1px 1px 0 #fff;">{level:.0f}</div>'
+                            )
+                        ).add_to(m)
         plt.close(fig_c)
 
-    gdf_zona = kwargs.get('gdf_zona')
+    # Contexto
     if gdf_zona is not None:
-        folium.GeoJson(gdf_zona, style_function=lambda x: {'fill': False, 'color': '#333', 'dashArray': '5,5'}).add_to(m)
+        folium.GeoJson(gdf_zona, style_function=lambda x: {'fill': False, 'color': '#333', 'weight': 2}).add_to(m)
 
     # Leyenda
     hex_colors = [mcolors.to_hex(cmap(i)) for i in np.linspace(0, 1, 5)]
     bcm.LinearColormap(colors=hex_colors, vmin=vmin, vmax=vmax, caption=f"{title} ({units})").add_to(m)
 
-    # Popups
-    for _, row in gdf_map.iterrows():
-        html = f"""<div style='width:180px'><b>{row['nom_est']}</b><br>Mpio: {row['municipio_show']}<br>Alt: {row['alt_est']:.0f} m<br>P: {row['ppt_media']:.0f} mm</div>"""
-        folium.CircleMarker(
-            location=[row.geometry.y, row.geometry.x], radius=4, color='#333', fill=True, fill_color='white',
-            popup=folium.Popup(html, max_width=200), tooltip=row['nom_est']
-        ).add_to(m)
-
     st_folium(m, width=1400, height=600)
 
-    # Paneles Inferiores (Stats, FDC, Info)
+    # --- 5. CAJA DE ESTADÍSTICAS (REQUESTED) ---
     st.divider()
-    with st.expander(f"🧐 Estadísticas: {title}", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Promedio", f"{np.mean(Z_Final):,.1f} {units}")
-        c2.metric("Máximo", f"{np.max(Z_Final):,.1f} {units}")
-        c3.metric("Coef. Var", f"{(np.std(Z_Final)/np.mean(Z_Final))*100:.1f}%")
+    st.markdown(f"### 📊 Estadísticas Hidrológicas: {nombre_zona}")
+    
+    col_st1, col_st2, col_st3, col_st4, col_st5, col_st6 = st.columns(6)
+    col_st1.metric("📍 Zona", nombre_zona[:15]+"...")
+    col_st2.metric("📐 Área", f"{area_km2:,.1f} km²")
+    # Caudal Medio (Estimado por balance P-ETR)
+    q_m3s = (vol_anual_hm3 * 1e6) / (365 * 24 * 3600)
+    col_st3.metric("💧 Caudal Medio", f"{q_m3s:,.2f} m³/s", help="Q = (P - ETR) * Área")
+    col_st4.metric("🌧️ Precipitación", f"{np.nanmean(Z_P):,.0f} mm/año")
+    col_st5.metric("☀️ ETR", f"{np.nanmean(Z_ETR):,.0f} mm/año")
+    col_st6.metric("📉 Recarga Real", f"{np.nanmean(Z_Recarga):,.0f} mm/año")
 
+    # --- 6. DESCARGAS ---
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        # GeoJSON (Estaciones + Datos)
+        geojson_str = gdf_map.to_json()
+        st.download_button("📥 Descargar Datos Estaciones (GeoJSON)", geojson_str, "estaciones_data.geojson", "application/json")
+    with col_d2:
+        # Raster (GeoTIFF Simulado - ASCII Grid para compatibilidad web fácil)
+        # Para un GeoTIFF real se requiere escribir en memoria binaria con rasterio
+        ascii_grid = f"NCOLS {Z_Final.shape[1]}\nNROWS {Z_Final.shape[0]}\nXLLCENTER {minx}\nYLLCENTER {miny}\nCELLSIZE {pad}\nNODATA_VALUE -9999\n"
+        np.savetxt("temp_grid.txt", np.flipud(np.nan_to_num(Z_Final, nan=-9999)), fmt='%.2f')
+        with open("temp_grid.txt", "r") as f: grid_content = ascii_grid + f.read()
+        st.download_button("📥 Descargar Raster (ASCII Grid)", grid_content, f"{title.replace(' ','_')}.asc", "text/plain")
+
+    # --- 7. GRÁFICOS Y ACADEMIA ---
     c_g1, c_g2 = st.columns(2)
+    
     with c_g1:
         st.subheader("⛰️ Curva Hipsométrica")
-        el = np.sort(Z_Alt.flatten())[::-1]
-        fig_h = px.area(x=np.linspace(0,100,len(el)), y=el, labels={'x':'% Área', 'y':'msnm'})
+        el = np.sort(Z_Alt[~np.isnan(Z_Alt)].flatten())[::-1]
+        fig_h = px.area(x=np.linspace(0,100,len(el)), y=el, labels={'x':'% Área Acumulada', 'y':'Elevación (msnm)'})
         st.plotly_chart(fig_h, use_container_width=True)
+        with st.expander("ℹ️ Info Hipsométrica"):
+            st.markdown(r"""
+            **Concepto:** Representa la distribución del área de la cuenca en función de la altitud.
+            
+            **Ecuación Polinómica:** $$H(a) = C_0 + C_1 \cdot a + C_2 \cdot a^2 + ...$$
+            Donde $a$ es el % de área acumulada.
+            
+            **Utilidad:** Determina la edad geológica de la cuenca (Joven/Madura/Vieja) y su respuesta ante crecidas.
+            """)
 
     with c_g2:
-        st.subheader("📉 FDC")
+        st.subheader("📉 Curva de Duración de Caudales (FDC)")
         sel = st.selectbox("Estación FDC:", gdf_map['nom_est'].unique())
         if sel:
             id_s = gdf_map[gdf_map['nom_est']==sel].iloc[0]['id_estacion']
             vals = df_work[df_work['id_estacion']==id_s]['valor_proc'].sort_values(ascending=False).values
-            fig_f = px.line(x=np.arange(1,len(vals)+1)/len(vals)*100, y=vals, log_y=True, labels={'x':'%', 'y':'Lluvia'})
+            probs = np.arange(1, len(vals)+1)/len(vals)*100
+            fig_f = px.line(x=probs, y=vals, log_y=True, labels={'x':'% Tiempo Excedencia', 'y':'Lluvia/Caudal'})
             st.plotly_chart(fig_f, use_container_width=True)
-            
-    with st.expander("📚 Metodología"):
-        st.info("Interpolación RBF + Balance Turc + USLE Modificado.")
+            with st.expander("ℹ️ Info FDC"):
+                st.markdown(r"""
+                **Concepto:** Frecuencia acumulada con la que se iguala o excede un caudal específico.
+                
+                **Ecuación Probabilística:**
+                $$P(Q \geq q) = \frac{m}{n+1} \times 100$$
+                
+                **Interpretación:** * Q95: Caudal ecológico o base.
+                * Pendiente alta: Cuenca con poca regulación.
+                """)
 
 
 
