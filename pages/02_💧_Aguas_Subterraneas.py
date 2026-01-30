@@ -178,13 +178,7 @@ if gdf_zona is not None:
     st.markdown(f"### {nombre_zona}")
 
     # ==============================================================================
-    # 1. DEFINICIÓN DE PESTAÑAS (GLOBAL)
-    # ==============================================================================
-    # CRÍTICO: Las definimos AQUÍ para que existan siempre, sin importar la selección.
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "💧 Mapa Recarga", "📥 Descargas"])
-
-    # ==============================================================================
-    # 2. PANEL SUPERIOR DE INDICADORES (10 COLUMNAS)
+    # 1. PANEL SUPERIOR DE INDICADORES (10 COLUMNAS)
     # ==============================================================================
     if not df_res.empty:
         df_hist = df_res[df_res['tipo'] == 'Histórico']
@@ -270,6 +264,12 @@ if gdf_zona is not None:
             cols[9].metric("📡 Estaciones", f"{n_est}")
 
     st.divider()
+
+    # ==============================================================================
+    # 1. DEFINICIÓN DE PESTAÑAS (GLOBAL)
+    # ==============================================================================
+    # CRÍTICO: Las definimos AQUÍ para que existan siempre, sin importar la selección.
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "💧 Mapa Recarga", "📥 Descargas"])
 
     # ==============================================================================
     # 3. GUÍA TÉCNICA (Restaurada)
