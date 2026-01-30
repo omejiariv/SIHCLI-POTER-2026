@@ -2450,7 +2450,7 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión SIHCLI-POTER 2.0: Integración Física, Erosión USLE y Caudales Ecológicos.
+    Versión SIHCLI-POTER 2.2: Fix AttributeError (branca vs matplotlib).
     """
     import plotly.express as px
     import folium
@@ -2458,7 +2458,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     import numpy as np
     from scipy.interpolate import griddata
     import matplotlib.pyplot as plt
-    import matplotlib.cm as cm
+    import matplotlib.cm as cm          # Para obtener mapas de color (Viridis, etc)
+    import matplotlib.colors as mcolors # Para convertir colores a Hex
+    import branca.colormap as bcm       # Para la leyenda del mapa (LinearColormap)
+    import pandas as pd
 
     # --- 1. CONFIGURACIÓN Y SELECTORES ---
     st.markdown("### 🗺️ Análisis Espacial Avanzado")
@@ -2485,44 +2488,36 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         elif "Oferta" in map_type:
              st.info("Estimación de Recarga Potencial (15% de P - Método Turc Simplificado).")
 
-
     # --- 2. PREPARACIÓN DE DATOS (BLINDADA) ---
     if df_long is None or df_long.empty:
         st.error("No hay datos cargados para generar mapas.")
         return
 
     # A. DETECCIÓN AUTOMÁTICA DE COLUMNAS
-    # Buscamos la columna de Fecha
     col_date = next((c for c in df_long.columns if c.lower() in ['fecha', 'date', 'fecha_mes_año', 'timestamp']), None)
-    # Buscamos la columna de Valor (Lluvia)
     col_val = next((c for c in df_long.columns if c.lower() in ['valor', 'value', 'precipitation', 'ppt', 'lluvia', 'precipitacion']), None)
 
     if not col_date or not col_val:
         st.error(f"⚠️ Error de Estructura: No se encontraron columnas de Fecha o Valor. Cols disponibles: {list(df_long.columns)}")
         return
 
-    # B. ESTANDARIZACIÓN PARA EL PROCESO
-    # Trabajamos sobre una copia para no afectar el original
+    # B. ESTANDARIZACIÓN
     df_work = df_long.copy()
     df_work['fecha_proc'] = pd.to_datetime(df_work[col_date])
     df_work['valor_proc'] = pd.to_numeric(df_work[col_val], errors='coerce').fillna(0)
     df_work['year'] = df_work['fecha_proc'].dt.year
 
     # C. CÁLCULOS SOBRE 'df_work'
-    # Lluvia Total Anual Promedio
     df_annual = df_work.groupby(['id_estacion', 'year'])['valor_proc'].sum().reset_index()
     df_annual_mean = df_annual.groupby('id_estacion')['valor_proc'].mean().reset_index(name='ppt_media')
     
-    # Índice de Fournier Modificado (MFI) para Factor R de USLE
-    # MFI = Sum(p_mes^2) / P_anual
+    # Índice de Fournier Modificado (MFI) para Factor R
     df_work['p2'] = df_work['valor_proc'] ** 2
     df_mfi_y = df_work.groupby(['id_estacion', 'year']).agg({'p2': 'sum', 'valor_proc': 'sum'}).reset_index()
-    # Evitar división por cero
     df_mfi_y['mfi_anual'] = df_mfi_y['p2'] / df_mfi_y['valor_proc'].replace(0, 1)
     df_mfi = df_mfi_y.groupby('id_estacion')['mfi_anual'].mean().reset_index(name='mfi_val')
     
     # Unimos con geometría
-    # Aseguramos que id_estacion sea del mismo tipo (string)
     gdf_stations['id_estacion'] = gdf_stations['id_estacion'].astype(str)
     df_annual_mean['id_estacion'] = df_annual_mean['id_estacion'].astype(str)
     df_mfi['id_estacion'] = df_mfi['id_estacion'].astype(str)
@@ -2534,7 +2529,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         st.warning("⚠️ Se requieren al menos 3 estaciones con datos válidos para interpolar mapas.")
         return
 
-
     # --- 3. MOTOR DE INTERPOLACIÓN (GRID) ---
     pad = 0.05
     minx, miny, maxx, maxy = gdf_map.total_bounds
@@ -2542,11 +2536,9 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     yi = np.linspace(miny - pad, maxy + pad, 100)
     Xi, Yi = np.meshgrid(xi, yi)
     
-    # Función auxiliar para interpolar
     def interpolar(variable_col):
         try:
             from scipy.interpolate import Rbf
-            # Usamos coordenadas planas si es posible, si no lat/lon
             x_vals = gdf_map.geometry.x
             y_vals = gdf_map.geometry.y
             rbf = Rbf(x_vals, y_vals, gdf_map[variable_col], function='linear')
@@ -2573,15 +2565,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         title_legend = "Índice Lang"
 
     elif "Erosión" in map_type:
-        # USLE Simplificado
         gdf_map['factor_r'] = 2.5 * (gdf_map['mfi_val'] ** 1.3)
         Z_R = interpolar('factor_r')
-        
-        # Factores aproximados
         Z_K = np.full_like(Xi, 0.3) 
         Z_LS = np.full_like(Xi, 1.5) 
         Z_C = np.full_like(Xi, 0.05) 
-        
         Z_final = Z_R * Z_K * Z_LS * Z_C
         colors = 'YlOrRd'
         title_legend = "Pérdida Suelo (t/ha/año)"
@@ -2609,11 +2597,13 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         vmin, vmax = np.min(Z_final), np.max(Z_final)
         if vmax == vmin: vmax += 1
         
+        # Mapa de colores (Matplotlib)
         cmap = plt.get_cmap(colors)
         norm_data = (Z_final - vmin) / (vmax - vmin)
         rgba_img = cmap(norm_data)
         rgba_img[..., 3] = 0.7 
 
+        # Capa Raster
         folium.raster_layers.ImageOverlay(
             image=rgba_img,
             bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]],
@@ -2621,9 +2611,18 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             name=map_type
         ).add_to(m)
         
-        colormap = cm.LinearColormap(colors=[cmap(0.), cmap(1.)], vmin=vmin, vmax=vmax, caption=title_legend)
+        # Leyenda (Usando Branca con nombres Hex seguros)
+        color_min = mcolors.to_hex(cmap(0.0))
+        color_max = mcolors.to_hex(cmap(1.0))
+        
+        colormap = bcm.LinearColormap(
+            colors=[color_min, color_max], 
+            vmin=vmin, vmax=vmax, 
+            caption=title_legend
+        )
         colormap.add_to(m)
 
+    # Estaciones
     for _, row in gdf_map.iterrows():
         val = row['ppt_media']
         if "Erosión" in map_type: val = row.get('factor_r', 0)
@@ -2644,15 +2643,12 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     st.divider()
     st.subheader("📉 Curva de Duración de Caudales (FDC)")
     
-    # Selector de estación
     sel_est = st.selectbox("Analizar Estación:", gdf_map['nom_est'].unique())
     id_sel = gdf_map[gdf_map['nom_est'] == sel_est].iloc[0]['id_estacion']
     
-    # Filtrar datos de la estación usando 'df_work' (ya tiene cols estandarizadas)
     df_single = df_work[df_work['id_estacion'].astype(str) == id_sel].copy()
     
     if not df_single.empty:
-        # Calcular FDC
         q_vals = df_single['valor_proc'].sort_values(ascending=False).values
         probs = np.arange(1, len(q_vals) + 1) / (len(q_vals) + 1) * 100
         
