@@ -2450,7 +2450,7 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión SIHCLI-POTER 2.4: Geometry Column Normalization (Fix KeyError 'geometry').
+    Versión SIHCLI-POTER 2.5: Fix GeoPandas Active Geometry (Total Bounds Error).
     """
     import plotly.express as px
     import folium
@@ -2490,12 +2490,12 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         elif "Oferta" in map_type:
              st.info("Estimación de Recarga Potencial (15% de P - Método Turc Simplificado).")
 
-    # --- 2. PREPARACIÓN DE DATOS (BLINDADA) ---
+    # --- 2. PREPARACIÓN DE DATOS ---
     if df_long is None or df_long.empty:
         st.error("No hay datos cargados para generar mapas.")
         return
 
-    # A. DETECCIÓN DE COLUMNAS
+    # A. DETECCIÓN COLUMNAS
     col_date = next((c for c in df_long.columns if c.lower() in ['fecha', 'date', 'fecha_mes_año', 'timestamp']), None)
     col_val = next((c for c in df_long.columns if c.lower() in ['valor', 'value', 'precipitation', 'ppt', 'lluvia', 'precipitacion']), None)
 
@@ -2518,7 +2518,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     df_mfi_y['mfi_anual'] = df_mfi_y['p2'] / df_mfi_y['valor_proc'].replace(0, 1)
     df_mfi = df_mfi_y.groupby('id_estacion')['mfi_anual'].mean().reset_index(name='mfi_val')
     
-    # Casting a string para merge seguro
+    # Merge
     gdf_stations['id_estacion'] = gdf_stations['id_estacion'].astype(str)
     df_annual_mean['id_estacion'] = df_annual_mean['id_estacion'].astype(str)
     df_mfi['id_estacion'] = df_mfi['id_estacion'].astype(str)
@@ -2526,37 +2526,53 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     gdf_map = gdf_stations.merge(df_annual_mean, on='id_estacion')
     gdf_map = gdf_map.merge(df_mfi, on='id_estacion')
     
-    # --- CRÍTICO: NORMALIZACIÓN DE GEOMETRÍA ---
-    # 1. Si existe 'geom' pero no 'geometry', renombramos.
-    if 'geom' in gdf_map.columns and 'geometry' not in gdf_map.columns:
-        gdf_map = gdf_map.rename(columns={'geom': 'geometry'})
+    # --- CRÍTICO: NORMALIZACIÓN DE GEOMETRÍA (FIX DEFINITIVO) ---
+    # 1. Identificar qué columna tiene la geometría
+    geom_col_name = None
+    if 'geometry' in gdf_map.columns:
+        geom_col_name = 'geometry'
+    elif 'geom' in gdf_map.columns:
+        geom_col_name = 'geom'
     
-    # 2. Si no hay ni geom ni geometry, intentamos crearla desde lat/lon
-    if 'geometry' not in gdf_map.columns:
-        # Buscar columnas lat/lon
+    # 2. Si no existe, intentar crearla desde lat/lon
+    if not geom_col_name:
         c_lat = next((c for c in gdf_map.columns if 'lat' in c.lower()), None)
         c_lon = next((c for c in gdf_map.columns if 'lon' in c.lower()), None)
         if c_lat and c_lon:
             gdf_map['geometry'] = [Point(xy) for xy in zip(gdf_map[c_lon], gdf_map[c_lat])]
+            geom_col_name = 'geometry'
     
-    # 3. Forzar conversión a GeoDataFrame (Si falló todo lo anterior, esto explotará controladamente o funcionará)
-    if not isinstance(gdf_map, gpd.GeoDataFrame):
-        if 'geometry' in gdf_map.columns:
-            gdf_map = gpd.GeoDataFrame(gdf_map, geometry='geometry')
+    # 3. ACTIVAR GEOMETRÍA (Esto soluciona el AttributeError de GeoPandas)
+    if geom_col_name:
+        # Aseguramos que sea GeoDataFrame
+        if not isinstance(gdf_map, gpd.GeoDataFrame):
+            gdf_map = gpd.GeoDataFrame(gdf_map, geometry=geom_col_name)
+        
+        # Renombrar a 'geometry' estándar si se llama 'geom'
+        if geom_col_name != 'geometry':
+            gdf_map = gdf_map.rename(columns={geom_col_name: 'geometry'})
+            gdf_map = gdf_map.set_geometry('geometry') # <--- CLAVE: Avisar a GeoPandas el cambio
         else:
-            st.error("Error Crítico: No se encontró información geométrica (geom/lat/lon) en las estaciones.")
-            return
+            gdf_map = gdf_map.set_geometry('geometry') # <--- CLAVE: Reconfirmar activo
+    else:
+        st.error("Error Crítico: No se encontró información geométrica en las estaciones.")
+        return
 
     if len(gdf_map) < 3:
         st.warning("⚠️ Se requieren al menos 3 estaciones para interpolar.")
         return
 
     # --- 3. MOTOR DE INTERPOLACIÓN ---
-    pad = 0.05
-    minx, miny, maxx, maxy = gdf_map.total_bounds
-    xi = np.linspace(minx - pad, maxx + pad, 100)
-    yi = np.linspace(miny - pad, maxy + pad, 100)
-    Xi, Yi = np.meshgrid(xi, yi)
+    try:
+        pad = 0.05
+        # Ahora total_bounds funcionará porque la geometría está activa y correcta
+        minx, miny, maxx, maxy = gdf_map.total_bounds 
+        xi = np.linspace(minx - pad, maxx + pad, 100)
+        yi = np.linspace(miny - pad, maxy + pad, 100)
+        Xi, Yi = np.meshgrid(xi, yi)
+    except Exception as e:
+        st.error(f"Error calculando límites del mapa: {e}")
+        return
     
     def interpolar(variable_col):
         try:
@@ -2632,13 +2648,12 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         colormap = bcm.LinearColormap(colors=[color_min, color_max], vmin=vmin, vmax=vmax, caption=title_legend)
         colormap.add_to(m)
 
-    # Estaciones (Acceso seguro a geometry)
+    # Estaciones
     for _, row in gdf_map.iterrows():
         val = row['ppt_media']
         if "Erosión" in map_type: val = row.get('factor_r', 0)
         
-        # AQUI ESTA LA CORRECCION FINAL:
-        # Usamos la columna 'geometry' que normalizamos arriba
+        # Acceso seguro a geometry
         geom = row['geometry']
         
         folium.CircleMarker(
@@ -2657,16 +2672,18 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     st.divider()
     st.subheader("📉 Curva de Duración de Caudales (FDC)")
     sel_est = st.selectbox("Analizar Estación:", gdf_map['nom_est'].unique())
-    id_sel = gdf_map[gdf_map['nom_est'] == sel_est].iloc[0]['id_estacion']
     
-    df_single = df_work[df_work['id_estacion'].astype(str) == id_sel].copy()
-    if not df_single.empty:
-        q_vals = df_single['valor_proc'].sort_values(ascending=False).values
-        probs = np.arange(1, len(q_vals) + 1) / (len(q_vals) + 1) * 100
-        fig_fdc = px.line(x=probs, y=q_vals, labels={'x': '% Excedencia', 'y': 'Lluvia/Caudal Transformado'})
-        fig_fdc.update_layout(title=f"Curva FDC: {sel_est}", yaxis_type="log")
-        st.plotly_chart(fig_fdc, use_container_width=True)
-
+    # Manejo seguro si la selección está vacía
+    if sel_est:
+        id_sel = gdf_map[gdf_map['nom_est'] == sel_est].iloc[0]['id_estacion']
+        df_single = df_work[df_work['id_estacion'].astype(str) == id_sel].copy()
+        
+        if not df_single.empty:
+            q_vals = df_single['valor_proc'].sort_values(ascending=False).values
+            probs = np.arange(1, len(q_vals) + 1) / (len(q_vals) + 1) * 100
+            fig_fdc = px.line(x=probs, y=q_vals, labels={'x': '% Excedencia', 'y': 'Lluvia/Caudal Transformado'})
+            fig_fdc.update_layout(title=f"Curva FDC: {sel_est}", yaxis_type="log")
+            st.plotly_chart(fig_fdc, use_container_width=True)
 
 
 
