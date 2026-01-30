@@ -2450,7 +2450,7 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión SIHCLI-POTER 2.3: Fix Row Geometry + Branca Colormap.
+    Versión SIHCLI-POTER 2.4: Geometry Column Normalization (Fix KeyError 'geometry').
     """
     import plotly.express as px
     import folium
@@ -2460,9 +2460,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     import matplotlib.pyplot as plt
     import matplotlib.cm as cm
     import matplotlib.colors as mcolors
-    import branca.colormap as bcm # Alias para evitar conflicto
+    import branca.colormap as bcm
     import pandas as pd
     import geopandas as gpd
+    from shapely.geometry import Point
 
     # --- 1. CONFIGURACIÓN Y SELECTORES ---
     st.markdown("### 🗺️ Análisis Espacial Avanzado")
@@ -2494,12 +2495,12 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         st.error("No hay datos cargados para generar mapas.")
         return
 
-    # A. DETECCIÓN AUTOMÁTICA DE COLUMNAS
+    # A. DETECCIÓN DE COLUMNAS
     col_date = next((c for c in df_long.columns if c.lower() in ['fecha', 'date', 'fecha_mes_año', 'timestamp']), None)
     col_val = next((c for c in df_long.columns if c.lower() in ['valor', 'value', 'precipitation', 'ppt', 'lluvia', 'precipitacion']), None)
 
     if not col_date or not col_val:
-        st.error(f"⚠️ Error de Estructura: No se encontraron columnas de Fecha o Valor. Cols disponibles: {list(df_long.columns)}")
+        st.error(f"⚠️ Error Estructura: No se hallaron columnas fecha/valor. Cols: {list(df_long.columns)}")
         return
 
     # B. ESTANDARIZACIÓN
@@ -2508,37 +2509,49 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     df_work['valor_proc'] = pd.to_numeric(df_work[col_val], errors='coerce').fillna(0)
     df_work['year'] = df_work['fecha_proc'].dt.year
 
-    # C. CÁLCULOS SOBRE 'df_work'
+    # C. CÁLCULOS
     df_annual = df_work.groupby(['id_estacion', 'year'])['valor_proc'].sum().reset_index()
     df_annual_mean = df_annual.groupby('id_estacion')['valor_proc'].mean().reset_index(name='ppt_media')
     
-    # Índice de Fournier Modificado (MFI)
     df_work['p2'] = df_work['valor_proc'] ** 2
     df_mfi_y = df_work.groupby(['id_estacion', 'year']).agg({'p2': 'sum', 'valor_proc': 'sum'}).reset_index()
     df_mfi_y['mfi_anual'] = df_mfi_y['p2'] / df_mfi_y['valor_proc'].replace(0, 1)
     df_mfi = df_mfi_y.groupby('id_estacion')['mfi_anual'].mean().reset_index(name='mfi_val')
     
-    # Unimos con geometría
+    # Casting a string para merge seguro
     gdf_stations['id_estacion'] = gdf_stations['id_estacion'].astype(str)
     df_annual_mean['id_estacion'] = df_annual_mean['id_estacion'].astype(str)
     df_mfi['id_estacion'] = df_mfi['id_estacion'].astype(str)
     
-    # Merge y Aseguramiento de Tipo GeoDataFrame
     gdf_map = gdf_stations.merge(df_annual_mean, on='id_estacion')
     gdf_map = gdf_map.merge(df_mfi, on='id_estacion')
     
+    # --- CRÍTICO: NORMALIZACIÓN DE GEOMETRÍA ---
+    # 1. Si existe 'geom' pero no 'geometry', renombramos.
+    if 'geom' in gdf_map.columns and 'geometry' not in gdf_map.columns:
+        gdf_map = gdf_map.rename(columns={'geom': 'geometry'})
+    
+    # 2. Si no hay ni geom ni geometry, intentamos crearla desde lat/lon
+    if 'geometry' not in gdf_map.columns:
+        # Buscar columnas lat/lon
+        c_lat = next((c for c in gdf_map.columns if 'lat' in c.lower()), None)
+        c_lon = next((c for c in gdf_map.columns if 'lon' in c.lower()), None)
+        if c_lat and c_lon:
+            gdf_map['geometry'] = [Point(xy) for xy in zip(gdf_map[c_lon], gdf_map[c_lat])]
+    
+    # 3. Forzar conversión a GeoDataFrame (Si falló todo lo anterior, esto explotará controladamente o funcionará)
     if not isinstance(gdf_map, gpd.GeoDataFrame):
-        # Si pandas degradó el objeto, lo volvemos GeoDataFrame
         if 'geometry' in gdf_map.columns:
             gdf_map = gpd.GeoDataFrame(gdf_map, geometry='geometry')
-        elif 'geom' in gdf_map.columns:
-             gdf_map = gpd.GeoDataFrame(gdf_map, geometry='geom')
+        else:
+            st.error("Error Crítico: No se encontró información geométrica (geom/lat/lon) en las estaciones.")
+            return
 
     if len(gdf_map) < 3:
-        st.warning("⚠️ Se requieren al menos 3 estaciones con datos válidos para interpolar mapas.")
+        st.warning("⚠️ Se requieren al menos 3 estaciones para interpolar.")
         return
 
-    # --- 3. MOTOR DE INTERPOLACIÓN (GRID) ---
+    # --- 3. MOTOR DE INTERPOLACIÓN ---
     pad = 0.05
     minx, miny, maxx, maxy = gdf_map.total_bounds
     xi = np.linspace(minx - pad, maxx + pad, 100)
@@ -2555,7 +2568,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         except:
             return griddata((gdf_map.geometry.x, gdf_map.geometry.y), gdf_map[variable_col], (Xi, Yi), method='linear')
 
-    # --- 4. CÁLCULO DE CAPAS ESPECÍFICAS ---
+    # --- 4. CÁLCULO DE CAPAS ---
     Z_final = None
     colors = 'Viridis'
     title_legend = ""
@@ -2564,7 +2577,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         Z_final = interpolar('ppt_media')
         colors = 'Blues'
         title_legend = "Lluvia (mm)"
-        
     elif "Lang" in map_type:
         if 'alt_est' not in gdf_map.columns: gdf_map['alt_est'] = 1500
         gdf_map['temp_est'] = 28 - (0.006 * gdf_map['alt_est'])
@@ -2572,7 +2584,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         Z_final = interpolar('lang_idx')
         colors = 'RdYlBu'
         title_legend = "Índice Lang"
-
     elif "Erosión" in map_type:
         gdf_map['factor_r'] = 2.5 * (gdf_map['mfi_val'] ** 1.3)
         Z_R = interpolar('factor_r')
@@ -2582,17 +2593,15 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         Z_final = Z_R * Z_K * Z_LS * Z_C
         colors = 'YlOrRd'
         title_legend = "Pérdida Suelo (t/ha/año)"
-        
     elif "Oferta" in map_type:
         Z_ppt = interpolar('ppt_media')
         Z_final = Z_ppt * 0.15 
         colors = 'Teal'
         title_legend = "Recarga Potencial (mm)"
 
-    # --- 5. VISUALIZACIÓN EN FOLIUM ---
+    # --- 5. VISUALIZACIÓN ---
     m = folium.Map(location=[gdf_map.geometry.y.mean(), gdf_map.geometry.x.mean()], zoom_start=10, tiles="CartoDB positron")
     
-    # Contexto
     gdf_zona = kwargs.get('gdf_zona', None)
     if gdf_zona is not None and not gdf_zona.empty:
         folium.GeoJson(
@@ -2618,18 +2627,18 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             name=map_type
         ).add_to(m)
         
-        # Leyenda Segura
         color_min = mcolors.to_hex(cmap(0.0))
         color_max = mcolors.to_hex(cmap(1.0))
         colormap = bcm.LinearColormap(colors=[color_min, color_max], vmin=vmin, vmax=vmax, caption=title_legend)
         colormap.add_to(m)
 
-    # Estaciones (FIXED LOOP)
+    # Estaciones (Acceso seguro a geometry)
     for _, row in gdf_map.iterrows():
         val = row['ppt_media']
         if "Erosión" in map_type: val = row.get('factor_r', 0)
         
-        # ACCESO SEGURO A GEOMETRÍA (Diccionario, no atributo)
+        # AQUI ESTA LA CORRECCION FINAL:
+        # Usamos la columna 'geometry' que normalizamos arriba
         geom = row['geometry']
         
         folium.CircleMarker(
@@ -2644,22 +2653,20 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
     st_folium(m, width=1200, height=500)
 
-    # --- 6. CURVA FDC INTEGRADA ---
+    # --- 6. FDC ---
     st.divider()
     st.subheader("📉 Curva de Duración de Caudales (FDC)")
-    
     sel_est = st.selectbox("Analizar Estación:", gdf_map['nom_est'].unique())
     id_sel = gdf_map[gdf_map['nom_est'] == sel_est].iloc[0]['id_estacion']
     
     df_single = df_work[df_work['id_estacion'].astype(str) == id_sel].copy()
-    
     if not df_single.empty:
         q_vals = df_single['valor_proc'].sort_values(ascending=False).values
         probs = np.arange(1, len(q_vals) + 1) / (len(q_vals) + 1) * 100
-        
         fig_fdc = px.line(x=probs, y=q_vals, labels={'x': '% Excedencia', 'y': 'Lluvia/Caudal Transformado'})
         fig_fdc.update_layout(title=f"Curva FDC: {sel_est}", yaxis_type="log")
         st.plotly_chart(fig_fdc, use_container_width=True)
+
 
 
 
