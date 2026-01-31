@@ -2448,10 +2448,11 @@ def display_satellite_imagery_tab(gdf_filtered):
                 f"[Haga clic aquí para verla directamente en la NOAA]({url_gif})"
             )
 
+# modules/visualizer.py
 def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     """
-    Versión SIHCLI-POTER 6.1: Visualizador Puro & Blindado.
-    - Fix: Manejo robusto de geometría (Evita AttributeError en merges).
+    Versión SIHCLI-POTER 6.2: Visualizador Robusto.
+    - Fix Crítico: Normalización forzada de columnas de geometría ('geom' -> 'geometry').
     - Render: Pinta rasters físicos y vectores con recorte.
     """
     import folium
@@ -2462,40 +2463,54 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     import matplotlib.colors as mcolors
     import branca.colormap as bcm
     import geopandas as gpd
+    import pandas as pd
     from shapely.geometry import LineString, MultiLineString, Point
     from shapely.ops import unary_union
     import streamlit as st
 
-    # --- 0. BLINDAJE DE GEOMETRÍA ---
-    # Si gdf_stations perdió su "Geo" durante el merge, se lo devolvemos.
+    # --- 0. BLINDAJE Y NORMALIZACIÓN DE GEOMETRÍA ---
+    # Objetivo: Asegurar que gdf_stations sea un GeoDataFrame con columna 'geometry' activa
+    
+    # 1. Si es DataFrame normal, intentar convertir
     if not isinstance(gdf_stations, gpd.GeoDataFrame):
-        if 'geometry' in gdf_stations.columns:
-            gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry='geometry')
+        # Buscar columna candidata
+        geom_col = None
+        if 'geometry' in gdf_stations.columns: geom_col = 'geometry'
+        elif 'geom' in gdf_stations.columns: geom_col = 'geom'
+        
+        if geom_col:
+            gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry=geom_col)
         else:
-            st.error("Error crítico: Los datos de estaciones perdieron su geometría.")
+            st.error("Error crítico: Los datos de estaciones no tienen coordenadas (geometry/geom).")
             return
 
-    # Configuración base
+    # 2. Estandarizar nombre a 'geometry' (Evita KeyError si se llama 'geom')
+    try:
+        # Si la columna activa se llama 'geom', rename_geometry la cambia a 'geometry'
+        if gdf_stations.geometry.name != 'geometry':
+            gdf_stations = gdf_stations.rename_geometry('geometry')
+    except Exception as e:
+        # Fallback manual por si falla rename_geometry
+        if 'geom' in gdf_stations.columns and 'geometry' not in gdf_stations.columns:
+            gdf_stations = gdf_stations.rename(columns={'geom': 'geometry'}).set_geometry('geometry')
+
+    # --- A. CONFIGURACIÓN Y SELECTORES ---
     gdf_zona = kwargs.get('gdf_zona')
     grid_x, grid_y = kwargs.get('grid')
     mask_inside = kwargs.get('mask')
     
-    # --- A. SELECTORES ---
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
-        # Nombres amigables para el usuario
         labels = {
             'P': '🌧️ Precipitación', 'DEM': '⛰️ Modelo Digital (DEM)',
             'ETR': '☀️ Evapotranspiración (ETR)', 'Q': '🌊 Escorrentía Superficial',
             'Infiltracion': '💧 Infiltración Potencial', 'Recarga': '📉 Recarga Acuífera',
             'Erosion': '🏔️ Riesgo Erosión', 'C_Escorrentia': '⛰️ Coef. Escorrentía (C)'
         }
-        # Filtrar solo claves disponibles
         keys = [k for k in labels.keys() if k in matrices]
         if not keys:
             st.warning("No se generaron matrices válidas.")
             return
-            
         sel_key = st.selectbox("Variable:", keys, format_func=lambda x: labels.get(x, x))
     
     with c2:
@@ -2507,14 +2522,11 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
 
     # Datos a pintar
     Z_Final = matrices[sel_key]
-    
-    # Aplicar máscara visual (NaN fuera de cuenca)
     Z_Vis = Z_Final.copy()
     if mask_inside is not None:
         Z_Vis[~mask_inside] = np.nan
 
     # --- B. MAPA BASE ---
-    # Calcular centro seguro
     if gdf_zona is not None:
         center_y = gdf_zona.geometry.centroid.y.mean()
         center_x = gdf_zona.geometry.centroid.x.mean()
@@ -2527,13 +2539,12 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     # 1. RASTER
     vmin, vmax = np.nanmin(Z_Vis), np.nanmax(Z_Vis)
     if np.isnan(vmin): vmin, vmax = 0, 1
-    if vmin == vmax: vmax += 0.1 # Evitar división por cero
+    if vmin == vmax: vmax += 0.1
     
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
     rgba = plt.get_cmap(cmap_name)(norm(Z_Vis))
     rgba[..., 3] = np.where(np.isnan(Z_Vis), 0, opacity)
     
-    # Flip vertical para Folium (Imagen vs Matriz)
     bounds_img = [[grid_y.min(), grid_x.min()], [grid_y.max(), grid_x.max()]]
     folium.raster_layers.ImageOverlay(
         image=np.flipud(rgba),
@@ -2541,31 +2552,28 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
         name="Raster"
     ).add_to(m)
 
-    # 2. ISOLÍNEAS (Con Recorte Vectorial)
+    # 2. ISOLÍNEAS
     if True:
         try:
             fig, ax = plt.subplots()
             cs = ax.contour(grid_x, grid_y, Z_Final, levels=np.linspace(vmin, vmax, 10))
-            
             zona_union = gdf_zona.unary_union if gdf_zona is not None else None
             
             for col in cs.collections:
                 for path in col.get_paths():
-                    coords = [[y, x] for x, y in path.vertices] # Lat, Lon
+                    coords = [[y, x] for x, y in path.vertices]
                     if len(coords) > 2:
-                        # Dibujar si está dentro
+                        # Recorte vectorial
                         if zona_union is not None:
-                            line = LineString([[x, y] for y, x in coords]) # Lon, Lat para shapely
+                            line = LineString([[x, y] for y, x in coords])
                             if line.intersects(zona_union):
                                 try:
                                     clipped = line.intersection(zona_union)
                                     segs = list(clipped.geoms) if isinstance(clipped, MultiLineString) else [clipped]
                                     for seg in segs:
                                         if not seg.is_empty:
-                                            # Volver a formato Folium [Lat, Lon]
                                             locs = [[p[1], p[0]] for p in seg.coords]
-                                            if len(locs) > 2:
-                                                folium.PolyLine(locs, color='black', weight=0.6, opacity=0.6).add_to(m)
+                                            folium.PolyLine(locs, color='black', weight=0.6, opacity=0.6).add_to(m)
                                 except: pass 
                         else:
                             folium.PolyLine(coords, color='black', weight=0.6).add_to(m)
@@ -2581,34 +2589,33 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
             style_function=lambda x: {'fill': False, 'color': 'black', 'weight': 2.5}
         ).add_to(m)
 
-    # 4. ESTACIONES (FIXED ROW ACCESS)
+    # 4. ESTACIONES (ACCESO SEGURO)
     fg = folium.FeatureGroup("Estaciones", show=False)
-    for _, row in gdf_stations.iterrows():
-        # Acceso seguro a la geometría (funciona sea Series o GeoSeries)
+    for idx, row in gdf_stations.iterrows():
+        # Aquí ya garantizamos que 'geometry' existe en el paso 0
         geom = row['geometry']
         val = row.get('ppt_media', 0)
+        nombre = row.get('nom_est', f'Est-{idx}')
         
         folium.CircleMarker(
             [geom.y, geom.x], 
             radius=3, color='black', fill=True, fill_color='white',
-            popup=f"<b>{row.get('nom_est', 'Est')}</b><br>Val: {val:.0f}",
-            tooltip=f"{row.get('nom_est', '')}"
+            popup=f"<b>{nombre}</b><br>Val: {val:.0f}",
+            tooltip=nombre
         ).add_to(fg)
     fg.add_to(m)
     
     folium.LayerControl().add_to(m)
     
-    # Leyenda
+    # Leyenda y Stats
     hex_colors = [mcolors.to_hex(plt.get_cmap(cmap_name)(i)) for i in np.linspace(0, 1, 5)]
     bcm.LinearColormap(colors=hex_colors, vmin=vmin, vmax=vmax, caption=f"{labels[sel_key]}").add_to(m)
 
     st_folium(m, width=1400, height=600)
     
-    # Estadísticas
     st.divider()
     mean_val = np.nanmean(Z_Vis)
     st.metric(f"Promedio Espacial {labels[sel_key]}", f"{mean_val:,.1f}")
-
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
