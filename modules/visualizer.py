@@ -2450,9 +2450,10 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión SIHCLI-POTER 4.4: Vector Clipping (Eliminación Total de Líneas Rectas).
-    - Fix: Las isolíneas se recortan geométricamente contra el polígono de la cuenca.
-    - Visual: Visualización limpia sin artefactos de borde.
+    Versión SIHCLI-POTER 4.5: Stability Fix & Perfect Clipping.
+    - Fix Crash: Creación segura de Buffer (evita FeatureCollection error).
+    - Fix Visual: Recorte geométrico robusto para eliminar líneas rectas.
+    - Grid: Margen ampliado (50%) para mover artefactos de borde lejos de la cuenca.
     """
     import plotly.express as px
     import folium
@@ -2467,7 +2468,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     import geopandas as gpd
     from shapely.geometry import Point, LineString, MultiLineString
     from shapely.ops import unary_union
-    import rasterio
     from rasterio.transform import from_origin
     from rasterio.features import geometry_mask
 
@@ -2478,20 +2478,26 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     nombre_zona = kwargs.get('nombre_zona', 'Zona de Estudio')
     area_km2 = 1.0
     
-    # Preparar el "Molde de Corte" (Polygon/MultiPolygon unificado)
+    # Preparar Geometría Base (La "Tijera")
     zona_geom = None
     if gdf_zona is not None and not gdf_zona.empty:
+        # Unificar polígonos para tener una sola forma de recorte
+        zona_geom = gdf_zona.unary_union
+        
+        # Cálculo de área auxiliar
         gdf_proj = gdf_zona.to_crs(epsg=3116) 
         area_km2 = gdf_proj.area.sum() / 1e6
-        # Unificamos la geometría para el recorte posterior
-        zona_geom = gdf_zona.unary_union
 
-    # Selector de Buffer Visual (Opcional)
+    # --- FIX CRASH: BUFFER SEGURO ---
+    # Creamos un GeoDataFrame nuevo y limpio para el buffer, sin heredar basura
     gdf_buffer = None
-    if gdf_zona is not None:
-        # Buffer solo para visualización de contexto (Punteado)
-        gdf_buffer = gdf_zona.copy()
-        gdf_buffer['geometry'] = gdf_buffer.geometry.buffer(0.05) # Aprox 5km en grados
+    if zona_geom is not None:
+        try:
+            # Buffer de 0.05 grados (~5km) sobre la geometría unificada
+            buffer_geom = zona_geom.buffer(0.05)
+            gdf_buffer = gpd.GeoDataFrame(geometry=[buffer_geom], crs=gdf_zona.crs)
+        except Exception as e:
+            print(f"Warning Buffer: {e}") # Fallback silencioso
 
     col_sel1, col_sel2, col_sel3 = st.columns([2, 1, 1])
     
@@ -2550,7 +2556,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     df_mfi['id_estacion'] = df_mfi['id_estacion'].astype(str)
     gdf_map = gdf_stations.merge(df_stats, on='id_estacion').merge(df_mfi, on='id_estacion')
 
-    # Fix Geom & Duplicates
+    # Fix Geometría Estaciones
     if 'geometry' not in gdf_map.columns:
          if 'geom' in gdf_map.columns: gdf_map = gdf_map.rename(columns={'geom': 'geometry'}).set_geometry('geometry')
          else:
@@ -2559,6 +2565,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
              if c_lat: gdf_map['geometry'] = [Point(xy) for xy in zip(gdf_map[c_lon], gdf_map[c_lat])]
              gdf_map = gpd.GeoDataFrame(gdf_map, geometry='geometry')
 
+    # Eliminar duplicados espaciales (Round 5 decimales)
     gdf_map['lon_round'] = gdf_map.geometry.x.round(5)
     gdf_map['lat_round'] = gdf_map.geometry.y.round(5)
     gdf_map = gdf_map.drop_duplicates(subset=['lon_round', 'lat_round'])
@@ -2571,19 +2578,22 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # --- 3. GRID & MASK ---
     if len(gdf_map) < 3: st.warning("⚠️ Mínimo 3 estaciones."); return
 
-    # Grid Ampliado (Buffer 20% para asegurar continuidad antes del corte)
+    # Definir extensión del grid
     if gdf_zona is not None:
         minx, miny, maxx, maxy = gdf_zona.total_bounds
     else:
         minx, miny, maxx, maxy = gdf_map.total_bounds
     
+    # --- ESTRATEGIA ANTI-LÍNEAS RECTAS ---
+    # Ampliamos el grid un 50% (0.5) más allá de la cuenca.
+    # Así, los artefactos de borde ocurren MUY LEJOS de la cuenca y el recorte los elimina.
     dx, dy = maxx - minx, maxy - miny
-    pad_x, pad_y = dx * 0.2, dy * 0.2 # Buffer generoso
+    pad_x, pad_y = dx * 0.5, dy * 0.5 
     
     grid_res = 200j 
     grid_x, grid_y = np.mgrid[minx-pad_x:maxx+pad_x:grid_res, miny-pad_y:maxy+pad_y:grid_res]
 
-    # Máscara Raster (Para pintar píxeles)
+    # Máscara Raster (Para píxeles)
     mask_array = None
     if gdf_zona is not None:
         width, height = grid_x.shape[0], grid_x.shape[1]
@@ -2591,7 +2601,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         pixel_h = ((maxy + pad_y) - (miny - pad_y)) / height
         transform = from_origin(minx - pad_x, maxy + pad_y, pixel_w, pixel_h)
         shapes = [geom for geom in gdf_zona.geometry]
-        mask_array = geometry_mask(shapes, transform=transform, invert=True, out_shape=(width, height)).T
+        # all_touched=False para bordes suaves
+        mask_array = geometry_mask(shapes, transform=transform, invert=True, out_shape=(width, height), all_touched=False).T
 
     def safe_interpolate(x, y, z, gx, gy):
         try:
@@ -2600,11 +2611,11 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         except:
             Z = griddata((x, y), z, (gx, gy), method='linear')
             mask_nan = np.isnan(Z)
-            if np.any(mask_nan):
+            if np.any(mask_nan): # Rellenar huecos
                 Z[mask_nan] = griddata((x, y), z, (gx[mask_nan], gy[mask_nan]), method='nearest')
-        return np.maximum(Z, 0) # Devolvemos Z sin máscara todavía (para que contours sean continuos)
+        return np.maximum(Z, 0)
 
-    # --- 4. VARIABLES ---
+    # --- 4. CÁLCULO ---
     x_in, y_in = gdf_map.geometry.x, gdf_map.geometry.y
     Z_P = safe_interpolate(x_in, y_in, gdf_map['ppt_media'], grid_x, grid_y)
     Z_Alt = safe_interpolate(x_in, y_in, gdf_map['alt_est'], grid_x, grid_y)
@@ -2617,7 +2628,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     
     Z_Exc = np.maximum(Z_P - Z_ETR, 0)
     Z_Recarga = Z_Exc * 0.20 * 0.8
-    
     Z_R_raw = safe_interpolate(x_in, y_in, gdf_map['mfi_val'], grid_x, grid_y)
     Z_USLE = (2.5 * (Z_R_raw ** 1.3)) * 0.3 * (1 + (np.sqrt(np.gradient(Z_Alt)[0]**2 + np.gradient(Z_Alt)[1]**2) * 2)) * 0.05
 
@@ -2637,7 +2647,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # --- 5. VISUALIZACIÓN ---
     m = folium.Map(location=[gdf_map.geometry.y.mean(), gdf_map.geometry.x.mean()], zoom_start=11, tiles="CartoDB positron")
 
-    # A. Raster (Pixel Overlay) - Aplicamos máscara aquí
+    # A. Raster (Con máscara)
     Z_masked = Z_Final.copy()
     if mask_array is not None: Z_masked[~mask_array] = np.nan
     
@@ -2657,63 +2667,60 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         opacity=opacity, name="Capa Raster"
     ).add_to(m)
 
-    # B. Isolíneas (Vector Clipping - La Magia)
+    # B. Isolíneas (Recorte Vectorial - CLIPPING)
     if True: 
         fig_c, ax_c = plt.subplots()
         levels = np.linspace(vmin, vmax, 10)
-        # Contours sobre datos COMPLETOS (sin máscara) para que las líneas crucen el borde
         cs = ax_c.contour(grid_x, grid_y, Z_Final, levels=levels)
         
         for level, collection in zip(levels, cs.collections):
             for path in collection.get_paths():
-                # Convertir ruta matplotlib a LineString
-                coords = [[y, x] for x, y in path.vertices] # Folium es Lat,Lon
+                coords = [[y, x] for x, y in path.vertices] # Lat, Lon
                 if len(coords) > 2:
-                    line_geom = LineString([[x, y] for y, x in coords]) # Shapely es Lon,Lat
+                    # Crear línea shapely (Lon, Lat) para operar
+                    line_geom = LineString([[x, y] for y, x in coords])
                     
-                    # --- OPERACIÓN DE RECORTE (CLIPPING) ---
+                    # --- OPERACIÓN TIJERA (CLIP) ---
                     if zona_geom is not None:
-                        # Intersección: Qué parte de la línea cae DENTRO de la cuenca
                         if line_geom.intersects(zona_geom):
-                            clipped_geom = line_geom.intersection(zona_geom)
-                            
-                            # Manejar si el resultado es Multilínea o Línea simple
-                            segments = []
-                            if isinstance(clipped_geom, MultiLineString):
-                                segments = list(clipped_geom.geoms)
-                            elif isinstance(clipped_geom, LineString):
-                                segments = [clipped_geom]
-                            
-                            # Dibujar cada segmento válido
-                            for seg in segments:
-                                if not seg.is_empty:
-                                    # Convertir de vuelta a formato Folium [[Lat,Lon]]
-                                    locs = [[p[1], p[0]] for p in seg.coords]
-                                    if len(locs) > 2:
-                                        folium.PolyLine(locs, color='black', weight=0.8, opacity=0.7).add_to(m)
-                                        if show_labels:
-                                            # Etiqueta en el punto medio del segmento visible
-                                            mid = locs[len(locs)//2]
-                                            folium.map.Marker(mid, icon=DivIcon(icon_size=(150,36), icon_anchor=(7,20), html=f'<div style="font-size: 8pt; color: black; font-weight: bold; text-shadow: 1px 1px 0 #fff;">{level:.0f}</div>')).add_to(m)
+                            try:
+                                clipped_geom = line_geom.intersection(zona_geom)
+                                
+                                # Extraer segmentos válidos
+                                segments = []
+                                if isinstance(clipped_geom, MultiLineString):
+                                    segments = list(clipped_geom.geoms)
+                                elif isinstance(clipped_geom, LineString):
+                                    segments = [clipped_geom]
+                                
+                                for seg in segments:
+                                    if not seg.is_empty:
+                                        # Volver a formato Folium
+                                        locs = [[p[1], p[0]] for p in seg.coords]
+                                        if len(locs) > 2:
+                                            folium.PolyLine(locs, color='black', weight=0.8, opacity=0.7).add_to(m)
+                                            if show_labels:
+                                                mid = locs[len(locs)//2]
+                                                folium.map.Marker(mid, icon=DivIcon(icon_size=(150,36), icon_anchor=(7,20), html=f'<div style="font-size: 8pt; color: black; font-weight: bold; text-shadow: 1px 1px 0 #fff;">{level:.0f}</div>')).add_to(m)
+                            except: pass # Si falla intersección compleja, ignorar segmento
                     else:
-                        # Si no hay cuenca, dibujar todo
                         folium.PolyLine(coords, color='black', weight=0.8).add_to(m)
         plt.close(fig_c)
 
-    # C. Visualización de Polígonos (Capas Claras)
+    # C. Visualización Polígonos
     
-    # 1. BUFFER (Si existe, Punteado)
+    # 1. BUFFER (Punteado)
     if gdf_buffer is not None:
         folium.GeoJson(
             gdf_buffer, name="Buffer",
             style_function=lambda x: {'fillColor': 'transparent', 'color': '#7f8c8d', 'weight': 1, 'dashArray': '4, 4'}
         ).add_to(m)
         
-    # 2. CUENCA (Límite Real, Sólido Negro)
+    # 2. CUENCA (Sólido)
     if gdf_zona is not None:
         folium.GeoJson(
             gdf_zona, name="Límite Cuenca",
-            style_function=lambda x: {'fillColor': 'transparent', 'color': 'black', 'weight': 3}
+            style_function=lambda x: {'fillColor': 'transparent', 'color': 'black', 'weight': 2}
         ).add_to(m)
 
     folium.LayerControl().add_to(m)
@@ -2732,13 +2739,15 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     c1.metric("📍 Zona", nombre_zona[:15]+"..")
     c2.metric("📐 Área", f"{area_km2:,.1f} km²")
     q_m3s = (vol_anual_hm3 * 1e6) / (365 * 24 * 3600)
-    c3.metric("💧 Q Medio Estimado", f"{q_m3s:,.2f} m³/s")
-    c4.metric(f"📊 {title} Promedio", f"{mean_val:,.1f} {units}")
+    c3.metric("💧 Q Medio", f"{q_m3s:,.2f} m³/s")
+    c4.metric(f"📊 {title}", f"{mean_val:,.1f} {units}")
 
     # --- 7. DESCARGAS ---
     d1, d2 = st.columns(2)
     with d1: st.download_button("📥 Descargar GeoJSON", gdf_map.to_json(), "datos.geojson", "application/json")
-    with d2: st.download_button("📥 Descargar Raster ASCII", f"NCOLS {Z_Final.shape[1]}\nNROWS {Z_Final.shape[0]}\nNODATA -9999\n", f"{title}.asc")
+    with d2: 
+        asc = f"NCOLS {Z_Final.shape[1]}\nNROWS {Z_Final.shape[0]}\nNODATA -9999\n"
+        st.download_button("📥 Descargar Raster", asc, f"{title}.asc")
 
     # --- 8. GRÁFICOS ---
     g1, g2 = st.columns(2)
@@ -2756,6 +2765,7 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
             v = df_work[df_work['id_estacion']==ids]['valor_proc'].sort_values(ascending=False).values
             fig_f = px.line(x=np.arange(1,len(v)+1)/len(v)*100, y=v, log_y=True, labels={'x':'%', 'y':'V'})
             st.plotly_chart(fig_f, use_container_width=True)
+
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
