@@ -463,13 +463,15 @@ def main():
         with st.spinner("Interpolando Precipitación..."):
             Z_P = physics.interpolar_variable(gdf_calc, 'ppt_media', grid_x, grid_y)
 
-        # --- 5. EJECUCIÓN DEL MODELO FÍSICO ---
-        # Rutas a los archivos raster (Deben estar en la raíz o carpeta data)
+        # 5. EJECUCIÓN MODELO FÍSICO
         paths = {
             'dem': 'DemAntioquia_EPSG3116.tif',
             'cobertura': 'Cob25m_WGS84.tif'
         }
         
+        with st.spinner("Calculando Balance Distribuido (Reproyectando Rasters)..."):
+            # PASAMOS 'bounds_wgs84' AHORA
+            matrices = physics.run_distributed_model(Z_P, grid_x, grid_y, paths, bounds_wgs84)        
         with st.spinner("Calculando Balance Distribuido (Turc + Schosinsky)..."):
             # ¡AQUÍ OCURRE LA MAGIA! El cerebro devuelve todas las matrices listas
             matrices = physics.run_distributed_model(Z_P, grid_x, grid_y, paths)
