@@ -2448,11 +2448,11 @@ def display_satellite_imagery_tab(gdf_filtered):
                 f"[Haga clic aquí para verla directamente en la NOAA]({url_gif})"
             )
 
-# modules/visualizer.py
 def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     """
-    Visualizador Puro. Recibe matrices físicas y las pinta.
-    Incluye recorte vectorial (Clipping) para eliminar líneas rectas.
+    Versión SIHCLI-POTER 6.1: Visualizador Puro & Blindado.
+    - Fix: Manejo robusto de geometría (Evita AttributeError en merges).
+    - Render: Pinta rasters físicos y vectores con recorte.
     """
     import folium
     from folium.features import DivIcon
@@ -2462,16 +2462,25 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     import matplotlib.colors as mcolors
     import branca.colormap as bcm
     import geopandas as gpd
-    from shapely.geometry import LineString, MultiLineString, Polygon
+    from shapely.geometry import LineString, MultiLineString, Point
     from shapely.ops import unary_union
     import streamlit as st
 
-    # Configuración
+    # --- 0. BLINDAJE DE GEOMETRÍA ---
+    # Si gdf_stations perdió su "Geo" durante el merge, se lo devolvemos.
+    if not isinstance(gdf_stations, gpd.GeoDataFrame):
+        if 'geometry' in gdf_stations.columns:
+            gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry='geometry')
+        else:
+            st.error("Error crítico: Los datos de estaciones perdieron su geometría.")
+            return
+
+    # Configuración base
     gdf_zona = kwargs.get('gdf_zona')
     grid_x, grid_y = kwargs.get('grid')
     mask_inside = kwargs.get('mask')
     
-    # A. SELECTORES
+    # --- A. SELECTORES ---
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         # Nombres amigables para el usuario
@@ -2481,8 +2490,12 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
             'Infiltracion': '💧 Infiltración Potencial', 'Recarga': '📉 Recarga Acuífera',
             'Erosion': '🏔️ Riesgo Erosión', 'C_Escorrentia': '⛰️ Coef. Escorrentía (C)'
         }
-        # Filtrar solo claves que existen en matrices
+        # Filtrar solo claves disponibles
         keys = [k for k in labels.keys() if k in matrices]
+        if not keys:
+            st.warning("No se generaron matrices válidas.")
+            return
+            
         sel_key = st.selectbox("Variable:", keys, format_func=lambda x: labels.get(x, x))
     
     with c2:
@@ -2500,22 +2513,27 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     if mask_inside is not None:
         Z_Vis[~mask_inside] = np.nan
 
-    # B. MAPA BASE
-    center_y, center_x = gdf_stations.geometry.y.mean(), gdf_stations.geometry.x.mean()
+    # --- B. MAPA BASE ---
+    # Calcular centro seguro
     if gdf_zona is not None:
-        center_y, center_x = gdf_zona.centroid.y.mean(), gdf_zona.centroid.x.mean()
+        center_y = gdf_zona.geometry.centroid.y.mean()
+        center_x = gdf_zona.geometry.centroid.x.mean()
+    else:
+        center_y = gdf_stations.geometry.y.mean()
+        center_x = gdf_stations.geometry.x.mean()
         
     m = folium.Map(location=[center_y, center_x], zoom_start=11, tiles="CartoDB positron")
 
     # 1. RASTER
     vmin, vmax = np.nanmin(Z_Vis), np.nanmax(Z_Vis)
     if np.isnan(vmin): vmin, vmax = 0, 1
+    if vmin == vmax: vmax += 0.1 # Evitar división por cero
     
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
     rgba = plt.get_cmap(cmap_name)(norm(Z_Vis))
     rgba[..., 3] = np.where(np.isnan(Z_Vis), 0, opacity)
     
-    # Flip vertical para Folium
+    # Flip vertical para Folium (Imagen vs Matriz)
     bounds_img = [[grid_y.min(), grid_x.min()], [grid_y.max(), grid_x.max()]]
     folium.raster_layers.ImageOverlay(
         image=np.flipud(rgba),
@@ -2525,51 +2543,56 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
 
     # 2. ISOLÍNEAS (Con Recorte Vectorial)
     if True:
-        fig, ax = plt.subplots()
-        # Contornear matriz COMPLETA para continuidad
-        cs = ax.contour(grid_x, grid_y, Z_Final, levels=np.linspace(vmin, vmax, 10))
-        
-        zona_union = gdf_zona.unary_union if gdf_zona is not None else None
-        
-        for col in cs.collections:
-            for path in col.get_paths():
-                coords = [[y, x] for x, y in path.vertices] # Lat, Lon
-                if len(coords) > 2:
-                    # Lógica de recorte
-                    if zona_union is not None:
-                        line = LineString([[x, y] for y, x in coords]) # Lon, Lat
-                        if line.intersects(zona_union):
-                            try:
-                                clipped = line.intersection(zona_union)
-                                segs = list(clipped.geoms) if isinstance(clipped, MultiLineString) else [clipped]
-                                for seg in segs:
-                                    if not seg.is_empty:
-                                        locs = [[p[1], p[0]] for p in seg.coords]
-                                        folium.PolyLine(locs, color='black', weight=0.6, opacity=0.6).add_to(m)
-                                        # Etiquetas
-                                        if show_labels and len(locs) > 5:
-                                            mid = locs[len(locs)//2]
-                                            # Extraer valor del nivel (aproximado)
-                                            # val = ... (complejo extraer exacto aquí, simplificamos visual)
-                            except: pass
-                    else:
-                        folium.PolyLine(coords, color='black', weight=0.6).add_to(m)
-        plt.close(fig)
+        try:
+            fig, ax = plt.subplots()
+            cs = ax.contour(grid_x, grid_y, Z_Final, levels=np.linspace(vmin, vmax, 10))
+            
+            zona_union = gdf_zona.unary_union if gdf_zona is not None else None
+            
+            for col in cs.collections:
+                for path in col.get_paths():
+                    coords = [[y, x] for x, y in path.vertices] # Lat, Lon
+                    if len(coords) > 2:
+                        # Dibujar si está dentro
+                        if zona_union is not None:
+                            line = LineString([[x, y] for y, x in coords]) # Lon, Lat para shapely
+                            if line.intersects(zona_union):
+                                try:
+                                    clipped = line.intersection(zona_union)
+                                    segs = list(clipped.geoms) if isinstance(clipped, MultiLineString) else [clipped]
+                                    for seg in segs:
+                                        if not seg.is_empty:
+                                            # Volver a formato Folium [Lat, Lon]
+                                            locs = [[p[1], p[0]] for p in seg.coords]
+                                            if len(locs) > 2:
+                                                folium.PolyLine(locs, color='black', weight=0.6, opacity=0.6).add_to(m)
+                                except: pass 
+                        else:
+                            folium.PolyLine(coords, color='black', weight=0.6).add_to(m)
+            plt.close(fig)
+        except Exception as e:
+            print(f"Error trazando isolíneas: {e}")
 
-    # 3. POLÍGONO CUENCA (Sin Buffer)
+    # 3. POLÍGONO CUENCA
     if gdf_zona is not None:
         folium.GeoJson(
             gdf_zona, 
-            name="Cuenca",
+            name="Límite Cuenca",
             style_function=lambda x: {'fill': False, 'color': 'black', 'weight': 2.5}
         ).add_to(m)
 
-    # 4. ESTACIONES (Toggle)
+    # 4. ESTACIONES (FIXED ROW ACCESS)
     fg = folium.FeatureGroup("Estaciones", show=False)
     for _, row in gdf_stations.iterrows():
+        # Acceso seguro a la geometría (funciona sea Series o GeoSeries)
+        geom = row['geometry']
+        val = row.get('ppt_media', 0)
+        
         folium.CircleMarker(
-            [row.geometry.y, row.geometry.x], radius=3, color='black', fill=True,
-            popup=f"{row['nom_est']}: {row.get('ppt_media',0):.0f}"
+            [geom.y, geom.x], 
+            radius=3, color='black', fill=True, fill_color='white',
+            popup=f"<b>{row.get('nom_est', 'Est')}</b><br>Val: {val:.0f}",
+            tooltip=f"{row.get('nom_est', '')}"
         ).add_to(fg)
     fg.add_to(m)
     
