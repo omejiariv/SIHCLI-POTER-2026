@@ -14,7 +14,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import branca.colormap as cm
+import branca.colormap as bcm
 from rasterio import features
 from rasterio.transform import from_origin
 from rasterio.transform import array_bounds
@@ -2448,174 +2450,120 @@ def display_satellite_imagery_tab(gdf_filtered):
                 f"[Haga clic aquí para verla directamente en la NOAA]({url_gif})"
             )
 
-# modules/visualizer.py
+
 def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
-    """
-    Versión SIHCLI-POTER 6.2: Visualizador Robusto.
-    - Fix Crítico: Normalización forzada de columnas de geometría ('geom' -> 'geometry').
-    - Render: Pinta rasters físicos y vectores con recorte.
-    """
-    import folium
-    from folium.features import DivIcon
-    from streamlit_folium import st_folium
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import matplotlib.colors as mcolors
-    import branca.colormap as bcm
-    import geopandas as gpd
-    import pandas as pd
-    from shapely.geometry import LineString, MultiLineString, Point
-    from shapely.ops import unary_union
-    import streamlit as st
-
-    # --- 0. BLINDAJE Y NORMALIZACIÓN DE GEOMETRÍA ---
-    # Objetivo: Asegurar que gdf_stations sea un GeoDataFrame con columna 'geometry' activa
-    
-    # 1. Si es DataFrame normal, intentar convertir
+    # 1. BLINDAJE DE DATOS (Recuperar Geometría si se perdió)
     if not isinstance(gdf_stations, gpd.GeoDataFrame):
-        # Buscar columna candidata
-        geom_col = None
-        if 'geometry' in gdf_stations.columns: geom_col = 'geometry'
-        elif 'geom' in gdf_stations.columns: geom_col = 'geom'
-        
-        if geom_col:
-            gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry=geom_col)
+        if 'geometry' in gdf_stations.columns:
+            gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry='geometry')
+        elif 'geom' in gdf_stations.columns:
+            gdf_stations = gpd.GeoDataFrame(gdf_stations.rename(columns={'geom': 'geometry'}), geometry='geometry')
         else:
-            st.error("Error crítico: Los datos de estaciones no tienen coordenadas (geometry/geom).")
-            return
+            st.error("Error: Estaciones sin coordenadas."); return
 
-    # 2. Estandarizar nombre a 'geometry' (Evita KeyError si se llama 'geom')
-    try:
-        # Si la columna activa se llama 'geom', rename_geometry la cambia a 'geometry'
-        if gdf_stations.geometry.name != 'geometry':
-            gdf_stations = gdf_stations.rename_geometry('geometry')
-    except Exception as e:
-        # Fallback manual por si falla rename_geometry
-        if 'geom' in gdf_stations.columns and 'geometry' not in gdf_stations.columns:
-            gdf_stations = gdf_stations.rename(columns={'geom': 'geometry'}).set_geometry('geometry')
-
-    # --- A. CONFIGURACIÓN Y SELECTORES ---
+    # Configuración
     gdf_zona = kwargs.get('gdf_zona')
     grid_x, grid_y = kwargs.get('grid')
     mask_inside = kwargs.get('mask')
     
+    # 2. SELECTORES
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         labels = {
-            'P': '🌧️ Precipitación', 'DEM': '⛰️ Modelo Digital (DEM)',
-            'ETR': '☀️ Evapotranspiración (ETR)', 'Q': '🌊 Escorrentía Superficial',
-            'Infiltracion': '💧 Infiltración Potencial', 'Recarga': '📉 Recarga Acuífera',
-            'Erosion': '🏔️ Riesgo Erosión', 'C_Escorrentia': '⛰️ Coef. Escorrentía (C)'
+            'P': '🌧️ Precipitación', 'DEM': '⛰️ Elevación (DEM)', 'T': '🌡️ Temperatura',
+            'ETR': '☀️ ETR', 'Q': '🌊 Escorrentía', 'Infiltracion': '💧 Infiltración',
+            'Recarga': '📉 Recarga', 'Erosion': '🏔️ Erosión', 'C_Escorrentia': '⛰️ Coef. C'
         }
         keys = [k for k in labels.keys() if k in matrices]
-        if not keys:
-            st.warning("No se generaron matrices válidas.")
-            return
-        sel_key = st.selectbox("Variable:", keys, format_func=lambda x: labels.get(x, x))
+        sel = st.selectbox("Variable:", keys, format_func=lambda x: labels.get(x, x))
     
     with c2:
-        cmap_name = st.selectbox("Color:", ["viridis", "Spectral_r", "RdYlBu", "YlGnBu", "terrain", "magma"], index=1)
-        
+        cmap = st.selectbox("Color:", ["viridis", "Spectral_r", "RdYlBu", "YlGnBu", "terrain", "magma"], index=1)
     with c3:
-        opacity = st.slider("Opacidad", 0.0, 1.0, 0.7)
-        show_labels = st.checkbox("Etiquetas", True)
+        op = st.slider("Opacidad", 0.0, 1.0, 0.7)
 
-    # Datos a pintar
-    Z_Final = matrices[sel_key]
-    Z_Vis = Z_Final.copy()
-    if mask_inside is not None:
-        Z_Vis[~mask_inside] = np.nan
-
-    # --- B. MAPA BASE ---
-    if gdf_zona is not None:
-        center_y = gdf_zona.geometry.centroid.y.mean()
-        center_x = gdf_zona.geometry.centroid.x.mean()
-    else:
-        center_y = gdf_stations.geometry.y.mean()
-        center_x = gdf_stations.geometry.x.mean()
-        
-    m = folium.Map(location=[center_y, center_x], zoom_start=11, tiles="CartoDB positron")
-
-    # 1. RASTER
+    # Datos
+    Z = matrices[sel]
+    Z_Vis = Z.copy()
+    if mask_inside is not None: Z_Vis[~mask_inside] = np.nan
+    
+    # Rangos dinámicos
     vmin, vmax = np.nanmin(Z_Vis), np.nanmax(Z_Vis)
     if np.isnan(vmin): vmin, vmax = 0, 1
     if vmin == vmax: vmax += 0.1
-    
+
+    # 3. MAPA
+    if gdf_zona is not None:
+        cy, cx = gdf_zona.geometry.centroid.y.mean(), gdf_zona.geometry.centroid.x.mean()
+    else:
+        cy, cx = gdf_stations.geometry.y.mean(), gdf_stations.geometry.x.mean()
+        
+    m = folium.Map([cy, cx], zoom_start=10, tiles="CartoDB positron")
+
+    # Raster
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-    rgba = plt.get_cmap(cmap_name)(norm(Z_Vis))
-    rgba[..., 3] = np.where(np.isnan(Z_Vis), 0, opacity)
+    rgba = plt.get_cmap(cmap)(norm(Z_Vis))
+    rgba[..., 3] = np.where(np.isnan(Z_Vis), 0, op)
     
-    bounds_img = [[grid_y.min(), grid_x.min()], [grid_y.max(), grid_x.max()]]
     folium.raster_layers.ImageOverlay(
         image=np.flipud(rgba),
-        bounds=bounds_img,
+        bounds=[[grid_y.min(), grid_x.min()], [grid_y.max(), grid_x.max()]],
         name="Raster"
     ).add_to(m)
 
-    # 2. ISOLÍNEAS
+    # Isolíneas
     if True:
         try:
             fig, ax = plt.subplots()
-            cs = ax.contour(grid_x, grid_y, Z_Final, levels=np.linspace(vmin, vmax, 10))
+            cs = ax.contour(grid_x, grid_y, Z, levels=np.linspace(vmin, vmax, 10))
             zona_union = gdf_zona.unary_union if gdf_zona is not None else None
             
             for col in cs.collections:
                 for path in col.get_paths():
                     coords = [[y, x] for x, y in path.vertices]
                     if len(coords) > 2:
-                        # Recorte vectorial
-                        if zona_union is not None:
+                        if zona_union:
                             line = LineString([[x, y] for y, x in coords])
                             if line.intersects(zona_union):
                                 try:
                                     clipped = line.intersection(zona_union)
                                     segs = list(clipped.geoms) if isinstance(clipped, MultiLineString) else [clipped]
-                                    for seg in segs:
-                                        if not seg.is_empty:
-                                            locs = [[p[1], p[0]] for p in seg.coords]
-                                            folium.PolyLine(locs, color='black', weight=0.6, opacity=0.6).add_to(m)
-                                except: pass 
+                                    for s in segs:
+                                        if not s.is_empty:
+                                            l = [[p[1], p[0]] for p in s.coords]
+                                            folium.PolyLine(l, color='black', weight=0.6, opacity=0.5).add_to(m)
+                                except: pass
                         else:
                             folium.PolyLine(coords, color='black', weight=0.6).add_to(m)
             plt.close(fig)
-        except Exception as e:
-            print(f"Error trazando isolíneas: {e}")
+        except: pass
 
-    # 3. POLÍGONO CUENCA
+    # Capas Vectoriales
     if gdf_zona is not None:
-        folium.GeoJson(
-            gdf_zona, 
-            name="Límite Cuenca",
-            style_function=lambda x: {'fill': False, 'color': 'black', 'weight': 2.5}
-        ).add_to(m)
-
-    # 4. ESTACIONES (ACCESO SEGURO)
-    fg = folium.FeatureGroup("Estaciones", show=False)
-    for idx, row in gdf_stations.iterrows():
-        # Aquí ya garantizamos que 'geometry' existe en el paso 0
-        geom = row['geometry']
-        val = row.get('ppt_media', 0)
-        nombre = row.get('nom_est', f'Est-{idx}')
+        folium.GeoJson(gdf_zona, style_function=lambda x: {'fill':False, 'color':'black', 'weight':2}).add_to(m)
         
+    # Estaciones (Acceso seguro)
+    fg = folium.FeatureGroup("Estaciones", show=False)
+    for i, row in gdf_stations.iterrows():
+        # FORMA SEGURA DE ACCEDER A GEOMETRÍA
+        geom = row['geometry'] 
+        val = row.get('ppt_media', 0)
         folium.CircleMarker(
-            [geom.y, geom.x], 
-            radius=3, color='black', fill=True, fill_color='white',
-            popup=f"<b>{nombre}</b><br>Val: {val:.0f}",
-            tooltip=nombre
+            [geom.y, geom.x], radius=3, color='black', fill=True,
+            popup=f"{row.get('nom_est','')}: {val:.0f}"
         ).add_to(fg)
     fg.add_to(m)
-    
     folium.LayerControl().add_to(m)
     
-    # Leyenda y Stats
-    hex_colors = [mcolors.to_hex(plt.get_cmap(cmap_name)(i)) for i in np.linspace(0, 1, 5)]
-    bcm.LinearColormap(colors=hex_colors, vmin=vmin, vmax=vmax, caption=f"{labels[sel_key]}").add_to(m)
+    # Leyenda
+    hexs = [mcolors.to_hex(plt.get_cmap(cmap)(i)) for i in np.linspace(0, 1, 5)]
+    bcm.LinearColormap(hexs, vmin=vmin, vmax=vmax, caption=labels[sel]).add_to(m)
 
     st_folium(m, width=1400, height=600)
     
     st.divider()
-    mean_val = np.nanmean(Z_Vis)
-    st.metric(f"Promedio Espacial {labels[sel_key]}", f"{mean_val:,.1f}")
+    st.metric(f"Promedio {labels[sel]}", f"{np.nanmean(Z_Vis):,.1f}")
+
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
