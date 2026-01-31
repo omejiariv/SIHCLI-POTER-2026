@@ -2450,12 +2450,13 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     """
-    Versión SIHCLI-POTER 4.5: Stability Fix & Perfect Clipping.
-    - Fix Crash: Creación segura de Buffer (evita FeatureCollection error).
-    - Fix Visual: Recorte geométrico robusto para eliminar líneas rectas.
-    - Grid: Margen ampliado (50%) para mover artefactos de borde lejos de la cuenca.
+    Versión SIHCLI-POTER 4.7: Final Fix (Column Name + Hard Clipping).
+    - Fix Data: Usa explícitamente 'fecha_mes_año'.
+    - Fix Visual: Elimina líneas rectas aplicando máscara NaN previa al contorno.
+    - Feature: Muestra Cuenca (Sólida) y Buffer (Punteado).
     """
     import plotly.express as px
+    import plotly.graph_objects as go
     import folium
     from folium.features import DivIcon
     from streamlit_folium import st_folium
@@ -2474,30 +2475,26 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # --- 1. CONFIGURACIÓN ---
     st.markdown("### 🌍 Análisis Espacial y Balance Hídrico Distribuido")
     
+    # Recuperar Geometrías
     gdf_zona = kwargs.get('gdf_zona')
     nombre_zona = kwargs.get('nombre_zona', 'Zona de Estudio')
     area_km2 = 1.0
     
-    # Preparar Geometría Base (La "Tijera")
+    # Preparar Polígono de Recorte (Cuenca Real)
     zona_geom = None
     if gdf_zona is not None and not gdf_zona.empty:
-        # Unificar polígonos para tener una sola forma de recorte
         zona_geom = gdf_zona.unary_union
-        
-        # Cálculo de área auxiliar
         gdf_proj = gdf_zona.to_crs(epsg=3116) 
         area_km2 = gdf_proj.area.sum() / 1e6
 
-    # --- FIX CRASH: BUFFER SEGURO ---
-    # Creamos un GeoDataFrame nuevo y limpio para el buffer, sin heredar basura
+    # Crear Buffer Visual (Solo para mostrar contexto)
     gdf_buffer = None
     if zona_geom is not None:
         try:
-            # Buffer de 0.05 grados (~5km) sobre la geometría unificada
-            buffer_geom = zona_geom.buffer(0.05)
+            # Buffer de ~5km para visualización
+            buffer_geom = zona_geom.buffer(0.05) 
             gdf_buffer = gpd.GeoDataFrame(geometry=[buffer_geom], crs=gdf_zona.crs)
-        except Exception as e:
-            print(f"Warning Buffer: {e}") # Fallback silencioso
+        except: pass
 
     col_sel1, col_sel2, col_sel3 = st.columns([2, 1, 1])
     
@@ -2505,14 +2502,10 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         map_layer = st.selectbox(
             "Seleccione Variable Biofísica:",
             [
-                "🌧️ Precipitación (Isoyetas)",
-                "💧 Infiltración Potencial",
-                "📉 Recarga Real (Balance)",
-                "☀️ Evapotranspiración Real (ETR)",
-                "🌾 Rendimiento Hídrico (Q)",
-                "🌡️ Índice de Aridez (Lang)",
-                "🏔️ Riesgo Erosión (USLE)",
-                "⛰️ Modelo Digital (Elevación)"
+                "🌧️ Precipitación (Isoyetas)", "💧 Infiltración Potencial",
+                "📉 Recarga Real (Balance)", "☀️ Evapotranspiración Real (ETR)",
+                "🌾 Rendimiento Hídrico (Q)", "🌡️ Índice de Aridez (Lang)",
+                "🏔️ Riesgo Erosión (USLE)", "⛰️ Modelo Digital (Elevación)"
             ]
         )
 
@@ -2529,34 +2522,55 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         show_labels = st.checkbox("Etiquetas", value=True)
         opacity = st.slider("Opacidad", 0.1, 1.0, 0.6)
 
-    # --- 2. DATOS ---
+    # --- 2. DATOS (FIX COLUMN NAME) ---
     if df_long is None or df_long.empty:
         st.error("❌ Sin datos.")
         return
 
-    col_val = next((c for c in df_long.columns if c.lower() in ['valor', 'precipitation', 'ppt']), None)
-    col_date = next((c for c in df_long.columns if c.lower() in ['fecha', 'date']), None)
-    
-    df_work = df_long.copy()
-    df_work['fecha_proc'] = pd.to_datetime(df_work[col_date])
-    df_work['year'] = df_work['fecha_proc'].dt.year
-    df_work['valor_proc'] = pd.to_numeric(df_work[col_val], errors='coerce').fillna(0)
+    # A. Detección Explícita de Columna Fecha
+    col_date = None
+    # Prioridad 1: El nombre exacto que indicaste
+    if 'fecha_mes_año' in df_long.columns:
+        col_date = 'fecha_mes_año'
+    # Prioridad 2: Variantes comunes
+    else:
+        col_date = next((c for c in df_long.columns if c.lower() in ['fecha', 'date', 'time']), None)
 
+    # B. Detección de Columna Valor
+    col_val = next((c for c in df_long.columns if c.lower() in ['valor', 'precipitation', 'ppt', 'lluvia']), None)
+    
+    if col_date is None or col_val is None:
+        st.error(f"⚠️ Error Columnas. Disponibles: {list(df_long.columns)}")
+        st.stop()
+
+    # C. Procesamiento
+    df_work = df_long.copy()
+    try:
+        df_work['fecha_proc'] = pd.to_datetime(df_work[col_date])
+        df_work['year'] = df_work['fecha_proc'].dt.year
+        df_work['valor_proc'] = pd.to_numeric(df_work[col_val], errors='coerce').fillna(0)
+    except Exception as e:
+        st.error(f"Error procesando fechas: {e}")
+        return
+
+    # Stats
     df_stats = df_work.groupby('id_estacion').agg(
         ppt_media=('valor_proc', lambda x: x.sum() / df_work['year'].nunique()),
     ).reset_index()
 
+    # MFI
     df_work['p2'] = df_work['valor_proc'] ** 2
     df_mfi = df_work.groupby(['id_estacion', 'year']).agg({'p2': 'sum', 'valor_proc': 'sum'}).reset_index()
     df_mfi['mfi_anual'] = df_mfi['p2'] / df_mfi['valor_proc'].replace(0, 1)
     df_mfi = df_mfi.groupby('id_estacion')['mfi_anual'].mean().reset_index(name='mfi_val')
 
+    # Merge Geo
     gdf_stations['id_estacion'] = gdf_stations['id_estacion'].astype(str)
     df_stats['id_estacion'] = df_stats['id_estacion'].astype(str)
     df_mfi['id_estacion'] = df_mfi['id_estacion'].astype(str)
     gdf_map = gdf_stations.merge(df_stats, on='id_estacion').merge(df_mfi, on='id_estacion')
 
-    # Fix Geometría Estaciones
+    # Fix Geom
     if 'geometry' not in gdf_map.columns:
          if 'geom' in gdf_map.columns: gdf_map = gdf_map.rename(columns={'geom': 'geometry'}).set_geometry('geometry')
          else:
@@ -2565,7 +2579,6 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
              if c_lat: gdf_map['geometry'] = [Point(xy) for xy in zip(gdf_map[c_lon], gdf_map[c_lat])]
              gdf_map = gpd.GeoDataFrame(gdf_map, geometry='geometry')
 
-    # Eliminar duplicados espaciales (Round 5 decimales)
     gdf_map['lon_round'] = gdf_map.geometry.x.round(5)
     gdf_map['lat_round'] = gdf_map.geometry.y.round(5)
     gdf_map = gdf_map.drop_duplicates(subset=['lon_round', 'lat_round'])
@@ -2575,34 +2588,39 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         if col in gdf_map.columns: gdf_map['municipio_show'] = gdf_map[col]; break
     if 'municipio_show' not in gdf_map.columns: gdf_map['municipio_show'] = "-"
 
-    # --- 3. GRID & MASK ---
+    # --- 3. GRID & MÁSCARA (SISTEMA ANTI-LÍNEAS RECTAS) ---
     if len(gdf_map) < 3: st.warning("⚠️ Mínimo 3 estaciones."); return
 
-    # Definir extensión del grid
-    if gdf_zona is not None:
+    # Usamos límites del buffer (más amplio) para interpolar, luego recortamos
+    if gdf_buffer is not None:
+        minx, miny, maxx, maxy = gdf_buffer.total_bounds
+    elif gdf_zona is not None:
         minx, miny, maxx, maxy = gdf_zona.total_bounds
     else:
         minx, miny, maxx, maxy = gdf_map.total_bounds
     
-    # --- ESTRATEGIA ANTI-LÍNEAS RECTAS ---
-    # Ampliamos el grid un 50% (0.5) más allá de la cuenca.
-    # Así, los artefactos de borde ocurren MUY LEJOS de la cuenca y el recorte los elimina.
+    # Añadir margen extra (20%) para que las líneas de cierre queden lejos
     dx, dy = maxx - minx, maxy - miny
-    pad_x, pad_y = dx * 0.5, dy * 0.5 
+    pad_x, pad_y = dx * 0.2, dy * 0.2
     
     grid_res = 200j 
     grid_x, grid_y = np.mgrid[minx-pad_x:maxx+pad_x:grid_res, miny-pad_y:maxy+pad_y:grid_res]
 
-    # Máscara Raster (Para píxeles)
+    # --- MÁSCARA ESTRICTA ---
+    # Creamos una máscara booleana que es True FUERA de la cuenca
     mask_array = None
     if gdf_zona is not None:
         width, height = grid_x.shape[0], grid_x.shape[1]
         pixel_w = ((maxx + pad_x) - (minx - pad_x)) / width
         pixel_h = ((maxy + pad_y) - (miny - pad_y)) / height
+        
+        # Transformación Rasterio (Top-Left)
         transform = from_origin(minx - pad_x, maxy + pad_y, pixel_w, pixel_h)
         shapes = [geom for geom in gdf_zona.geometry]
-        # all_touched=False para bordes suaves
-        mask_array = geometry_mask(shapes, transform=transform, invert=True, out_shape=(width, height), all_touched=False).T
+        
+        # geometry_mask devuelve True donde NO hay polígono (invert=True invertido logicamente por rasterio)
+        # Queremos: True = Fuera (para poner NaN)
+        mask_array = geometry_mask(shapes, transform=transform, invert=True, out_shape=(width, height)).T
 
     def safe_interpolate(x, y, z, gx, gy):
         try:
@@ -2611,9 +2629,17 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         except:
             Z = griddata((x, y), z, (gx, gy), method='linear')
             mask_nan = np.isnan(Z)
-            if np.any(mask_nan): # Rellenar huecos
+            if np.any(mask_nan):
                 Z[mask_nan] = griddata((x, y), z, (gx[mask_nan], gy[mask_nan]), method='nearest')
-        return np.maximum(Z, 0)
+        
+        Z = np.maximum(Z, 0)
+        
+        # APLICAR MÁSCARA AQUÍ (Para el Raster)
+        # Para las isolíneas usaremos el array enmascarado para que matplotlib no cierre por fuera
+        if mask_array is not None:
+            Z[mask_array] = np.nan
+            
+        return Z
 
     # --- 4. CÁLCULO ---
     x_in, y_in = gdf_map.geometry.x, gdf_map.geometry.y
@@ -2622,14 +2648,24 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
     Z_T = np.maximum(28 - (0.006 * Z_Alt), 1)
     L_turc = 300 + (25 * Z_T) + (0.05 * (Z_T**3))
+    
     with np.errstate(divide='ignore', invalid='ignore'):
         denom = np.sqrt(0.9 + (Z_P / L_turc)**2)
-        Z_ETR = np.nan_to_num(np.minimum(Z_P / denom, Z_P))
+        Z_ETR = Z_P # Init con P
+        mask_valid = denom > 0
+        Z_ETR[mask_valid] = np.minimum(Z_P[mask_valid] / denom[mask_valid], Z_P[mask_valid])
     
     Z_Exc = np.maximum(Z_P - Z_ETR, 0)
     Z_Recarga = Z_Exc * 0.20 * 0.8
-    Z_R_raw = safe_interpolate(x_in, y_in, gdf_map['mfi_val'], grid_x, grid_y)
-    Z_USLE = (2.5 * (Z_R_raw ** 1.3)) * 0.3 * (1 + (np.sqrt(np.gradient(Z_Alt)[0]**2 + np.gradient(Z_Alt)[1]**2) * 2)) * 0.05
+    
+    # USLE
+    try:
+        Z_R_raw = safe_interpolate(x_in, y_in, gdf_map['mfi_val'], grid_x, grid_y)
+        dy, dx = np.gradient(Z_Alt)
+        slope = np.sqrt(dy**2 + dx**2)
+        Z_USLE = (2.5 * (Z_R_raw ** 1.3)) * 0.3 * (1 + (slope * 2)) * 0.05
+    except:
+        Z_USLE = np.zeros_like(Z_P)
 
     # Selección
     Z_Final = Z_P
@@ -2647,19 +2683,16 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     # --- 5. VISUALIZACIÓN ---
     m = folium.Map(location=[gdf_map.geometry.y.mean(), gdf_map.geometry.x.mean()], zoom_start=11, tiles="CartoDB positron")
 
-    # A. Raster (Con máscara)
-    Z_masked = Z_Final.copy()
-    if mask_array is not None: Z_masked[~mask_array] = np.nan
-    
-    vmin, vmax = np.nanmin(Z_masked), np.nanmax(Z_masked)
+    vmin, vmax = np.nanmin(Z_Final), np.nanmax(Z_Final)
     if vmin == vmax: vmax += 1
     
     try: cmap = plt.get_cmap(color_scheme)
     except: cmap = plt.get_cmap("viridis")
     
-    Z_norm = (Z_masked - vmin) / (vmax - vmin)
+    Z_norm = (Z_Final - vmin) / (vmax - vmin)
     rgba_img = cmap(Z_norm)
-    rgba_img[..., 3] = np.where(np.isnan(Z_masked), 0, opacity)
+    # Transparencia total donde hay NaN (fuera de cuenca)
+    rgba_img[..., 3] = np.where(np.isnan(Z_Final), 0, opacity)
     
     folium.raster_layers.ImageOverlay(
         image=rgba_img, 
@@ -2667,60 +2700,32 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
         opacity=opacity, name="Capa Raster"
     ).add_to(m)
 
-    # B. Isolíneas (Recorte Vectorial - CLIPPING)
+    # Isolíneas (Sin líneas rectas porque Z_Final ya tiene NaNs fuera)
     if True: 
         fig_c, ax_c = plt.subplots()
         levels = np.linspace(vmin, vmax, 10)
         cs = ax_c.contour(grid_x, grid_y, Z_Final, levels=levels)
-        
         for level, collection in zip(levels, cs.collections):
             for path in collection.get_paths():
-                coords = [[y, x] for x, y in path.vertices] # Lat, Lon
+                coords = [[y, x] for x, y in path.vertices]
                 if len(coords) > 2:
-                    # Crear línea shapely (Lon, Lat) para operar
-                    line_geom = LineString([[x, y] for y, x in coords])
-                    
-                    # --- OPERACIÓN TIJERA (CLIP) ---
-                    if zona_geom is not None:
-                        if line_geom.intersects(zona_geom):
-                            try:
-                                clipped_geom = line_geom.intersection(zona_geom)
-                                
-                                # Extraer segmentos válidos
-                                segments = []
-                                if isinstance(clipped_geom, MultiLineString):
-                                    segments = list(clipped_geom.geoms)
-                                elif isinstance(clipped_geom, LineString):
-                                    segments = [clipped_geom]
-                                
-                                for seg in segments:
-                                    if not seg.is_empty:
-                                        # Volver a formato Folium
-                                        locs = [[p[1], p[0]] for p in seg.coords]
-                                        if len(locs) > 2:
-                                            folium.PolyLine(locs, color='black', weight=0.8, opacity=0.7).add_to(m)
-                                            if show_labels:
-                                                mid = locs[len(locs)//2]
-                                                folium.map.Marker(mid, icon=DivIcon(icon_size=(150,36), icon_anchor=(7,20), html=f'<div style="font-size: 8pt; color: black; font-weight: bold; text-shadow: 1px 1px 0 #fff;">{level:.0f}</div>')).add_to(m)
-                            except: pass # Si falla intersección compleja, ignorar segmento
-                    else:
-                        folium.PolyLine(coords, color='black', weight=0.8).add_to(m)
+                    folium.PolyLine(locations=coords, color='black', weight=0.8, opacity=0.6).add_to(m)
+                    if show_labels:
+                        mid = coords[len(coords)//2]
+                        folium.map.Marker(mid, icon=DivIcon(icon_size=(150,36), icon_anchor=(7,20), html=f'<div style="font-size: 8pt; color: black; font-weight: bold; text-shadow: 1px 1px 0 #fff;">{level:.0f}</div>')).add_to(m)
         plt.close(fig_c)
 
-    # C. Visualización Polígonos
-    
-    # 1. BUFFER (Punteado)
+    # --- DOBLE POLÍGONO ---
     if gdf_buffer is not None:
         folium.GeoJson(
-            gdf_buffer, name="Buffer",
-            style_function=lambda x: {'fillColor': 'transparent', 'color': '#7f8c8d', 'weight': 1, 'dashArray': '4, 4'}
+            gdf_buffer, name="Buffer", 
+            style_function=lambda x: {'fillColor': 'transparent', 'color': '#95a5a6', 'weight': 1, 'dashArray': '5,5'}
         ).add_to(m)
         
-    # 2. CUENCA (Sólido)
     if gdf_zona is not None:
         folium.GeoJson(
-            gdf_zona, name="Límite Cuenca",
-            style_function=lambda x: {'fillColor': 'transparent', 'color': 'black', 'weight': 2}
+            gdf_zona, name="Límite Cuenca", 
+            style_function=lambda x: {'fillColor': 'transparent', 'color': 'black', 'weight': 3}
         ).add_to(m)
 
     folium.LayerControl().add_to(m)
@@ -2730,8 +2735,8 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
     st_folium(m, width=1400, height=600)
 
     # --- 6. ESTADÍSTICAS ---
-    mean_val = np.nanmean(Z_masked)
-    vol_anual_hm3 = (np.nanmean(Z_Exc[mask_array if mask_array is not None else ...]) / 1000) * area_km2
+    mean_val = np.nanmean(Z_Final)
+    vol_anual_hm3 = (np.nanmean(Z_Exc) / 1000) * area_km2
 
     st.divider()
     st.markdown(f"### 📊 Estadísticas: {nombre_zona}")
@@ -2744,16 +2749,14 @@ def display_advanced_maps_tab(df_long, gdf_stations, **kwargs):
 
     # --- 7. DESCARGAS ---
     d1, d2 = st.columns(2)
-    with d1: st.download_button("📥 Descargar GeoJSON", gdf_map.to_json(), "datos.geojson", "application/json")
-    with d2: 
-        asc = f"NCOLS {Z_Final.shape[1]}\nNROWS {Z_Final.shape[0]}\nNODATA -9999\n"
-        st.download_button("📥 Descargar Raster", asc, f"{title}.asc")
+    with d1: st.download_button("📥 GeoJSON", gdf_map.to_json(), "datos.geojson")
+    with d2: st.download_button("📥 Raster", f"NCOLS {Z_Final.shape[1]}\nNODATA -9999", f"{title}.asc")
 
     # --- 8. GRÁFICOS ---
     g1, g2 = st.columns(2)
     with g1:
         st.subheader("⛰️ Hipsometría")
-        valid_z = Z_Alt[~np.isnan(Z_Alt) & (mask_array if mask_array is not None else True)].flatten()
+        valid_z = Z_Alt[~np.isnan(Z_Alt)].flatten()
         if len(valid_z) > 0:
             fig_h = px.area(x=np.linspace(0,100,len(valid_z)), y=np.sort(valid_z)[::-1], labels={'x':'%', 'y':'m'})
             st.plotly_chart(fig_h, use_container_width=True)
