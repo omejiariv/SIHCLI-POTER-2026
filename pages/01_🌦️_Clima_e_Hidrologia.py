@@ -410,28 +410,97 @@ def main():
         display_drought_analysis_tab(**display_args)
         
     elif selected_module == "🌍 Mapas Avanzados":
-        # Importamos el Visualizador (que ya integra el motor físico hydro_physics)
-        from modules import visualizer as viz
+        st.header("🌍 Modelación Hidrológica Distribuida (Aleph)")
         
-        # Rutas de los archivos físicos (Asegúrate de que los nombres coincidan con los subidos)
-        # Pasamos estas rutas a través de kwargs para que el visualizador las encuentre
-        config_paths = {
-            'dem': 'DemAntioquia_EPSG3116.tif',
-            'cobertura': 'Cob25m_WGS84.tif',
-            'suelos': 'Suelos_Antioquia.geojson'
-        }
+        # --- 1. IMPORTACIÓN DE MOTORES ---
+        try:
+            from modules import hydro_physics as physics
+            from modules import visualizer as viz
+        except ImportError as e:
+            st.error(f"Error cargando módulos: {e}. Verifica que 'hydro_physics.py' exista.")
+            st.stop()
 
-        # LLAMADA ÚNICA Y LIMPIA
-        # No hacemos groupby aquí. El visualizador se encarga de:
-        # 1. Detectar fechas y crear columna 'year'
-        # 2. Calcular promedios
-        # 3. Ejecutar el modelo distribuido (hydro_physics)
-        # 4. Pintar el mapa
+        # --- 2. PREPARACIÓN DE DATOS (AGREGACIÓN ANUAL) ---
+        # Convertimos la serie mensual a un valor medio anual por estación
+        if 'year' not in df_monthly_filtered.columns:
+            df_monthly_filtered['year'] = df_monthly_filtered[Config.DATE_COL].dt.year
+            
+        # Suma total por año, luego promedio de esos totales
+        df_annual = df_monthly_filtered.groupby([Config.STATION_NAME_COL, 'year'])[Config.PRECIPITATION_COL].sum().reset_index()
+        df_mean = df_annual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index(name='ppt_media')
+        
+        # Unimos con la geometría de las estaciones
+        # Aseguramos que los nombres coincidan para el merge
+        gdf_calc = gdf_filtered.merge(df_mean, on=Config.STATION_NAME_COL)
+        
+        if len(gdf_calc) < 3:
+            st.warning("⚠️ Se requieren al menos 3 estaciones con datos en la zona para interpolar.")
+            st.stop()
+
+        # --- 3. DEFINICIÓN DEL GRID (LA "HOJA DE PAPEL") ---
+        # Usamos los límites de la cuenca si existe, o de las estaciones
+        if gdf_zona is not None:
+            minx, miny, maxx, maxy = gdf_zona.total_bounds
+        else:
+            minx, miny, maxx, maxy = gdf_filtered.total_bounds
+            
+        # Margen del 20% para evitar efectos de borde
+        dx, dy = maxx - minx, maxy - miny
+        pad_x, pad_y = dx * 0.2, dy * 0.2
+        
+        # Resolución del Grid (300x300 píxeles para alta definición)
+        grid_res = 300
+        xi = np.linspace(minx - pad_x, maxx + pad_x, grid_res)
+        yi = np.linspace(miny - pad_y, maxy + pad_y, grid_res)
+        grid_x, grid_y = np.meshgrid(xi, yi)
+
+        # --- 4. INTERPOLACIÓN INICIAL (LLUVIA) ---
+        # Interpolamos la precipitación base (Z_P) desde las estaciones al grid
+        # Usamos el motor físico para esto
+        with st.spinner("Interpolando Precipitación..."):
+            Z_P = physics.interpolar_variable(gdf_calc, 'ppt_media', grid_x, grid_y)
+
+        # --- 5. EJECUCIÓN DEL MODELO FÍSICO ---
+        # Rutas a los archivos raster (Deben estar en la raíz o carpeta data)
+        paths = {
+            'dem': 'DemAntioquia_EPSG3116.tif',
+            'cobertura': 'Cob25m_WGS84.tif'
+        }
+        
+        with st.spinner("Calculando Balance Distribuido (Turc + Schosinsky)..."):
+            # ¡AQUÍ OCURRE LA MAGIA! El cerebro devuelve todas las matrices listas
+            matrices = physics.run_distributed_model(Z_P, grid_x, grid_y, paths)
+
+        # --- 6. MÁSCARA VISUAL (RECORTAR POR CUENCA) ---
+        # Creamos una máscara para que el visualizador sepa qué pintar transparente
+        mask_inside = None
+        if gdf_zona is not None:
+            from shapely.ops import unary_union
+            from matplotlib import path as mpath
+            
+            # Unificar geometría
+            zona_union = gdf_zona.unary_union
+            # Crear máscara booleana con matplotlib path (rápido y preciso)
+            polys = [zona_union] if zona_union.geom_type == 'Polygon' else list(zona_union.geoms)
+            
+            points_flat = np.vstack((grid_x.flatten(), grid_y.flatten())).T
+            full_mask = np.zeros(points_flat.shape[0], dtype=bool)
+            
+            for poly in polys:
+                p_path = mpath.Path(list(poly.exterior.coords))
+                full_mask = full_mask | p_path.contains_points(points_flat)
+            
+            mask_inside = full_mask.reshape(grid_x.shape)
+
+        # --- 7. LLAMADA AL VISUALIZADOR ---
+        # Le entregamos todo cocinado al "Pintor"
         viz.display_advanced_maps_tab(
-            df_long=df_monthly_filtered,
-            gdf_stations=gdf_filtered,
+            gdf_stations=gdf_calc,
+            matrices=matrices,
+            grid=(grid_x, grid_y),
+            mask=mask_inside,
             gdf_zona=gdf_zona,
-            paths=config_paths # Pasamos las rutas
+            nombre_zona=nombre_zona
         )
 
     elif selected_module == "🧪 Sesgo":
