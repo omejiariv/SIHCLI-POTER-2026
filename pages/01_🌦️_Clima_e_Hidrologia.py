@@ -417,80 +417,64 @@ def main():
             from modules import hydro_physics as physics
             from modules import visualizer as viz
         except ImportError as e:
-            st.error(f"Error cargando módulos: {e}. Verifica que 'hydro_physics.py' exista.")
+            st.error(f"Error cargando módulos: {e}")
             st.stop()
 
-        # 2. PREPARACIÓN DE DATOS
+        # --- 2. PREPARACIÓN DE DATOS ---
         if 'year' not in df_monthly_filtered.columns:
             df_monthly_filtered['year'] = df_monthly_filtered[Config.DATE_COL].dt.year
             
-        # Agrupación
         df_annual = df_monthly_filtered.groupby([Config.STATION_NAME_COL, 'year'])[Config.PRECIPITATION_COL].sum().reset_index()
         df_mean = df_annual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index(name='ppt_media')
         
-        # --- MERGE SEGURO ---
-        # Unimos los datos calculados (df_mean) con la geometría original (gdf_filtered)
-        gdf_calc = gdf_filtered.merge(df_mean, on=Config.STATION_NAME_COL, how='inner')
+        # Merge seguro
+        gdf_calc = gdf_filtered.merge(df_mean, on=Config.STATION_NAME_COL)
         
-        # IMPORTANTE: Forzar que sea GeoDataFrame inmediatamente después del merge
-        if not isinstance(gdf_calc, gpd.GeoDataFrame):
-            gdf_calc = gpd.GeoDataFrame(gdf_calc, geometry='geometry')
-            
-        # Asegurarnos de tener lat/lon explícitos como respaldo para el visualizador
-        gdf_calc['latitude'] = gdf_calc.geometry.y
-        gdf_calc['longitude'] = gdf_calc.geometry.x
+        if len(gdf_calc) < 3:
+            st.warning("⚠️ Se requieren al menos 3 estaciones.")
+            st.stop()
 
-        # --- 3. DEFINICIÓN DEL GRID (LA "HOJA DE PAPEL") ---
-        # Usamos los límites de la cuenca si existe, o de las estaciones
+        # --- 3. DEFINICIÓN DEL GRID ---
         if gdf_zona is not None:
             minx, miny, maxx, maxy = gdf_zona.total_bounds
         else:
             minx, miny, maxx, maxy = gdf_filtered.total_bounds
             
-        # Margen del 20% para evitar efectos de borde
+        # Margen 20%
         dx, dy = maxx - minx, maxy - miny
         pad_x, pad_y = dx * 0.2, dy * 0.2
         
-        # Resolución del Grid (300x300 píxeles para alta definición)
+        # Definir límites explícitos (ESTO FALTABA)
+        bounds_wgs84 = (minx - pad_x, miny - pad_y, maxx + pad_x, maxy + pad_y)
+        
+        # Grid
         grid_res = 300
-        xi = np.linspace(minx - pad_x, maxx + pad_x, grid_res)
-        yi = np.linspace(miny - pad_y, maxy + pad_y, grid_res)
+        xi = np.linspace(bounds_wgs84[0], bounds_wgs84[2], grid_res)
+        yi = np.linspace(bounds_wgs84[1], bounds_wgs84[3], grid_res)
         grid_x, grid_y = np.meshgrid(xi, yi)
 
-        # --- 4. INTERPOLACIÓN INICIAL (LLUVIA) ---
-        # Interpolamos la precipitación base (Z_P) desde las estaciones al grid
-        # Usamos el motor físico para esto
+        # --- 4. INTERPOLACIÓN INICIAL ---
         with st.spinner("Interpolando Precipitación..."):
             Z_P = physics.interpolar_variable(gdf_calc, 'ppt_media', grid_x, grid_y)
 
-        # Definir bounds explícitos para el Warper (minx, miny, maxx, maxy)
-        bounds_wgs84 = (minx, miny, maxx, maxy)
-
-        # 5. EJECUCIÓN MODELO FÍSICO
+        # --- 5. EJECUCIÓN MODELO FÍSICO ---
         paths = {
             'dem': 'DemAntioquia_EPSG3116.tif',
             'cobertura': 'Cob25m_WGS84.tif'
         }
         
-        with st.spinner("Calculando Balance Distribuido (Reproyectando Rasters)..."):
-            # PASAMOS 'bounds_wgs84' AHORA
-            matrices = physics.run_distributed_model(Z_P, grid_x, grid_y, paths, bounds_wgs84)        
-        with st.spinner("Calculando Balance Distribuido (Turc + Schosinsky)..."):
-            # ¡AQUÍ OCURRE LA MAGIA! El cerebro devuelve todas las matrices listas
-            matrices = physics.run_distributed_model(Z_P, grid_x, grid_y, paths)
+        with st.spinner("Calculando Balance Distribuido (Warping)..."):
+            # Ahora bounds_wgs84 SÍ existe
+            matrices = physics.run_distributed_model(Z_P, grid_x, grid_y, paths, bounds_wgs84)
 
-        # --- 6. MÁSCARA VISUAL (RECORTAR POR CUENCA) ---
-        # Creamos una máscara para que el visualizador sepa qué pintar transparente
+        # --- 6. MÁSCARA VISUAL ---
         mask_inside = None
         if gdf_zona is not None:
             from shapely.ops import unary_union
             from matplotlib import path as mpath
             
-            # Unificar geometría
             zona_union = gdf_zona.unary_union
-            # Crear máscara booleana con matplotlib path (rápido y preciso)
             polys = [zona_union] if zona_union.geom_type == 'Polygon' else list(zona_union.geoms)
-            
             points_flat = np.vstack((grid_x.flatten(), grid_y.flatten())).T
             full_mask = np.zeros(points_flat.shape[0], dtype=bool)
             
@@ -500,16 +484,15 @@ def main():
             
             mask_inside = full_mask.reshape(grid_x.shape)
 
-        # --- 7. LLAMADA AL VISUALIZADOR ---
-        # Le entregamos todo cocinado al "Pintor"
+        # --- 7. VISUALIZACIÓN ---
         viz.display_advanced_maps_tab(
             gdf_stations=gdf_calc,
             matrices=matrices,
             grid=(grid_x, grid_y),
             mask=mask_inside,
-            gdf_zona=gdf_zona,
-            nombre_zona=nombre_zona
+            gdf_zona=gdf_zona
         )
+
 
     elif selected_module == "🧪 Sesgo":
         try: display_bias_correction_tab(**display_args)
