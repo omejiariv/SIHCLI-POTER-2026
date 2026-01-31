@@ -420,22 +420,25 @@ def main():
             st.error(f"Error cargando módulos: {e}. Verifica que 'hydro_physics.py' exista.")
             st.stop()
 
-        # --- 2. PREPARACIÓN DE DATOS (AGREGACIÓN ANUAL) ---
-        # Convertimos la serie mensual a un valor medio anual por estación
+        # 2. PREPARACIÓN DE DATOS
         if 'year' not in df_monthly_filtered.columns:
             df_monthly_filtered['year'] = df_monthly_filtered[Config.DATE_COL].dt.year
             
-        # Suma total por año, luego promedio de esos totales
+        # Agrupación
         df_annual = df_monthly_filtered.groupby([Config.STATION_NAME_COL, 'year'])[Config.PRECIPITATION_COL].sum().reset_index()
         df_mean = df_annual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index(name='ppt_media')
         
-        # Unimos con la geometría de las estaciones
-        # Aseguramos que los nombres coincidan para el merge
-        gdf_calc = gdf_filtered.merge(df_mean, on=Config.STATION_NAME_COL)
+        # --- MERGE SEGURO ---
+        # Unimos los datos calculados (df_mean) con la geometría original (gdf_filtered)
+        gdf_calc = gdf_filtered.merge(df_mean, on=Config.STATION_NAME_COL, how='inner')
         
-        if len(gdf_calc) < 3:
-            st.warning("⚠️ Se requieren al menos 3 estaciones con datos en la zona para interpolar.")
-            st.stop()
+        # IMPORTANTE: Forzar que sea GeoDataFrame inmediatamente después del merge
+        if not isinstance(gdf_calc, gpd.GeoDataFrame):
+            gdf_calc = gpd.GeoDataFrame(gdf_calc, geometry='geometry')
+            
+        # Asegurarnos de tener lat/lon explícitos como respaldo para el visualizador
+        gdf_calc['latitude'] = gdf_calc.geometry.y
+        gdf_calc['longitude'] = gdf_calc.geometry.x
 
         # --- 3. DEFINICIÓN DEL GRID (LA "HOJA DE PAPEL") ---
         # Usamos los límites de la cuenca si existe, o de las estaciones

@@ -2452,21 +2452,41 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 
 def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
-    # 1. BLINDAJE DE DATOS (Recuperar Geometría si se perdió)
+    """
+    Versión SIHCLI-POTER 6.3: Visualizador Indestructible.
+    - Maneja mezcla de CRS y pérdida de geometría tras merges.
+    - Dibuja Rasters, Isolíneas y Vectores.
+    """
+    
+    # --- 1. SANEAMIENTO DE DATOS (CRÍTICO) ---
+    # A veces el merge convierte el GeoDataFrame en DataFrame y pierde la 'geometry'
+    
+    # Intento 1: Verificar si es GeoDataFrame
     if not isinstance(gdf_stations, gpd.GeoDataFrame):
-        if 'geometry' in gdf_stations.columns:
+        # Buscar columnas de coordenadas comunes
+        cols = gdf_stations.columns
+        if 'geometry' in cols:
             gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry='geometry')
-        elif 'geom' in gdf_stations.columns:
+        elif 'geom' in cols:
             gdf_stations = gpd.GeoDataFrame(gdf_stations.rename(columns={'geom': 'geometry'}), geometry='geometry')
+        elif 'latitude' in cols and 'longitude' in cols:
+            gdf_stations = gpd.GeoDataFrame(
+                gdf_stations, 
+                geometry=gpd.points_from_xy(gdf_stations.longitude, gdf_stations.latitude)
+            )
         else:
-            st.error("Error: Estaciones sin coordenadas."); return
+            st.error("Error Crítico: No se encontraron coordenadas (geometry, geom, o lat/lon) en los datos.")
+            return
 
-    # Configuración
+    # Asegurar CRS WGS84 para Folium
+    if gdf_stations.crs is not None and gdf_stations.crs.to_string() != "EPSG:4326":
+        gdf_stations = gdf_stations.to_crs("EPSG:4326")
+
+    # --- 2. CONFIGURACIÓN ---
     gdf_zona = kwargs.get('gdf_zona')
     grid_x, grid_y = kwargs.get('grid')
     mask_inside = kwargs.get('mask')
     
-    # 2. SELECTORES
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         labels = {
@@ -2475,6 +2495,7 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
             'Recarga': '📉 Recarga', 'Erosion': '🏔️ Erosión', 'C_Escorrentia': '⛰️ Coef. C'
         }
         keys = [k for k in labels.keys() if k in matrices]
+        if not keys: st.warning("Esperando cálculo..."); return
         sel = st.selectbox("Variable:", keys, format_func=lambda x: labels.get(x, x))
     
     with c2:
@@ -2485,22 +2506,28 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     # Datos
     Z = matrices[sel]
     Z_Vis = Z.copy()
-    if mask_inside is not None: Z_Vis[~mask_inside] = np.nan
     
-    # Rangos dinámicos
+    # Máscara visual
+    if mask_inside is not None: 
+        # Asegurar dimensiones iguales
+        if Z_Vis.shape == mask_inside.shape:
+            Z_Vis[~mask_inside] = np.nan
+
+    # Rangos
     vmin, vmax = np.nanmin(Z_Vis), np.nanmax(Z_Vis)
     if np.isnan(vmin): vmin, vmax = 0, 1
     if vmin == vmax: vmax += 0.1
 
-    # 3. MAPA
+    # --- 3. MAPA ---
+    # Centro del mapa
     if gdf_zona is not None:
         cy, cx = gdf_zona.geometry.centroid.y.mean(), gdf_zona.geometry.centroid.x.mean()
     else:
         cy, cx = gdf_stations.geometry.y.mean(), gdf_stations.geometry.x.mean()
         
-    m = folium.Map([cy, cx], zoom_start=10, tiles="CartoDB positron")
+    m = folium.Map([cy, cx], zoom_start=11, tiles="CartoDB positron")
 
-    # Raster
+    # A. RASTER
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
     rgba = plt.get_cmap(cmap)(norm(Z_Vis))
     rgba[..., 3] = np.where(np.isnan(Z_Vis), 0, op)
@@ -2511,7 +2538,7 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
         name="Raster"
     ).add_to(m)
 
-    # Isolíneas
+    # B. ISOLÍNEAS
     if True:
         try:
             fig, ax = plt.subplots()
@@ -2538,20 +2565,31 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
             plt.close(fig)
         except: pass
 
-    # Capas Vectoriales
+    # C. VECTORES (Cuenca)
     if gdf_zona is not None:
         folium.GeoJson(gdf_zona, style_function=lambda x: {'fill':False, 'color':'black', 'weight':2}).add_to(m)
-        
-    # Estaciones (Acceso seguro)
+
+    # D. ESTACIONES (Iteración Segura)
     fg = folium.FeatureGroup("Estaciones", show=False)
+    
+    # Aquí usamos el GeoDataFrame saneado del paso 1
     for i, row in gdf_stations.iterrows():
-        # FORMA SEGURA DE ACCEDER A GEOMETRÍA
-        geom = row['geometry'] 
-        val = row.get('ppt_media', 0)
-        folium.CircleMarker(
-            [geom.y, geom.x], radius=3, color='black', fill=True,
-            popup=f"{row.get('nom_est','')}: {val:.0f}"
-        ).add_to(fg)
+        # Usamos getattr para seguridad máxima. Si falla, usa lat/lon explícito si existe
+        geom = getattr(row, 'geometry', None)
+        
+        if geom is None:
+            # Intento desesperado por columnas lat/lon
+            lat = row.get('latitude', row.get('lat', None))
+            lon = row.get('longitude', row.get('lon', None))
+            if lat and lon: geom = Point(lon, lat)
+            
+        if geom is not None:
+            val = row.get('ppt_media', 0)
+            folium.CircleMarker(
+                [geom.y, geom.x], radius=3, color='black', fill=True,
+                popup=f"{row.get('nom_est','')}: {val:.0f}"
+            ).add_to(fg)
+            
     fg.add_to(m)
     folium.LayerControl().add_to(m)
     
@@ -2560,9 +2598,6 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     bcm.LinearColormap(hexs, vmin=vmin, vmax=vmax, caption=labels[sel]).add_to(m)
 
     st_folium(m, width=1400, height=600)
-    
-    st.divider()
-    st.metric(f"Promedio {labels[sel]}", f"{np.nanmean(Z_Vis):,.1f}")
 
 
 
