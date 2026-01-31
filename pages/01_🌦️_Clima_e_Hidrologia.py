@@ -463,6 +463,9 @@ def main():
         with st.spinner("Interpolando Precipitación..."):
             Z_P = physics.interpolar_variable(gdf_calc, 'ppt_media', grid_x, grid_y)
 
+        # Definir bounds explícitos para el Warper (minx, miny, maxx, maxy)
+        bounds_wgs84 = (minx, miny, maxx, maxy)
+
         # 5. EJECUCIÓN MODELO FÍSICO
         paths = {
             'dem': 'DemAntioquia_EPSG3116.tif',
