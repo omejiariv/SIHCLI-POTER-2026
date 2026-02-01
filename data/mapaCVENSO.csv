@@ -1,4 +1,4 @@
-id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zszh;vereda;region;depto_region
+Ôªøid_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zszh;vereda;region;depto_region
 26180160;ABEJORRAL [26180160];-75,43041855;5,78597487;2164;1034;Antioquia;Abejorral;MagdalenaCauca;RioArma;;Oriente;Antioquia - Oriente
 16050140;JURISDICCIONES [16050140];-73,23333124;7,850003294;3102;857;NortedeSantander;Abrego;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;BRISAS DEL PARAMO;;NortedeSantander - 
 11110020;ABRIAQUI [11110020];-76,07500241;6,642496664;1872;1096;Antioquia;Abriaqui;Caribe;DarienRioSucio;LAS JUNTAS;Occidente;Antioquia - Occidente
@@ -50,18 +50,18 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 27025020;CHARCON LIBERIA [27025020];-74,99999835;7,383329463;97;1564;Antioquia;Anori;MagdalenaCauca;AltoNechi;LEVERIA;Nordeste;Antioquia - Nordeste
 27025030;ANORI [27025030];-75,15052916;7,0719206;1576;1163;Antioquia;Anori;MagdalenaCauca;AltoNechi;;Nordeste;Antioquia - Nordeste
 26145020;BELLAVISTA [26145020];-75,80013735;5,275947527;1990;1071;Caldas;Anserma;MagdalenaCauca;RioRisaralda;BELLAVISTA;;Caldas - 
-26110150;INMACULADA LA [26110150];-75,99000344;4,790000872;943;1320;ValledelCauca;Ansermanuevo;MagdalenaCauca;RiosPescadorRUTChancoCatarinayCaÒaveral;;;ValledelCauca - 
+26110150;INMACULADA LA [26110150];-75,99000344;4,790000872;943;1320;ValledelCauca;Ansermanuevo;MagdalenaCauca;RiosPescadorRUTChancoCatarinayCa√±averal;;;ValledelCauca - 
 26115090;LAS BRISAS - AUT [26115090];-76,14427657;4,775581572;1948;1080;ValledelCauca;Ansermanuevo;Pacifico;RioSipi;ALTO TIGRE;;ValledelCauca - 
 26205040;IGUINA HACIENDA [26205040];-75,86666668;6,3666672;778;1365;Antioquia;Anza;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdia;HIGUINA;Occidente;Antioquia - Occidente
 26205060;NOQUE LA [26205060];-75,83333097;6,399997147;486;1447;Antioquia;Anza;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdia;LA NOQUE;Occidente;Antioquia - Occidente
 26210090;ANZA [26210090];-75,85925162;6,30313872;756;1371;Antioquia;Anza;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdia;VENDIAGUAL;Occidente;Antioquia - Occidente
 21240070;ANZOATEGUI [21240070];-75,09000288;4,637503524;1930;1084;Tolima;Anzoategui;MagdalenaCauca;RioTotare(1-7);;;Tolima - 
-12010060;LORENA LA [12010060];-76,68916298;7,863058278;10;1591;Antioquia;Apartado;Caribe;LitoralRioLeon;VEREDA CHURIDO;URABA;Antioquia - Urab·
-12010070;CASCO EL [12010070];-76,64777827;7,88444551;25;1587;Antioquia;Apartado;Caribe;LitoralRioLeon;VEREDA EL SALVADOR;URABA;Antioquia - Urab·
-12010160;SAN JOSE APARTADO [12010160];-76,59999766;7,866669131;38;1582;Antioquia;Apartado;Caribe;LitoralRioLeon;VEREDA SALSIPUEDES;URABA;Antioquia - Urab·
-12015020;UNIBAN [12015020];-76,65133325;7,825917883;33;1584;Antioquia;Apartado;Caribe;LitoralRioLeon;VEREDA ZUNGO CARRETERA;URABA;Antioquia - Urab·
-12030020;CARMELO EL [12030020];-76,38000435;8,620001092;38;1582;Antioquia;Arboletes;Caribe;LitoralRioSanJuan;EL CARMELO;URABA;Antioquia - Urab·
-12045010;ARBOLETES [12045010];-76,43194048;8,84694323;15;1590;Antioquia;Arboletes;Caribe;LitoralRioCanaleteyotrosArroyosDirectosalCaribe;;URABA;Antioquia - Urab·
+12010060;LORENA LA [12010060];-76,68916298;7,863058278;10;1591;Antioquia;Apartado;Caribe;LitoralRioLeon;VEREDA CHURIDO;URABA;Antioquia - Urab√°
+12010070;CASCO EL [12010070];-76,64777827;7,88444551;25;1587;Antioquia;Apartado;Caribe;LitoralRioLeon;VEREDA EL SALVADOR;URABA;Antioquia - Urab√°
+12010160;SAN JOSE APARTADO [12010160];-76,59999766;7,866669131;38;1582;Antioquia;Apartado;Caribe;LitoralRioLeon;VEREDA SALSIPUEDES;URABA;Antioquia - Urab√°
+12015020;UNIBAN [12015020];-76,65133325;7,825917883;33;1584;Antioquia;Apartado;Caribe;LitoralRioLeon;VEREDA ZUNGO CARRETERA;URABA;Antioquia - Urab√°
+12030020;CARMELO EL [12030020];-76,38000435;8,620001092;38;1582;Antioquia;Arboletes;Caribe;LitoralRioSanJuan;EL CARMELO;URABA;Antioquia - Urab√°
+12045010;ARBOLETES [12045010];-76,43194048;8,84694323;15;1590;Antioquia;Arboletes;Caribe;LitoralRioCanaleteyotrosArroyosDirectosalCaribe;;URABA;Antioquia - Urab√°
 25020970;ARENAL [25020970];-73,94110848;8,459442789;41;1582;Bolivar;Arenal;MagdalenaCauca;DirectosalMagdalena(BrazoMorales);;;Bolivar - 
 25021110;DIAMANTE EL [25021110];-74,08332898;8,366664284;690;1389;Bolivar;Arenal;MagdalenaCauca;DirectosalMagdalena(BrazoMorales);MUELA;;Bolivar - 
 23055070;ARGELIA [23055070];-75,13999964;5,729997421;1716;1131;Antioquia;Argelia;MagdalenaCauca;RioLaMiel(Samana);;Oriente;Antioquia - Oriente
@@ -73,7 +73,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 21250450;POTOSI HACIENDA [21250450];-74,8824717;5,053028902;292;1504;Tolima;Armero(Guayabal);MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;LA JOYA;;Tolima - 
 21250510;ARMERO GJA-C UNIVE [21250510];-74,91666842;4,966664442;370;1481;Tolima;Armero(Guayabal);MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;ARMERO;;Tolima - 
 21255090;ARMERO GRANJA [21255090];-74,89998878;4,99999946;284;1506;Tolima;Armero(Guayabal);MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;ARMERO;;Tolima - 
-25020480;PAJAROS LOS [25020480];-74,86777779;8,340555865;20;1588;Cordoba;Ayapel;MagdalenaCauca;CaucaSanJorgeLaMojana;CA—O MU—OZ;;Cordoba - 
+25020480;PAJAROS LOS [25020480];-74,86777779;8,340555865;20;1588;Cordoba;Ayapel;MagdalenaCauca;CaucaSanJorgeLaMojana;CA√ëO MU√ëOZ;;Cordoba - 
 25020780;CECILIA [25020780];-75,03416699;8,461390225;20;1588;Cordoba;Ayapel;MagdalenaCauca;CaucaSanJorgeLaMojana;CECILIA;;Cordoba - 
 25025030;AYAPEL - AUT [25025030];-75,16455616;8,295062422;33;1584;Cordoba;Ayapel;MagdalenaCauca;CaucaSanJorgeLaMojana;SAN JORGE ABAJO;;Cordoba - 
 56010030;CUPICA [56010030];-77,49061554;6,706556434;9;1592;Choco;BahiaSolano(Mutis);Pacifico;DirectosDirectosPacificoFronteraPanama;SIN DEFINIR;;Choco - 
@@ -95,7 +95,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 11085010;LOMA LA [11085010];-76,98333527;6,533332082;49;1579;Choco;Bojaya(Bellavista);Caribe;DarienRioBojaya;SIN DEFINIR;;Choco - 
 11090010;OPOGADO [11090010];-76,97272424;6,812529297;8;1592;Choco;Bojaya(Bellavista);Caribe;DarienRioNapipiRioOpogado;SIN DEFINIR;;Choco - 
 24010640;BOLIVAR [24010640];-73,77083115;5,986112519;2148;1038;Santander;Bolivar;MagdalenaCauca;RioSuarez;;;Santander - 
-26230160;BRICENO [26230160];-75,51166452;7,105273436;1377;1211;Antioquia;BriceÒo;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdivia;SAN FRANCISCO;Norte;Antioquia - Norte
+26230160;BRICENO [26230160];-75,51166452;7,105273436;1377;1211;Antioquia;Brice√±o;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdivia;SAN FRANCISCO;Norte;Antioquia - Norte
 23190590;FLORESTA LA [23190590];-73,12389302;7,090282123;829;1351;Santander;Bucaramanga;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;;;Santander - 
 23190800;HIMAT R-11 [23190800];-73,13333119;7,116667916;927;1325;Santander;Bucaramanga;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;;;Santander - 
 23190830;BUCARAMANGA IDEAM [23190830];-73,11833138;7,128336824;1007;1304;Santander;Bucaramanga;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;;;Santander - 
@@ -126,24 +126,24 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 23170030;YANACUE [23170030];-73,99999754;7,299999676;63;1575;Bolivar;Cantagallo;MagdalenaCauca;RioCimitarrayotrosdirectosalMagdalena;SIN DEFINIR;;Bolivar - 
 23170050;SANTO DOMINGO [23170050];-74,21667101;7,116662821;243;1519;Bolivar;Cantagallo;MagdalenaCauca;RioCimitarrayotrosdirectosalMagdalena;SANTO DOMINGO;;Bolivar - 
 23170060;MONTERRUBIO FINCA [23170060];-74,04999753;7,333336569;188;1536;Bolivar;Cantagallo;MagdalenaCauca;RioCimitarrayotrosdirectosalMagdalena;SIN DEFINIR;;Bolivar - 
-11110040;CANASGORDAS [11110040];-76,03333228;6,749999257;1330;1222;Antioquia;CaÒasgordas;Caribe;DarienRioSucio;MEDIA CUESTA;Occidente;Antioquia - Occidente
-11115020;CANASGORDAS - AUT [11115020];-76,02966672;6,758029112;1263;1239;Antioquia;CaÒasgordas;Caribe;AtratoDarienRioSucio;;Occidente;Antioquia - Occidente
+11110040;CANASGORDAS [11110040];-76,03333228;6,749999257;1330;1222;Antioquia;Ca√±asgordas;Caribe;DarienRioSucio;MEDIA CUESTA;Occidente;Antioquia - Occidente
+11115020;CANASGORDAS - AUT [11115020];-76,02966672;6,758029112;1263;1239;Antioquia;Ca√±asgordas;Caribe;AtratoDarienRioSucio;;Occidente;Antioquia - Occidente
 23060110;CAPARRAPI [23060110];-74,49477514;5,352195985;1139;1270;Cundinamarca;Caparrapi;MagdalenaCauca;RioNegro;SUZNE;;Cundinamarca - 
 23060160;SAN PABLO [23060160];-74,46241894;5,485087115;1138;1270;Cundinamarca;Caparrapi;MagdalenaCauca;RioNegro;SAN PEDRO;;Cundinamarca - 
 26170170;PRADERA LA [26170170];-75,66666752;5,533337608;2339;999;Antioquia;Caramanta;MagdalenaCauca;RioFRioyOtrosDirectosalCauca;LA CASCADA;SUROESTE;Antioquia - Suroeste
 26170180;CARAMANTA [26170180];-75,64130633;5,54783477;2112;1045;Antioquia;Caramanta;MagdalenaCauca;RioFRioyOtrosDirectosalCauca;PELADEROS;SUROESTE;Antioquia - Suroeste
-12010050;TOSCANA LA [12010050];-76,70305849;7,808054842;17;1589;Antioquia;Carepa;Caribe;LitoralRioLeon;ZARABANA;URABA;Antioquia - Urab·
-12010080;SANTA ISABEL [12010080];-76,66666573;7,750003075;34;1584;Antioquia;Carepa;Caribe;LitoralRioLeon;LA CADENA;URABA;Antioquia - Urab·
-12010090;TRIGANA [12010090];-76,71189024;7,74766922;21;1588;Antioquia;Carepa;Caribe;LitoralRioLeon;EL ENCANTO;URABA;Antioquia - Urab·
-12015060;TULENAPA - AUT [12015060];-76,66575065;7,773943956;31;1585;Antioquia;Carepa;Caribe;LitoralRioLeon;CASA VERDE;URABA;Antioquia - Urab·
-12015070;AEROPUERTO LOS CEDROS [12015070];-76,7178927;7,816386353;15;1590;Antioquia;Carepa;Caribe;LitoralRioLeon;ZARABANA;URABA;Antioquia - Urab·
+12010050;TOSCANA LA [12010050];-76,70305849;7,808054842;17;1589;Antioquia;Carepa;Caribe;LitoralRioLeon;ZARABANA;URABA;Antioquia - Urab√°
+12010080;SANTA ISABEL [12010080];-76,66666573;7,750003075;34;1584;Antioquia;Carepa;Caribe;LitoralRioLeon;LA CADENA;URABA;Antioquia - Urab√°
+12010090;TRIGANA [12010090];-76,71189024;7,74766922;21;1588;Antioquia;Carepa;Caribe;LitoralRioLeon;EL ENCANTO;URABA;Antioquia - Urab√°
+12015060;TULENAPA - AUT [12015060];-76,66575065;7,773943956;31;1585;Antioquia;Carepa;Caribe;LitoralRioLeon;CASA VERDE;URABA;Antioquia - Urab√°
+12015070;AEROPUERTO LOS CEDROS [12015070];-76,7178927;7,816386353;15;1590;Antioquia;Carepa;Caribe;LitoralRioLeon;ZARABANA;URABA;Antioquia - Urab√°
 24010610;CARMEN DE CARUPA [24010610];-73,90446863;5,351279566;2966;881;Cundinamarca;CarmenDeCarupa;MagdalenaCauca;RioSuarez;;;Cundinamarca - 
 24015380;CARMEN DE CARUPA - AUT [24015380];-73,89833248;5,34722557;2957;882;Cundinamarca;CarmenDeCarupa;MagdalenaCauca;RioSuarez;;;Cundinamarca - 
 11100010;VIGIA DE CURVARADO [11100010];-76,91667002;7,08333246;5;1593;Choco;CarmenDelDarien(Curbarado);Caribe;DarienRioMurindoDirectosalAtrato;SIN DEFINIR;;Choco - 
 11100020;DOMINGODO [11100020];-77,0300006;7,179997419;4;1593;Choco;CarmenDelDarien(Curbarado);Caribe;DarienRioSucio;LAS MERCEDES;;Choco - 
 23080650;CAMPOALEGRE [23080650];-75,33561272;6,073781912;2181;1031;Antioquia;CarmenDeViboral;MagdalenaCauca;RioNare;;Oriente;Antioquia - Oriente
 23080790;LINDA LA [23080790];-75,28333419;5,950000444;2603;947;Antioquia;CarmenDeViboral;MagdalenaCauca;RioNare;LA LINDA;Oriente;Antioquia - Oriente
-26100830;PALMASOLA [26100830];-75,96166796;4,688416149;906;1330;ValledelCauca;Cartago;MagdalenaCauca;RiosLasCai√Ç¬±asLosMicosyObando;ZARAGOZA;;ValledelCauca - 
+26100830;PALMASOLA [26100830];-75,96166796;4,688416149;906;1330;ValledelCauca;Cartago;MagdalenaCauca;RiosLasCai√É‚Äö√Ç¬±asLosMicosyObando;ZARAGOZA;;ValledelCauca - 
 25020370;MONEDA LA HACIENDA [25020370];-74,94222089;8,036670111;42;1581;Antioquia;Caucasia;MagdalenaCauca;DirectosalCaucaentrePtoValdiviayRioNechi;MARGENTO;Bajo Cauca;Antioquia - Bajo Cauca
 25020530;LA ILUSION [25020530];-75,08975306;8,025501421;53;1578;Antioquia;Caucasia;MagdalenaCauca;CaucaSanJorgeLaMojana;LA ILUSION;Bajo Cauca;Antioquia - Bajo Cauca
 25021390;CAUCASIA [25021390];-75,20000137;7,999996063;44;1581;Antioquia;Caucasia;MagdalenaCauca;CaucaSanJorgeLaMojana;CAMPO ALEGRE;Bajo Cauca;Antioquia - Bajo Cauca
@@ -159,12 +159,12 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 11010010;VUELTA LA [11010010];-76,54471848;5,458947519;75;1571;Choco;Certegui;Caribe;DarienRioAndagueda;SIN DEFINIR;;Choco - 
 11030010;CERTEGUI [11030010];-76,61311036;5,375026722;51;1578;Choco;Certegui;Caribe;DarienRioQuito;CERTEGUI;;Choco - 
 21230120;BELLEZA LA [21230120];-74,58111261;4,98538545;1360;1215;Cundinamarca;Chaguani;MagdalenaCauca;RioSecoyotrosDirectosalMagdalena;LLANADAS;;Cundinamarca - 
-12010030;BARRANQUILLITA [12010030];-76,69999699;7,569997433;18;1589;Antioquia;Chigorodo;Caribe;LitoralRioLeon;EL VENADO;URABA;Antioquia - Urab·
-12010040;TULENAPA [12010040];-76,6666629;7,66667108;31;1585;Antioquia;Chigorodo;Caribe;LitoralRioLeon;LA RIVERA;URABA;Antioquia - Urab·
-12010130;CHIGORODO [12010130];-76,70000317;7,69999881;27;1586;Antioquia;Chigorodo;Caribe;LitoralRioLeon;CHIRIDO;URABA;Antioquia - Urab·
-12015030;IDEMA-MONTECRISANTO [12015030];-76,68333057;7,650001551;39;1582;Antioquia;Chigorodo;Caribe;LitoralRioLeon;CHAMPITAS;URABA;Antioquia - Urab·
-12015080;CERRAZON LA [12015080];-76,61667011;7,716670201;65;1574;Antioquia;Chigorodo;Caribe;LitoralRioLeon;RIPEA;URABA;Antioquia - Urab·
-12015090;PALMERA LA [12015090];-76,6055589;7,538329167;51;1578;Antioquia;Chigorodo;Caribe;LitoralRioLeon;GUAPARRIBA;URABA;Antioquia - Urab·
+12010030;BARRANQUILLITA [12010030];-76,69999699;7,569997433;18;1589;Antioquia;Chigorodo;Caribe;LitoralRioLeon;EL VENADO;URABA;Antioquia - Urab√°
+12010040;TULENAPA [12010040];-76,6666629;7,66667108;31;1585;Antioquia;Chigorodo;Caribe;LitoralRioLeon;LA RIVERA;URABA;Antioquia - Urab√°
+12010130;CHIGORODO [12010130];-76,70000317;7,69999881;27;1586;Antioquia;Chigorodo;Caribe;LitoralRioLeon;CHIRIDO;URABA;Antioquia - Urab√°
+12015030;IDEMA-MONTECRISANTO [12015030];-76,68333057;7,650001551;39;1582;Antioquia;Chigorodo;Caribe;LitoralRioLeon;CHAMPITAS;URABA;Antioquia - Urab√°
+12015080;CERRAZON LA [12015080];-76,61667011;7,716670201;65;1574;Antioquia;Chigorodo;Caribe;LitoralRioLeon;RIPEA;URABA;Antioquia - Urab√°
+12015090;PALMERA LA [12015090];-76,6055589;7,538329167;51;1578;Antioquia;Chigorodo;Caribe;LitoralRioLeon;GUAPARRIBA;URABA;Antioquia - Urab√°
 13070300;CHIMA [13070300];-75,61666397;9,149999876;11;1591;Cordoba;Chima;Caribe;BajoSinu;CABECERA;;Cordoba - 
 13070310;CHIMA [13070310];-75,61666397;9,149999876;11;1591;Cordoba;Chima;Caribe;BajoSinu;CABECERA;;Cordoba - 
 13075010;CHIMA [13075010];-75,62208177;9,150747151;11;1591;Cordoba;Chima;Caribe;BajoSinu;;;Cordoba - 
@@ -199,7 +199,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 13070330;ICOTEAS LAS [13070330];-75,76666753;9,050003479;4;1593;Cordoba;Cotorra;Caribe;BajoSinu;EL GRULLO;;Cordoba - 
 22050100;GUAYABOS LOS [22050100];-75,09694567;4,656557401;1428;1198;Tolima;Coyaima;MagdalenaCauca;RioTotare(1-7);EL FIERRO;;Tolima - 
 27015150;PROGRESO EL HACIENDA [27015150];-75,39717083;6,44747446;2486;970;Antioquia;DonMatias;MagdalenaCauca;RioPorce;ROMAZON;Norte;Antioquia - Norte
-26110120;VILLA NUEVA [26110120];-76,03853168;4,971082145;1321;1224;ValledelCauca;ElAguila;MagdalenaCauca;RiosPescadorRUTChancoCatarinayCaÒaveral;762008;;ValledelCauca - 
+26110120;VILLA NUEVA [26110120];-76,03853168;4,971082145;1321;1224;ValledelCauca;ElAguila;MagdalenaCauca;RiosPescadorRUTChancoCatarinayCa√±averal;762008;;ValledelCauca - 
 27030060;AMACERI [27030060];-74,73333083;7,75000266;90;1566;Antioquia;ElBagre;MagdalenaCauca;BajoNechi(md);EL CASTILLO;Bajo Cauca;Antioquia - Bajo Cauca
 27030130;LONDRE EL [27030130];-74,65000221;7,466669666;474;1450;Antioquia;ElBagre;MagdalenaCauca;BajoNechi(md);ARENAS BLANCAS;Bajo Cauca;Antioquia - Bajo Cauca
 27030150;ASI ES LA VIDA [27030150];-74,58333117;7,733336197;647;1401;Antioquia;ElBagre;MagdalenaCauca;BajoNechi(md);BALDIOS NACIONALES;Bajo Cauca;Antioquia - Bajo Cauca
@@ -216,7 +216,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 23145020;CARMEN EL [23145020];-73,51000163;6,696393381;798;1359;Santander;ElCarmen;MagdalenaCauca;RioOpon;QUINAL ALTO;;Santander - 
 26190130;MANSA LA [26190130];-76,09999813;5,749996564;1937;1082;Choco;ElCarmen;Caribe;DarienAltoAtrato;CAUDUAS;;Choco - 
 24011070;SANTUARIO EL [24011070];-73,4672241;6,323606722;1760;1121;Santander;ElGuacamayo;MagdalenaCauca;RioSuarez;PALESTINA;;Santander - 
-23060180;PENON EL [23060180];-74,29449939;5,253441926;1399;1205;Cundinamarca;ElPeÒon;MagdalenaCauca;RioNegro;CENTRO;;Cundinamarca - 
+23060180;PENON EL [23060180];-74,29449939;5,253441926;1399;1205;Cundinamarca;ElPe√±on;MagdalenaCauca;RioNegro;CENTRO;;Cundinamarca - 
 23190140;PLAYON EL [23190140];-73,20138862;7,464720097;429;1463;Santander;ElPlayon;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;;;Santander - 
 27010830;SAN ISIDRO [27010830];-75,51575135;6,563218287;2324;1002;Antioquia;Entrerrios;MagdalenaCauca;RioPorce;RIO GRANDE;Norte;Antioquia - Norte
 23190270;LIMONCITO [23190270];-73,10000445;7,049999303;911;1329;Santander;Floridablanca;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;RIO FRIO;;Santander - 
@@ -304,7 +304,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 21255150;GARCIA HACIENDA [21255150];-74,89155238;4,855415484;327;1494;Tolima;Lerida;MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;AREA URBANA Y SUBURBANA;;Tolima - 
 21250500;LIBANO [21250500];-75,07586;4,921892398;1631;1151;Tolima;Libano;MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;;;Tolima - 
 21250530;PALMA LA [21250530];-75,08333304;4,949996911;1553;1169;Tolima;Libano;MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;ALTAGRACIA;;Tolima - 
-26230140;PLACITA LA [26230140];-75,75805744;6,720892466;1540;1172;Antioquia;Liborina;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdivia;LA PE—OLA;Occidente;Antioquia - Occidente
+26230140;PLACITA LA [26230140];-75,75805744;6,720892466;1540;1172;Antioquia;Liborina;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdivia;LA PE√ëOLA;Occidente;Antioquia - Occidente
 11035010;LLORO [11035010];-76,5799966;5,509998436;45;1580;Choco;Lloro;Caribe;DarienRioQuito;SIN DEFINIR;;Choco - 
 13070240;CERRO BAHIA [13070240];-75,84999604;9,300004253;23;1587;Cordoba;Lorica;Caribe;BajoSinu;PUEBLO CHIQUITO;;Cordoba - 
 13070250;TRAPICHE EL [13070250];-75,8833328;9,316663762;4;1593;Cordoba;Lorica;Caribe;BajoSinu;PUEBLO CHIQUITO;;Cordoba - 
@@ -392,26 +392,26 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 21250050;ALTO DEL OSO [21250050];-75,2500002;4,850001526;3559;782;Tolima;Murillo;MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;ALFOMBRALES;;Tolima - 
 21250480;SANTA BARBARA [21250480];-75,22019129;4,906613263;3315;821;Tolima;Murillo;MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;SANTA BARBARA;;Tolima - 
 21255170;MURILLO - AUT [21255170];-75,17327881;4,870556202;2994;876;Tolima;Murillo;MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;;;Tolima - 
-11100030;MURINDO [11100030];-76,75000316;7,000000781;25;1587;Antioquia;Murindo;Caribe;DarienRioMurindoDirectosalAtrato;CANAL;URABA;Antioquia - Urab·
-11105010;MURINDO [11105010];-76,74999942;6,966668634;15;1590;Antioquia;Murindo;Caribe;DarienRioMurindoDirectosalAtrato;MURINDO VIEJO;URABA;Antioquia - Urab·
-12010150;VILLA ARTEAGA [12010150];-76,61666748;7,449996081;27;1586;Antioquia;Mutata;Caribe;LitoralRioLeon;MONTERIA LEON;URABA;Antioquia - Urab·
-12015010;VILLARTEAGA [12015010];-76,48602917;7,334662592;144;1549;Antioquia;Mutata;Caribe;LitoralRioLeon;CAUCHERAS;URABA;Antioquia - Urab·
+11100030;MURINDO [11100030];-76,75000316;7,000000781;25;1587;Antioquia;Murindo;Caribe;DarienRioMurindoDirectosalAtrato;CANAL;URABA;Antioquia - Urab√°
+11105010;MURINDO [11105010];-76,74999942;6,966668634;15;1590;Antioquia;Murindo;Caribe;DarienRioMurindoDirectosalAtrato;MURINDO VIEJO;URABA;Antioquia - Urab√°
+12010150;VILLA ARTEAGA [12010150];-76,61666748;7,449996081;27;1586;Antioquia;Mutata;Caribe;LitoralRioLeon;MONTERIA LEON;URABA;Antioquia - Urab√°
+12015010;VILLARTEAGA [12015010];-76,48602917;7,334662592;144;1549;Antioquia;Mutata;Caribe;LitoralRioLeon;CAUCHERAS;URABA;Antioquia - Urab√°
 23120050;MUZO [23120050];-74,10122611;5,534804343;847;1346;Boyaca;Muzo;MagdalenaCauca;RioCarare(Minero);;;Boyaca - 
-25020310;NECHI [25020310];-74,83333519;8,100003523;32;1584;Antioquia;Nechi;MagdalenaCauca;CaucaSanJorgeLaMojana;CA—O PESCADO;Bajo Cauca;Antioquia - Bajo Cauca
+25020310;NECHI [25020310];-74,83333519;8,100003523;32;1584;Antioquia;Nechi;MagdalenaCauca;CaucaSanJorgeLaMojana;CA√ëO PESCADO;Bajo Cauca;Antioquia - Bajo Cauca
 25020540;PATIO BONITO [25020540];-74,70610731;8,031115011;36;1583;Antioquia;Nechi;MagdalenaCauca;BajoNechi(md);LA TRINIDAD;Bajo Cauca;Antioquia - Bajo Cauca
 25021480;ESPERANZA LA RADIO [25021480];-74,78999813;8,02999872;41;1582;Antioquia;Nechi;MagdalenaCauca;DirectosalBajoNechi(mi);HOYO GRANDE;Bajo Cauca;Antioquia - Bajo Cauca
 25025140;NECHI [25025140];-74,76666284;8,099999257;63;1575;Antioquia;Nechi;MagdalenaCauca;BajoNechi(md);SANTA MARIA;Bajo Cauca;Antioquia - Bajo Cauca
 27030040;GUAMO EL [27030040];-74,81400044;7,904415075;35;1583;Antioquia;Nechi;MagdalenaCauca;DirectosalBajoNechi(mi);EL GUAMO;Bajo Cauca;Antioquia - Bajo Cauca
 27040040;NECHI [27040040];-74,76944592;8,097165166;44;1581;Antioquia;Nechi;MagdalenaCauca;BajoNechi(md);SANTA MARIA;Bajo Cauca;Antioquia - Bajo Cauca
-12025020;CARIBIA [12025020];-76,68333152;8,499996467;44;1581;Antioquia;Necocli;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;CARIBIA;URABA;Antioquia - Urab·
-12025030;MELLITO EL [12025030];-76,67336144;8,542663139;49;1579;Antioquia;Necocli;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;EL MELLITO ALTO;URABA;Antioquia - Urab·
+12025020;CARIBIA [12025020];-76,68333152;8,499996467;44;1581;Antioquia;Necocli;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;CARIBIA;URABA;Antioquia - Urab√°
+12025030;MELLITO EL [12025030];-76,67336144;8,542663139;49;1579;Antioquia;Necocli;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;EL MELLITO ALTO;URABA;Antioquia - Urab√°
 26160100;NEIRA [26160100];-75,51844781;5,163167108;1964;1076;Caldas;Neira;MagdalenaCauca;RioTapiasyotrosdirectosalCauca;;;Caldas - 
 26160120;CRISTALINA LA [26160120];-75,43577932;5,192198458;2384;990;Caldas;Neira;MagdalenaCauca;RioTapiasyotrosdirectosalCauca;CRISTALINA;;Caldas - 
 23060260;CHILAGUA FINCA [23060260];-74,382027;5,064639075;1051;1292;Cundinamarca;Nocaima;MagdalenaCauca;RioNegro;JAGUAL;;Cundinamarca - 
 23050250;NORCASIA RADIO [23050250];-74,89169346;5,574471229;771;1367;Caldas;Norcasia;MagdalenaCauca;RioLaMiel(Samana);;;Caldas - 
 54020020;NOVITA [54020020];-76,60555486;4,9556945;50;1579;Choco;Novita;Pacifico;RioTamanayotrosDirectosSanJuan;;;Choco - 
 56010040;NUQUI [56010040];-77,2658292;5,708057141;3;1594;Choco;Nuqui;Pacifico;DirectosPacificoFronteraPanama;SIN DEFINIR;;Choco - 
-26100300;OBANDO [26100300];-75,9658364;4,588606616;948;1319;ValledelCauca;Obando;MagdalenaCauca;RiosLasCai√Ç¬±asLosMicosyObando;GACHIMBAL;;ValledelCauca - 
+26100300;OBANDO [26100300];-75,9658364;4,588606616;948;1319;ValledelCauca;Obando;MagdalenaCauca;RiosLasCai√É‚Äö√Ç¬±asLosMicosyObando;GACHIMBAL;;ValledelCauca - 
 26230010;OLAYA [26230010];-75,81088617;6,628719018;542;1431;Antioquia;Olaya;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdivia;EL PENCAL;Occidente;Antioquia - Occidente
 23120260;OTANCHE [23120260];-74,18461549;5,661724979;1078;1285;Boyaca;Otanche;MagdalenaCauca;RioCarare(Minero);CENTRO;;Boyaca - 
 23125080;OTANCHE [23125080];-74,18461549;5,661724979;1078;1285;Boyaca;Otanche;MagdalenaCauca;RioCarare(Minero);CENTRO;;Boyaca - 
@@ -426,7 +426,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 23120140;PAUNA [23120140];-73,98333302;5,650003222;1153;1266;Boyaca;Pauna;MagdalenaCauca;RioCarare(Minero);HONDA Y VOLCAN;;Boyaca - 
 23125090;PAUNA [23125090];-73,98102881;5,649473242;1188;1257;Boyaca;Pauna;MagdalenaCauca;RioCarare(Minero);HONDA Y VOLCAN;;Boyaca - 
 23050230;SAN JOSE PENSILVAN [23050230];-75,14916581;5,374306788;1991;1071;Caldas;Pensilvania;MagdalenaCauca;RioLaMiel(Samana);SAN JOSE;;Caldas - 
-23085110;PENOL EL [23085110];-75,24130178;6,214222317;2017;1065;Antioquia;PeÒol;MagdalenaCauca;RioNare;GUAMITO;Oriente;Antioquia - Oriente
+23085110;PENOL EL [23085110];-75,24130178;6,214222317;2017;1065;Antioquia;Pe√±ol;MagdalenaCauca;RioNare;GUAMITO;Oriente;Antioquia - Oriente
 26220050;CUMBRE LA [26220050];-75,93333122;7,033330384;1883;1094;Antioquia;Peque;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdia;GUAYABAL;Occidente;Antioquia - Occidente
 26130180;SAN ISIDRO [26130180];-75,85833216;4,800968366;1170;1262;Risaralda;Pereira;MagdalenaCauca;RioLaVieja;CARRITOS;;Risaralda - 
 26130220;MARACAY [26130220];-75,84305141;4,812168596;1188;1257;Risaralda;Pereira;MagdalenaCauca;RioOtunyotrosdirectosalCauca;CARRITOS;;Risaralda - 
@@ -464,7 +464,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 23110030;PUERTO NINO [23110030];-74,4217769;5,937531302;186;1536;Boyaca;PuertoBoyaca;MagdalenaCauca;DirectosalMagdalenaMedioentreRiosNegro;LA PIZARRA;;Boyaca - 
 23110040;TRIQUE EL [23110040];-74,56834458;5,880892192;149;1548;Boyaca;PuertoBoyaca;MagdalenaCauca;DirectosalMagdalenaMedioentreRiosNegro;EL PESCADO;;Boyaca - 
 23115010;PUERTO BOYACA [23115010];-74,56666811;5,978329131;140;1551;Boyaca;PuertoBoyaca;MagdalenaCauca;DirectosalMagdalenaMedioentreRiosNegro;PUERTO NINO;;Boyaca - 
-12040010;JARAMAGAL [12040010];-76,22083658;8,9008352;56;1577;Cordoba;PuertoEscondido;Caribe;LitoralRioCanaleteyotrosArroyosDirectosalCaribe;LA CaÒa DE CANALETE;;Cordoba - 
+12040010;JARAMAGAL [12040010];-76,22083658;8,9008352;56;1577;Cordoba;PuertoEscondido;Caribe;LitoralRioCanaleteyotrosArroyosDirectosalCaribe;LA Ca√±a DE CANALETE;;Cordoba - 
 12045020;CRISTO REY - AUT [12045020];-76,22444204;9,071113723;9;1592;Cordoba;PuertoEscondido;Caribe;LitoralRioCanaleteyotrosArroyosDirectosalCaribe;CRISTO REY;;Cordoba - 
 25010010;PUERTO LIBERTADOR [25010010];-75,67999628;7,890274586;54;1577;Cordoba;PuertoLibertador;MagdalenaCauca;CaucaAltoSanJorge;CABECERA;;Cordoba - 
 25010110;ACACIAS LAS HACIENDA [25010110];-75,6472213;8,006111987;51;1578;Cordoba;PuertoLibertador;MagdalenaCauca;CaucaAltoSanJorge;MORALITO;;Cordoba - 
@@ -491,7 +491,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 27010680;MACARENA LA HACIENDA [27010680];-74,84999572;7,050002296;507;1441;Antioquia;Remedios;MagdalenaCauca;RioPorce;MATA EL SILENCIO;Nordeste;Antioquia - Nordeste
 27030080;CRUZADA LA [27030080];-74,71505658;7,068056665;715;1382;Antioquia;Remedios;MagdalenaCauca;BajoNechi(md);JUAN BRAN;Nordeste;Antioquia - Nordeste
 27030240;PUENTE BAGRE [27030240];-74,59999916;7,116663602;221;1526;Antioquia;Remedios;MagdalenaCauca;BajoNechi(md);BOMINAS;Nordeste;Antioquia - Nordeste
-23190580;SAN DANIEL HACIENDA [23190580];-73,61877796;8,088751385;80;1569;Cesar;RioDeOro;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;CRUCE DE PATI—O;;Cesar - 
+23190580;SAN DANIEL HACIENDA [23190580];-73,61877796;8,088751385;80;1569;Cesar;RioDeOro;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;CRUCE DE PATI√ëO;;Cesar - 
 23085260;LA SELVA - AUT [23085260];-75,41455152;6,131918805;2117;1044;Antioquia;Rionegro;MagdalenaCauca;RioNare;TRES PUERTAS;Oriente;Antioquia - Oriente
 23085270;AEROPUERTO J.M. CORDOVA - AUT [23085270];-75,43000064;6,169996657;2139;1039;Antioquia;Rionegro;MagdalenaCauca;RioNare;AEROPUERTO;Oriente;Antioquia - Oriente
 23190240;CNO SIETE [23190240];-73,44999946;7,399998359;118;1557;Santander;Rionegro;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;CRUCE ROBLEDO;;Santander - 
@@ -546,10 +546,10 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 25025170;COLOMBOY [25025170];-75,49883251;8,740863382;151;1547;Cordoba;Sahagun;MagdalenaCauca;CaucaSanJorgeLaMojana;VEREDA COLOMBOY;;Cordoba - 
 26160080;SALAMINA CONC BARC [26160080];-75,48930788;5,395446167;1834;1105;Caldas;Salamina;MagdalenaCauca;RioTapiasyotrosdirectosalCauca;;;Caldas - 
 26180250;VALLE ALTO - AUT [26180250];-75,31777686;5,34999732;3299;824;Caldas;Salamina;MagdalenaCauca;RioArma;GUAYAQUIL;;Caldas - 
-26180260;MIRANDA LA [26180260];-75,33358045;5,427171137;2923;888;Caldas;Salamina;MagdalenaCauca;RioArma;EL CA—ON;;Caldas - 
+26180260;MIRANDA LA [26180260];-75,33358045;5,427171137;2923;888;Caldas;Salamina;MagdalenaCauca;RioArma;EL CA√ëON;;Caldas - 
 26185040;SAN FELIX [26185040];-75,37533528;5,372943657;2850;902;Caldas;Salamina;MagdalenaCauca;RioArma;EL CEDRAL;;Caldas - 
 26120160;SALENTO [26120160];-75,56917047;4,636274965;1982;1073;Quindio;Salento;MagdalenaCauca;RioLaVieja;;;Quindio - 
-26210110;PENALISA [26210110];-75,86116645;5,934914477;558;1426;Antioquia;Salgar;MagdalenaCauca;RioSanJuan;PE—ALISA;SUROESTE;Antioquia - Suroeste
+26210110;PENALISA [26210110];-75,86116645;5,934914477;558;1426;Antioquia;Salgar;MagdalenaCauca;RioSanJuan;PE√ëALISA;SUROESTE;Antioquia - Suroeste
 23055040;SAMANA [23055040];-74,99921878;5,41944308;1486;1184;Caldas;Samana;MagdalenaCauca;RioLaMiel(Samana);SEGOVIA;;Caldas - 
 23055080;FLORENCIA [23055080];-75,05000186;5,533331871;1443;1195;Caldas;Samana;MagdalenaCauca;RioLaMiel(Samana);SANTAMARIA;;Caldas - 
 23190110;LIBANO EL [23190110];-73,42805244;7,838059384;100;1563;Cesar;SanAlberto;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;EL PESCADO;;Cesar - 
@@ -570,12 +570,12 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 13070120;CALLEMAR [13070120];-75,67777939;8,69749894;49;1579;Cordoba;SanCarlos;Caribe;BajoSinu;TREMENTINO;;Cordoba - 
 13070170;BUENOS AIRES 1 [13070170];-75,74972584;8,772776464;10;1591;Cordoba;SanCarlos;Caribe;BajoSinu;EL HATO;;Cordoba - 
 13070190;COROZA 2 [13070190];-75,76500008;8,80472513;9;1592;Cordoba;SanCarlos;Caribe;BajoSinu;CORREGIMIENTO LOS VENADOS CAMPANITO;;Cordoba - 
-23080490;SAN CARLOS [23080490];-74,98333033;6,200004033;1064;1289;Antioquia;SanCarlos;MagdalenaCauca;RioNare;CaÒaVERAL;Oriente;Antioquia - Oriente
+23080490;SAN CARLOS [23080490];-74,98333033;6,200004033;1064;1289;Antioquia;SanCarlos;MagdalenaCauca;RioNare;Ca√±aVERAL;Oriente;Antioquia - Oriente
 23080800;PATIO BONITO [23080800];-74,89999661;6,183331953;946;1320;Antioquia;SanCarlos;MagdalenaCauca;RioNare;PATIO BONITO;Oriente;Antioquia - Oriente
 23080810;JORDAN EL [23080810];-74,82811173;6,249497555;824;1352;Antioquia;SanCarlos;MagdalenaCauca;RioNare;PARAGUAS;Oriente;Antioquia - Oriente
-23080930;POPO EL [23080930];-74,98333033;6,200004033;1064;1289;Antioquia;SanCarlos;MagdalenaCauca;RioNare;CaÒaVERAL;Oriente;Antioquia - Oriente
+23080930;POPO EL [23080930];-74,98333033;6,200004033;1064;1289;Antioquia;SanCarlos;MagdalenaCauca;RioNare;Ca√±aVERAL;Oriente;Antioquia - Oriente
 23085010;CALDERAS [23085010];-75,06666843;6,1499973;1578;1163;Antioquia;SanCarlos;MagdalenaCauca;RioNare;HONDITA;Oriente;Antioquia - Oriente
-23085130;SAN CARLOS [23085130];-74,98333033;6,200004033;1064;1289;Antioquia;SanCarlos;MagdalenaCauca;RioNare;CaÒaVERAL;Oriente;Antioquia - Oriente
+23085130;SAN CARLOS [23085130];-74,98333033;6,200004033;1064;1289;Antioquia;SanCarlos;MagdalenaCauca;RioNare;Ca√±aVERAL;Oriente;Antioquia - Oriente
 23085220;SAN CARLOS [23085220];-75,03891999;6,157664945;1135;1271;Antioquia;SanCarlos;MagdalenaCauca;RioNare;DOSQUEBRADAS;Oriente;Antioquia - Oriente
 23125070;SAN CAYETANO [23125070];-74,06666957;5,300002729;2142;1039;Cundinamarca;SanCayetano;MagdalenaCauca;RioCarare(Minero);EL CENTRO;;Cundinamarca - 
 23085140;SAN FRANCISCO [23085140];-75,10069243;5,963803651;1293;1231;Antioquia;SanFrancisco;MagdalenaCauca;RioNare;;Oriente;Antioquia - Oriente
@@ -594,12 +594,12 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 54025010;SAN JOSE PALMAR [54025010];-76,23235781;4,898079469;1081;1284;Choco;SanJoseDelPalmar;Pacifico;RioTamanayotrosDirectosSanJuan;273077;;Choco - 
 25010060;URE [25010060];-75,50911;7,871137391;61;1575;Cordoba;SanJoseDeUre;MagdalenaCauca;CaucaAltoSanJorge;LA DORADA;;Cordoba - 
 21230070;SAN JUAN D RIOSECO [21230070];-74,62283355;4,851275486;1335;1221;Cundinamarca;SanJuanDeRioseco;MagdalenaCauca;RioSecoyotrosDirectosalMagdalena;;;Cundinamarca - 
-12030010;SAN JUAN DE URABA [12030010];-76,53305737;8,755218269;20;1588;Antioquia;SanJuanDeUraba;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;;URABA;Antioquia - Urab·
+12030010;SAN JUAN DE URABA [12030010];-76,53305737;8,755218269;20;1588;Antioquia;SanJuanDeUraba;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;;URABA;Antioquia - Urab√°
 25020160;SAN MARCOS [25020160];-75,13333584;8,633336729;15;1590;Sucre;SanMarcos;MagdalenaCauca;CaucaSanJorgeLaMojana;SIN DEFINIR;;Sucre - 
 25020740;EUREKA HACIENDA [25020740];-75,01471973;8,629167321;18;1589;Sucre;SanMarcos;MagdalenaCauca;CaucaSanJorgeLaMojana;SIN DEFINIR;;Sucre - 
 25021470;TORNO EL HACIENDA [25021470];-75,08972503;8,576388287;23;1587;Sucre;SanMarcos;MagdalenaCauca;CaucaSanJorgeLaMojana;SIN DEFINIR;;Sucre - 
 25021660;MIRASOL [25021660];-75,25722516;8,600835111;43;1581;Sucre;SanMarcos;MagdalenaCauca;CaucaSanJorgeLaMojana;SIN DEFINIR;;Sucre - 
-25025040;AEROPUERTO LA FLORIDA [25025040];-75,18333291;8,699997307;28;1586;Sucre;SanMarcos;MagdalenaCauca;CaucaSanJorgeLaMojana;CaÒaCUATE;;Sucre - 
+25025040;AEROPUERTO LA FLORIDA [25025040];-75,18333291;8,699997307;28;1586;Sucre;SanMarcos;MagdalenaCauca;CaucaSanJorgeLaMojana;Ca√±aCUATE;;Sucre - 
 23190520;DORADA LA [23190520];-73,43972562;7,995553442;212;1528;Cesar;SanMartin;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;EL COBRE;;Cesar - 
 23200060;SANTO DOMINGO [23200060];-73,94194346;7,670557959;59;1576;Bolivar;SanPablo;MagdalenaCauca;DirectosalMagdalena(BrazoMorales);SANTO DOMINGO;;Bolivar - 
 23200070;TIERRABUENA FINCA [23200070];-74,18333221;7,516670429;987;1309;Bolivar;SanPablo;MagdalenaCauca;DirectosalMagdalena(BrazoMorales);SIN DEFINIR;;Bolivar - 
@@ -681,7 +681,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 25021360;CAMPO ALEGRE [25021360];-74,7119454;8,924725498;11;1591;Sucre;Sucre;MagdalenaCauca;CaucaSanJorgeLaMojana;FUNDACION;;Sucre - 
 25021370;SAN LUIS [25021370];-74,7080526;8,881662544;20;1588;Sucre;Sucre;MagdalenaCauca;CaucaSanJorgeLaMojana;SIN DEFINIR;;Sucre - 
 25021560;ISLA DEL COCO [25021560];-74,79861099;8,902780885;12;1591;Sucre;Sucre;MagdalenaCauca;CaucaSanJorgeLaMojana;SIN DEFINIR;;Sucre - 
-25027110;SUCRE [25027110];-74,72222435;8,809717835;12;1591;Sucre;Sucre;MagdalenaCauca;CaucaSanJorgeLaMojana;QUITASUE—O;;Sucre - 
+25027110;SUCRE [25027110];-74,72222435;8,809717835;12;1591;Sucre;Sucre;MagdalenaCauca;CaucaSanJorgeLaMojana;QUITASUE√ëO;;Sucre - 
 26170160;NACIONAL LA GRANJA [26170160];-75,71666302;5,716668115;1829;1106;Antioquia;Tamesis;MagdalenaCauca;RioFRioyOtrosDirectosalCauca;LA ALACENA;SUROESTE;Antioquia - Suroeste
 26175030;NACIONAL GRANJA LA [26175030];-75,69091764;5,717331839;1133;1271;Antioquia;Tamesis;MagdalenaCauca;RioFRioyOtrosDirectosalCauca;EL LIBANO;SUROESTE;Antioquia - Suroeste
 26240070;ALTO EL MUNECO [26240070];-75,4166671;7,600001985;139;1551;Antioquia;Taraza;MagdalenaCauca;RioTarazaRioMan;EL GUAIMARO;Bajo Cauca;Antioquia - Bajo Cauca
@@ -711,24 +711,24 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 23190410;BRASIL EL [23190410];-73,01667102;7,149998148;1882;1094;Santander;Tona;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;CARAGUA;;Santander - 
 23190690;MARIANA LA HACIENDA [23190690];-73;7,116669015;2674;934;Santander;Tona;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;GUAUMALES;;Santander - 
 23195060;MARIANA LA [23195060];-73;7,116669015;2674;934;Santander;Tona;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;GUAUMALES;;Santander - 
-26110070;SAN ANTONIO [26110070];-76,06666889;4,616666209;933;1323;ValledelCauca;Toro;MagdalenaCauca;RiosPescadorRUTChancoCatarinayCaÒaveral;EL BOHIO;;ValledelCauca - 
-26110160;SAN FRANCISCO [26110160];-76,03572587;4,684862497;945;1320;ValledelCauca;Toro;MagdalenaCauca;RiosPescadorRUTChancoCatarinayCaÒaveral;SAN FRANCISCO;;ValledelCauca - 
-26110300;CEROS [26110300];-76,03444169;4,616389189;907;1330;ValledelCauca;Toro;MagdalenaCauca;RiosPescadorRUTChancoCatarinayCaÒaveral;EL BOHIO;;ValledelCauca - 
-11140010;MARIRRIO [11140010];-76,95000428;8,000000001;11;1591;Antioquia;Turbo;Caribe;DarienDirectosBajoAtratoentreRioSucioydesembocadura;LEONCITO;URABA;Antioquia - Urab·
-12010010;TORMENTO EL [12010010];-76,85527719;7,76638536;1;1594;Antioquia;Turbo;Caribe;LitoralRioLeon;LOS MANGOS MEDIOS;URABA;Antioquia - Urab·
-12010100;EUPOL [12010100];-76,61738789;7,945529218;30;1585;Antioquia;Turbo;Caribe;LitoralRioLeon;AGUAS FRIAS;URABA;Antioquia - Urab·
-12010110;PRADO MAR [12010110];-76,63853114;7,987413348;26;1586;Antioquia;Turbo;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;COMUNAL LA SUERTE;URABA;Antioquia - Urab·
-12010120;SANTA MARTHA [12010120];-76,6490848;7,923829281;20;1588;Antioquia;Turbo;Caribe;LitoralRioLeon;PALOS BLANCOS;URABA;Antioquia - Urab·
-12010140;RIOGRANDE [12010140];-76,63333371;7,933332813;27;1586;Antioquia;Turbo;Caribe;LitoralRioLeon;COMUNAL LA SUERTE;URABA;Antioquia - Urab·
-12010170;NUEVO Oriente [12010170];-76,68955795;7,460330546;21;1588;Antioquia;Turbo;Caribe;DarienDirectosBajoAtratoentreRioSucioydesembocadura;NUEVA ESPERANZA;URABA;Antioquia - Urab·
-12010180;CHOROMANDO HACIENDA [12010180];-76,58333557;7,949997319;295;1503;Antioquia;Turbo;Caribe;LitoralRioLeon;AGUAS FRIAS;URABA;Antioquia - Urab·
-12015040;NEGRA LA 1 [12015040];-76,68333259;7,949997832;9;1592;Antioquia;Turbo;Caribe;LitoralRioLeon;COMUNAL SAN JORGE;URABA;Antioquia - Urab·
-12015050;RIOGRANDE [12015050];-76,63333232;7,916669535;22;1588;Antioquia;Turbo;Caribe;LitoralRioLeon;VEREDA BAJO DEL OSO;URABA;Antioquia - Urab·
-12020010;PUEBLO BELLO [12020010];-76,51999761;8,199993663;135;1552;Antioquia;Turbo;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;MONO MACHO;URABA;Antioquia - Urab·
-12020040;NUEVA ANTIOQUIA [12020040];-76,55000023;8,050001215;192;1534;Antioquia;Turbo;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;BOCA LIMON;URABA;Antioquia - Urab·
-12020170;PLAYONA LA [12020170];-76,64999787;8,183329473;447;1458;Antioquia;Turbo;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;EL CAHUAL;URABA;Antioquia - Urab·
-12025010;AEROPUERTO GONZALO [12025010];-76,73332981;8,116671003;5;1593;Antioquia;Turbo;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;BOCAS DEL RIO TURBO;URABA;Antioquia - Urab·
-12025040;TURBO - AUT [12025040];-76,71633628;8,091802501;9;1592;Antioquia;Turbo;Caribe;Litoral;;URABA;Antioquia - Urab·
+26110070;SAN ANTONIO [26110070];-76,06666889;4,616666209;933;1323;ValledelCauca;Toro;MagdalenaCauca;RiosPescadorRUTChancoCatarinayCa√±averal;EL BOHIO;;ValledelCauca - 
+26110160;SAN FRANCISCO [26110160];-76,03572587;4,684862497;945;1320;ValledelCauca;Toro;MagdalenaCauca;RiosPescadorRUTChancoCatarinayCa√±averal;SAN FRANCISCO;;ValledelCauca - 
+26110300;CEROS [26110300];-76,03444169;4,616389189;907;1330;ValledelCauca;Toro;MagdalenaCauca;RiosPescadorRUTChancoCatarinayCa√±averal;EL BOHIO;;ValledelCauca - 
+11140010;MARIRRIO [11140010];-76,95000428;8,000000001;11;1591;Antioquia;Turbo;Caribe;DarienDirectosBajoAtratoentreRioSucioydesembocadura;LEONCITO;URABA;Antioquia - Urab√°
+12010010;TORMENTO EL [12010010];-76,85527719;7,76638536;1;1594;Antioquia;Turbo;Caribe;LitoralRioLeon;LOS MANGOS MEDIOS;URABA;Antioquia - Urab√°
+12010100;EUPOL [12010100];-76,61738789;7,945529218;30;1585;Antioquia;Turbo;Caribe;LitoralRioLeon;AGUAS FRIAS;URABA;Antioquia - Urab√°
+12010110;PRADO MAR [12010110];-76,63853114;7,987413348;26;1586;Antioquia;Turbo;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;COMUNAL LA SUERTE;URABA;Antioquia - Urab√°
+12010120;SANTA MARTHA [12010120];-76,6490848;7,923829281;20;1588;Antioquia;Turbo;Caribe;LitoralRioLeon;PALOS BLANCOS;URABA;Antioquia - Urab√°
+12010140;RIOGRANDE [12010140];-76,63333371;7,933332813;27;1586;Antioquia;Turbo;Caribe;LitoralRioLeon;COMUNAL LA SUERTE;URABA;Antioquia - Urab√°
+12010170;NUEVO Oriente [12010170];-76,68955795;7,460330546;21;1588;Antioquia;Turbo;Caribe;DarienDirectosBajoAtratoentreRioSucioydesembocadura;NUEVA ESPERANZA;URABA;Antioquia - Urab√°
+12010180;CHOROMANDO HACIENDA [12010180];-76,58333557;7,949997319;295;1503;Antioquia;Turbo;Caribe;LitoralRioLeon;AGUAS FRIAS;URABA;Antioquia - Urab√°
+12015040;NEGRA LA 1 [12015040];-76,68333259;7,949997832;9;1592;Antioquia;Turbo;Caribe;LitoralRioLeon;COMUNAL SAN JORGE;URABA;Antioquia - Urab√°
+12015050;RIOGRANDE [12015050];-76,63333232;7,916669535;22;1588;Antioquia;Turbo;Caribe;LitoralRioLeon;VEREDA BAJO DEL OSO;URABA;Antioquia - Urab√°
+12020010;PUEBLO BELLO [12020010];-76,51999761;8,199993663;135;1552;Antioquia;Turbo;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;MONO MACHO;URABA;Antioquia - Urab√°
+12020040;NUEVA ANTIOQUIA [12020040];-76,55000023;8,050001215;192;1534;Antioquia;Turbo;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;BOCA LIMON;URABA;Antioquia - Urab√°
+12020170;PLAYONA LA [12020170];-76,64999787;8,183329473;447;1458;Antioquia;Turbo;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;EL CAHUAL;URABA;Antioquia - Urab√°
+12025010;AEROPUERTO GONZALO [12025010];-76,73332981;8,116671003;5;1593;Antioquia;Turbo;Caribe;LitoralRioMulatosyotrosdirectosalCaribe;BOCAS DEL RIO TURBO;URABA;Antioquia - Urab√°
+12025040;TURBO - AUT [12025040];-76,71633628;8,091802501;9;1592;Antioquia;Turbo;Caribe;Litoral;;URABA;Antioquia - Urab√°
 11135030;UNGUIA - AUT [11135030];-77,08785839;8,036722815;10;1591;Choco;Unguia;Caribe;DarienRioTanelayotrosDirectosalCaribe;UNGUIA;;Choco - 
 11150010;TITUMATE [11150010];-77,0758355;8,308058303;11;1591;Choco;Unguia;Caribe;DarienRioToloyotrosDirectosalCaribe;TITUMATE;;Choco - 
 11150020;TANELA [11150020];-77,04041984;8,162916978;14;1590;Choco;Unguia;Caribe;DarienRioTanelayotrosDirectosalCaribe;SANTA MARIA;;Choco - 
@@ -755,10 +755,10 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 26200130;BOLOMBOLO [26200130];-75,83999678;5,969995536;532;1434;Antioquia;Venecia;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdivia;BOLOMBOLO;SUROESTE;Antioquia - Suroeste
 26205070;PLATA LA [26205070];-75,81666392;5,983330861;749;1373;Antioquia;Venecia;MagdalenaCauca;DirectosRioCaucaentreRioSanJuanyPtoValdivia;BOLOMBOLO;SUROESTE;Antioquia - Suroeste
 23020100;VICTORIA LA [23020100];-74,91464309;5,321079342;779;1364;Caldas;Victoria;MagdalenaCauca;RioGuarino;;;Caldas - 
-23040070;CANAVERAL [23040070];-74,94197256;5,328419766;1061;1290;Caldas;Victoria;MagdalenaCauca;RioLaMiel(Samana);CaÒaVERAL;;Caldas - 
+23040070;CANAVERAL [23040070];-74,94197256;5,328419766;1061;1290;Caldas;Victoria;MagdalenaCauca;RioLaMiel(Samana);Ca√±aVERAL;;Caldas - 
 23050070;NORCASIA [23050070];-74,71666521;5,566667365;181;1538;Caldas;Victoria;MagdalenaCauca;DirectosMagdalenaentreRiosGuarinoyLaMiel;ISAZA;;Caldas - 
-11060010;BUCHADO [11060010];-76,77928065;6,420003993;14;1590;Antioquia;VigiaDelFuerte;Caribe;DarienDirectosAtratoentreRiosBebaramayMurri(md);BUCHADO;URABA;Antioquia - Urab·
-11077030;PLAYA LA [11077030];-76,74999564;6,616665676;29;1585;Antioquia;VigiaDelFuerte;Caribe;DarienRioMurri;VUELTA CORTADA;URABA;Antioquia - Urab·
+11060010;BUCHADO [11060010];-76,77928065;6,420003993;14;1590;Antioquia;VigiaDelFuerte;Caribe;DarienDirectosAtratoentreRiosBebaramayMurri(md);BUCHADO;URABA;Antioquia - Urab√°
+11077030;PLAYA LA [11077030];-76,74999564;6,616665676;29;1585;Antioquia;VigiaDelFuerte;Caribe;DarienRioMurri;VUELTA CORTADA;URABA;Antioquia - Urab√°
 23125150;VILLAGOMEZ [23125150];-74,19677483;5,271751498;1696;1136;Cundinamarca;Villagomez;MagdalenaCauca;RioCarare(Minero);;;Cundinamarca - 
 21250120;VILLAHERMOSA [21250120];-75,11760725;5,016850801;2109;1046;Tolima;Villahermosa;MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;SIN DEFINIR;;Tolima - 
 21250170;BOQUERON [21250170];-75,25277635;4,903890568;3780;748;Tolima;Villahermosa;MagdalenaCauca;RioLagunillayOtrosDirectosalMagdalena;SIN DEFINIR;;Tolima - 
@@ -771,7 +771,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 23060090;YACOPI [23060090];-74,36666741;5,499997784;793;1361;Cundinamarca;Yacopi;MagdalenaCauca;RioNegro;CABO VERDE BAJO;;Cundinamarca - 
 23065110;YACOPI - AUT [23065110];-74,35458679;5,484164893;1309;1227;Cundinamarca;Yacopi;MagdalenaCauca;RioNegro;EL UBE;;Cundinamarca - 
 27020190;YARUMAL [27020190];-75,41555563;6,955972101;2185;1030;Antioquia;Yarumal;MagdalenaCauca;AltoNechi;;Norte;Antioquia - Norte
-27020200;CEDENO [27020200];-75,35558626;7,070720449;1582;1162;Antioquia;Yarumal;MagdalenaCauca;AltoNechi;CEDE—O;Norte;Antioquia - Norte
+27020200;CEDENO [27020200];-75,35558626;7,070720449;1582;1162;Antioquia;Yarumal;MagdalenaCauca;AltoNechi;CEDE√ëO;Norte;Antioquia - Norte
 27020220;LLANOS D CUIBA LOS [27020220];-75,4838637;6,813615556;2747;920;Antioquia;Yarumal;MagdalenaCauca;AltoNechi;LLANOS DE CUIVA;Norte;Antioquia - Norte
 23100040;YOLOMBO [23100040];-75,01091764;6,594278309;1445;1194;Antioquia;Yolombo;MagdalenaCauca;RioSanBartoloyotrosdirectosalMagdalenaMedio;;Nordeste;Antioquia - Nordeste
 27010860;NORMANDIA HACIENDA [27010860];-75,11667003;6,700004313;951;1318;Antioquia;Yolombo;MagdalenaCauca;RioPorce;GUACABE;Nordeste;Antioquia - Nordeste
@@ -781,7 +781,7 @@ id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zs
 23100080;SANTA CLARA [23100080];-74,31666525;6,650001243;92;1565;Antioquia;Yondo(Casabe);MagdalenaCauca;RioCimitarrayotrosdirectosalMagdalena;SANTA CLARA;Magdalena medio;Antioquia - Magdalena medio
 23105020;AMPARO EL [23105020];-74,40000257;6,733331042;138;1551;Antioquia;Yondo(Casabe);MagdalenaCauca;RioSanBartoloyotrosdirectosalMagdalenaMedio;SAN BARTOLO;Magdalena medio;Antioquia - Magdalena medio
 23160010;YONDO [23160010];-73,94416598;7,089448024;70;1572;Antioquia;Yondo(Casabe);MagdalenaCauca;RioCimitarrayotrosdirectosalMagdalena;SAN MIGUEL DEL TIGRE;Magdalena medio;Antioquia - Magdalena medio
-24050100;FUENTE LA [24050100];-73,2798923;6,707247776;736;1376;Santander;Zapatoca;MagdalenaCauca;RioSuarez;LA PE—A;;Santander - 
+24050100;FUENTE LA [24050100];-73,2798923;6,707247776;736;1376;Santander;Zapatoca;MagdalenaCauca;RioSuarez;LA PE√ëA;;Santander - 
 24055030;ZAPATOCA [24055030];-73,28274797;6,792773644;1822;1107;Santander;Zapatoca;MagdalenaCauca;RioSogamoso;LAS PUENTES;;Santander - 
 27030030;ZARAGOZA [27030030];-74,87238979;7,486223823;80;1569;Antioquia;Zaragoza;MagdalenaCauca;BajoNechi(md);;Bajo Cauca;Antioquia - Bajo Cauca
 27030090;BOSQUE EL [27030090];-74,83933562;7,319304003;199;1532;Antioquia;Zaragoza;MagdalenaCauca;RioPorce;EL SALTILLO;Bajo Cauca;Antioquia - Bajo Cauca

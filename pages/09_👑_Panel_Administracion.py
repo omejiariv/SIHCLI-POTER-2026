@@ -163,6 +163,65 @@ tabs = st.tabs([
 ])
 
 
+# --- PESTAÑA DE CONFIGURACIÓN INICIAL (Ejecutar solo una vez) ---
+# Puedes poner esto en una pestaña nueva o al inicio del script temporalmente.
+
+with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expanded=False):
+    st.warning("⚠️ Este botón crea las tablas vacías con la estructura correcta. Úsalo si es la primera vez o si quieres reiniciar el sistema.")
+    
+    if st.button("🚀 Crear Tablas Maestras"):
+        try:
+            with engine.begin() as conn:
+                # 1. TABLA ESTACIONES
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS estaciones (
+                        id_estacion TEXT PRIMARY KEY,
+                        nombre TEXT,
+                        longitud FLOAT,
+                        latitud FLOAT,
+                        altitud FLOAT,
+                        municipio TEXT,
+                        departamento TEXT,
+                        subregion TEXT,
+                        corriente TEXT
+                    );
+                """))
+                
+                # 2. TABLA ÍNDICES CLIMÁTICOS
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS indices_climaticos (
+                        fecha DATE PRIMARY KEY,
+                        enso_año TEXT,
+                        enso_mes TEXT,
+                        anomalia_oni FLOAT,
+                        temp_sst FLOAT,
+                        temp_media FLOAT,
+                        soi FLOAT,
+                        iod FLOAT,
+                        fase_enso TEXT
+                    );
+                """))
+                
+                # 3. TABLA PRECIPITACIÓN (La Gigante)
+                # Incluimos índices para que las consultas sean instantáneas
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS precipitacion (
+                        fecha DATE,
+                        id_estacion TEXT,
+                        valor FLOAT,
+                        origen TEXT,
+                        PRIMARY KEY (fecha, id_estacion),
+                        CONSTRAINT fk_estacion FOREIGN KEY (id_estacion) REFERENCES estaciones(id_estacion)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_precip_fecha ON precipitacion(fecha);
+                    CREATE INDEX IF NOT EXISTS idx_precip_estacion ON precipitacion(id_estacion);
+                """))
+                
+            st.success("✅ ¡Tablas creadas exitosamente! Ahora puedes cargar los CSV.")
+            
+        except Exception as e:
+            st.error(f"Error creando tablas: {e}")
+
 # ==============================================================================
 # TAB 1: ESTACIONES
 # ==============================================================================
