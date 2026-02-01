@@ -17,6 +17,8 @@ from streamlit_folium import st_folium
 from shapely.geometry import shape
 import shutil
 
+from modules.admin_utils import get_raster_list, upload_raster_to_storage, delete_raster_from_storage
+
 # --- 1. CONFIGURACIÓN DE RUTAS E IMPORTACIONES ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -509,50 +511,79 @@ with tabs[4]:
 
 
 # ==============================================================================
-# TAB 6: COBERTURAS (VER INFO + GUARDAR)
+# TAB 6: GESTIÓN DE RASTERS EN LA NUBE (DEM + COBERTURAS)
 # ==============================================================================
 with tabs[5]:
-    st.header("🌲 Coberturas Vegetales (Raster .TIFF)")
-    
-    col_info, col_load = st.columns([1, 2])
-    
-    # Lógica para mostrar info del archivo actual
-    path_cob = "data/coberturas.tif"
-    existe = os.path.exists(path_cob)
-    
-    with col_info:
-        st.subheader("ℹ️ Archivo Actual")
-        if existe:
-            try:
-                with rasterio.open(path_cob) as src:
-                    st.success("✅ Archivo cargado")
-                    st.json({
-                        "Ancho (px)": src.width,
-                        "Alto (px)": src.height,
-                        "Bandas": src.count,
-                        "CRS": str(src.crs),
-                        "Límites": dict(zip(["Oeste", "Sur", "Este", "Norte"], src.bounds))
-                    })
-            except Exception as e:
-                st.error(f"Archivo corrupto: {e}")
-        else:
-            st.warning("⚠️ No hay archivo de coberturas en el sistema.")
+    st.header("☁️ Gestión de Rasters (DEM / Coberturas)")
+    st.info("Aquí administras los archivos físicos (.tif) alojados en Supabase Storage. Estos archivos son vitales para el modelo hidrológico.")
 
-    with col_load:
-        st.subheader("📂 Actualizar / Editar Archivo")
-        st.info("Para 'editar' las coberturas, debes subir una nueva versión del archivo **Cob25m_WGS84.tiff**.")
+    col_lista, col_accion = st.columns([1, 1])
+
+    # --- LISTADO ---
+    with col_lista:
+        st.subheader("📂 Archivos en la Nube")
+        try:
+            raster_list = get_raster_list() # Llama a Supabase
+            if not raster_list:
+                st.warning("El bucket 'rasters' está vacío.")
+            else:
+                # Mostrar tabla limpia
+                data_files = []
+                for f in raster_list:
+                    # Convertir tamaño a MB
+                    size_mb = f.get('metadata', {}).get('size', 0) / (1024 * 1024)
+                    data_files.append({
+                        "Nombre": f['name'],
+                        "Tamaño (MB)": f"{size_mb:.2f}",
+                        "Creado": f.get('created_at', '')[:10]
+                    })
+                st.dataframe(pd.DataFrame(data_files), hide_index=True, use_container_width=True)
+                
+                # Selector para borrar
+                st.divider()
+                to_delete = st.selectbox("Seleccionar para eliminar:", [d["Nombre"] for d in data_files], index=None)
+                if to_delete and st.button(f"🗑️ Eliminar '{to_delete}'", type="primary"):
+                    with st.spinner("Eliminando..."):
+                        ok, msg = delete_raster_from_storage(to_delete)
+                        if ok: 
+                            st.success(msg)
+                            time.sleep(1)
+                            st.rerun()
+                        else: st.error(msg)
+
+        except Exception as e:
+            st.error(f"Error conectando a Supabase: {e}")
+
+    # --- CARGA ---
+    with col_accion:
+        st.subheader("⬆️ Subir Nuevo Raster")
+        st.markdown("""
+        **Archivos requeridos para el modelo:**
+        1. `DemAntioquia_EPSG3116.tif` (Modelo de Elevación)
+        2. `Cob25m_WGS84.tif` (Coberturas Vegetales)
+        """)
         
-        f_tiff = st.file_uploader("Seleccionar nuevo .TIFF", type=["tiff", "tif"], key="up_cob_tif_final")
+        up_file = st.file_uploader("Arrastra tu archivo .tif aquí", type=["tif", "tiff"], key="up_raster_cloud")
         
-        if f_tiff:
-            st.warning("⚠️ Esta acción reemplazará el archivo actual.")
-            if st.button("💾 Guardar y Reemplazar", key="btn_save_cob_final"):
-                os.makedirs("data", exist_ok=True)
-                with open(path_cob, "wb") as f:
-                    f.write(f_tiff.getbuffer())
-                st.success("✅ Archivo de coberturas actualizado correctamente.")
-                time.sleep(1)
-                st.rerun()
+        if up_file:
+            mb = up_file.size / (1024 * 1024)
+            st.caption(f"Tamaño: {mb:.2f} MB")
+            
+            # Nombre destino = Nombre archivo
+            target_name = up_file.name
+            
+            if st.button(f"🚀 Subir '{target_name}' a Supabase", key="btn_upload_cloud"):
+                with st.spinner("Subiendo a la nube... esto puede tardar un poco..."):
+                    bytes_data = up_file.getvalue()
+                    ok, msg = upload_raster_to_storage(bytes_data, target_name)
+                    
+                    if ok:
+                        st.success(msg)
+                        st.balloons()
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
 # ==============================================================================
 # TABS 7, 8, 9: GIS ROBUSTO + VISORES DE TABLA (CLAVES ÚNICAS AÑADIDAS)

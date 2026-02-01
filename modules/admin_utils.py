@@ -1,5 +1,8 @@
 # modules/admin_utils.py
 
+import os
+import streamlit as st
+from supabase import create_client, Client
 import pandas as pd
 from modules.utils import standardize_numeric_column
 
@@ -107,3 +110,45 @@ def procesar_archivo_precipitacion(uploaded_file):
 
     except Exception as e:
         return None, str(e)
+
+# --- FUNCIONES DE GESTIÓN DE STORAGE (RASTERS) ---
+
+# Inicializar cliente Supabase (Singleton)
+@st.cache_resource
+def init_supabase():
+    url = st.secrets["supabase"]["SUPABASE_URL"]
+    key = st.secrets["supabase"]["SUPABASE_KEY"]
+    return create_client(url, key)
+
+def get_raster_list(bucket_name="rasters"):
+    """Lista archivos en el bucket de Supabase."""
+    try:
+        supabase = init_supabase()
+        res = supabase.storage.from_(bucket_name).list()
+        return res # Retorna lista de objetos
+    except Exception as e:
+        print(f"Error listando bucket: {e}")
+        return []
+
+def upload_raster_to_storage(file_bytes, file_name, bucket_name="rasters"):
+    """Sube un archivo raster al bucket."""
+    try:
+        supabase = init_supabase()
+        # file_options param is crucial for overwriting
+        res = supabase.storage.from_(bucket_name).upload(
+            path=file_name,
+            file=file_bytes,
+            file_options={"content-type": "image/tiff", "upsert": "true"}
+        )
+        return True, f"✅ '{file_name}' subido a la nube exitosamente."
+    except Exception as e:
+        return False, f"❌ Error subiendo: {str(e)}"
+
+def delete_raster_from_storage(file_name, bucket_name="rasters"):
+    """Elimina un archivo del bucket."""
+    try:
+        supabase = init_supabase()
+        res = supabase.storage.from_(bucket_name).remove([file_name])
+        return True, f"🗑️ '{file_name}' eliminado."
+    except Exception as e:
+        return False, f"❌ Error eliminando: {str(e)}"
