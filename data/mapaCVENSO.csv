@@ -1,4 +1,4 @@
-﻿id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zszh;vereda;region;depto_region
+﻿id_estacion;nom_est;longitud;latitud;altitud;et_mmy;departamento;municipio;ah;zszh;vereda;subregion;depto_region
 26180160;ABEJORRAL [26180160];-75,43041855;5,78597487;2164;1034;Antioquia;Abejorral;MagdalenaCauca;RioArma;;Oriente;Antioquia - Oriente
 16050140;JURISDICCIONES [16050140];-73,23333124;7,850003294;3102;857;NortedeSantander;Abrego;MagdalenaCauca;RioLebrijayotrosdirectosalMagdalena;BRISAS DEL PARAMO;;NortedeSantander - 
 11110020;ABRIAQUI [11110020];-76,07500241;6,642496664;1872;1096;Antioquia;Abriaqui;Caribe;DarienRioSucio;LAS JUNTAS;Occidente;Antioquia - Occidente
