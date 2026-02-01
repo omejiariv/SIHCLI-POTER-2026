@@ -163,22 +163,22 @@ tabs = st.tabs([
 ])
 
 
-# --- PESTAÑA DE CONFIGURACIÓN INICIAL (Ejecutar solo una vez) ---
+# --- PESTAÑA DE CONFIGURACIÓN INICIAL ---
 with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expanded=False):
-    st.warning("⚠️ ¡ATENCIÓN! Este botón BORRARÁ las tablas 'precipitacion', 'estaciones' e 'indices_climaticos' existentes y las creará desde cero con la estructura perfecta. Úsalo para limpiar errores de estructura.")
+    st.warning("⚠️ ¡ATENCIÓN! Este botón BORRARÁ TODO y reiniciará el sistema.")
     
-    if st.button("☢️ BORRAR TODO Y REINICIAR BASES DE DATOS"):
+    if st.button("☢️ BORRAR TODO Y REINICIAR (CON CASCADE)"):
         try:
             with engine.begin() as conn:
-                st.write("🗑️ Eliminando tablas antiguas (si existen)...")
-                # CASCADE asegura que si borramos estaciones, se borre la lluvia asociada para evitar errores
+                st.write("🗑️ Eliminando tablas antiguas (Forzando CASCADE)...")
+                # CASCADE rompe el vínculo FK para permitir el borrado
                 conn.execute(text("DROP TABLE IF EXISTS precipitacion CASCADE;"))
-                conn.execute(text("DROP TABLE IF EXISTS estaciones CASCADE;"))
                 conn.execute(text("DROP TABLE IF EXISTS indices_climaticos CASCADE;"))
+                conn.execute(text("DROP TABLE IF EXISTS estaciones CASCADE;"))
                 
                 st.write("🏗️ Creando Estructura Maestra...")
                 
-                # 1. TABLA ESTACIONES (Con Primary Key real)
+                # 1. ESTACIONES
                 conn.execute(text("""
                     CREATE TABLE estaciones (
                         id_estacion TEXT PRIMARY KEY,
@@ -193,7 +193,7 @@ with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expan
                     );
                 """))
                 
-                # 2. TABLA ÍNDICES CLIMÁTICOS
+                # 2. ÍNDICES
                 conn.execute(text("""
                     CREATE TABLE indices_climaticos (
                         fecha DATE PRIMARY KEY,
@@ -208,7 +208,7 @@ with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expan
                     );
                 """))
                 
-                # 3. TABLA PRECIPITACIÓN (Con Foreign Key)
+                # 3. PRECIPITACIÓN
                 conn.execute(text("""
                     CREATE TABLE precipitacion (
                         fecha DATE,
@@ -222,8 +222,7 @@ with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expan
                     CREATE INDEX idx_precip_estacion ON precipitacion(id_estacion);
                 """))
                 
-            st.success("✅ ¡Sistema Reiniciado! Las tablas están limpias y listas para recibir datos.")
-            st.balloons()
+            st.success("✅ ¡Sistema Reiniciado y Limpio! Tablas listas.")
             
         except Exception as e:
             st.error(f"Error crítico: {e}")
@@ -862,53 +861,70 @@ with tabs[11]:
 
     # --- SUB-PESTAÑA: CARGA MASIVA (Tu archivo DatosPptnmes_ENSO.csv) ---
     with t_carga:
-        st.write("Sube `DatosPptnmes_ENSO.csv` (Formato Matriz: Fecha | Est1 | Est2...).")
-        up_rain = st.file_uploader("Cargar Matriz de Lluvia", type=["csv"], key="up_rain_matrix")
+        st.write("Sube `DatosPptnmes_ENSO.csv`.")
+        up_rain = st.file_uploader("Cargar Matriz de Lluvia", type=["csv"], key="up_rain_final")
         
         if up_rain:
             if st.button("🚀 Procesar y Cargar Lluvia"):
                 status = st.status("Iniciando carga masiva...", expanded=True)
                 try:
-                    # 1. Leer
+                    # 1. Leer CSV
                     df = pd.read_csv(up_rain, sep=';', decimal=',')
-                    df['fecha'] = pd.to_datetime(df['fecha'])
+                    df['fecha'] = pd.to_datetime(df['fecha'], errors='coerce')
+                    df = df.dropna(subset=['fecha'])
                     
                     status.write("Transformando datos...")
-                    # 2. Melt (Pivot)
+                    
+                    # 2. Melt
                     est_cols = [c for c in df.columns if c != 'fecha']
-                    df_long = df.melt(id_vars=['fecha'], value_vars=est_cols, var_name='id_estacion', value_name='valor')
+                    df_long = df.melt(
+                        id_vars=['fecha'], 
+                        value_vars=est_cols, 
+                        var_name='id_estacion', 
+                        value_name='valor'
+                    )
+                    
+                    df_long['valor'] = pd.to_numeric(df_long['valor'], errors='coerce')
                     df_long = df_long.dropna(subset=['valor'])
                     df_long['origen'] = 'real'
                     
-                    status.write(f"Cargando {len(df_long)} registros en lotes...")
+                    # 3. Carga por Lotes
+                    total_rows = len(df_long)
+                    status.write(f"📦 Procesando {total_rows:,.0f} registros...")
                     
-                    # 3. Carga por lotes (Segura)
-                    chunk_size = 50000
-                    total_chunks = (len(df_long) // chunk_size) + 1
-                    
+                    chunk_size = 20000 
+                    total_chunks = (total_rows // chunk_size) + 1
                     progress_bar = status.progress(0)
                     
-                    for i, chunk in enumerate(range(0, len(df_long), chunk_size)):
-                        batch = df_long.iloc[chunk : chunk + chunk_size]
+                    for i, chunk_start in enumerate(range(0, total_rows, chunk_size)):
+                        batch = df_long.iloc[chunk_start : chunk_start + chunk_size]
+                        
+                        # Tabla temporal
                         batch.to_sql('temp_rain_load', engine, if_exists='replace', index=False)
                         
                         with engine.begin() as conn:
-                            # Upsert masivo usando tabla temporal
+                            # --- EL SALVAVIDAS ---
+                            # Si hay una estación en la lluvia que no existe en estaciones, LA CREAMOS.
                             conn.execute(text("""
-                                DELETE FROM precipitacion 
-                                USING temp_rain_load 
-                                WHERE precipitacion.id_estacion = temp_rain_load.id_estacion 
-                                AND precipitacion.fecha = temp_rain_load.fecha;
+                                INSERT INTO estaciones (id_estacion, nombre)
+                                SELECT DISTINCT id_estacion, 'Auto-Generada ' || id_estacion 
+                                FROM temp_rain_load
+                                WHERE id_estacion NOT IN (SELECT id_estacion FROM estaciones)
                             """))
+                            
+                            # --- UPSERT ---
                             conn.execute(text("""
                                 INSERT INTO precipitacion (fecha, id_estacion, valor, origen)
-                                SELECT fecha, id_estacion, valor, origen FROM temp_rain_load;
+                                SELECT fecha, id_estacion, valor, origen FROM temp_rain_load
+                                ON CONFLICT (fecha, id_estacion) 
+                                DO UPDATE SET valor = EXCLUDED.valor;
                             """))
                         
                         progress_bar.progress((i + 1) / total_chunks)
                     
-                    status.update(label="✅ ¡Carga Masiva Exitosa!", state="complete")
+                    status.update(label="✅ ¡Carga Exitosa!", state="complete")
+                    st.balloons()
                     
                 except Exception as ex:
-                    status.update(label="❌ Error en la carga", state="error")
-                    st.error(ex)
+                    status.update(label="❌ Error", state="error")
+                    st.error(f"Detalle: {ex}")
