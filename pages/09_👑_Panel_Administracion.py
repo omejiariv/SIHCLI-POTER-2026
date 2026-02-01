@@ -288,29 +288,56 @@ with tabs[0]:
             st.warning("No se pudo cargar el catálogo. ¿Quizás está vacío?")
             st.error(f"Error: {e}")
 
-    # --- SUB-PESTAÑA: CARGA MASIVA (Tu código de carga limpio) ---
+    # --- SUB-PESTAÑA: CARGA MASIVA ---
     with subtab_carga:
         st.write("Sube `mapaCVENSO.csv` limpio.")
-        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv")
+        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv_fix")
         
         if up_est:
-            if st.button("🚀 Reemplazar Catálogo Completo"):
+            if st.button("🚀 Cargar Catálogo"): # Cambié el nombre del botón
                 try:
+                    # 1. Leer el archivo con los delimitadores correctos
                     df_new = pd.read_csv(up_est, sep=';', decimal=',')
-                    # Limpieza final por seguridad
+                    
+                    # 2. Limpieza de nombres de columnas
                     df_new.columns = df_new.columns.str.lower().str.strip()
                     
-                    # Convertir coords a números
-                    cols_num = ['longitud', 'latitud', 'altitud']
-                    for c in cols_num:
-                        if c in df_new.columns:
-                            df_new[c] = pd.to_numeric(df_new[c].astype(str).str.replace(',', '.'), errors='coerce')
+                    # 3. Mapeo de columnas del CSV a la Base de Datos
+                    # Aseguramos que los nombres del CSV coincidan con la tabla creada
+                    rename_map = {
+                        'id_estacio': 'id_estacion', # Ajusta según tu CSV real
+                        'nom_est': 'nombre',
+                        'longitud_geo': 'longitud',
+                        'latitud_geo': 'latitud',
+                        'alt_est': 'altitud'
+                    }
+                    # Renombrar si las columnas existen
+                    df_new = df_new.rename(columns={k: v for k, v in rename_map.items() if k in df_new.columns})
+                    
+                    # 4. Seleccionar solo las columnas que existen en la BD
+                    cols_validas = ['id_estacion', 'nombre', 'longitud', 'latitud', 'altitud', 'municipio', 'departamento', 'subregion', 'corriente']
+                    cols_final = [c for c in df_new.columns if c in cols_validas]
+                    df_final = df_new[cols_final]
 
-                    df_new.to_sql('estaciones', engine, if_exists='replace', index=False)
-                    st.success(f"✅ Cargadas {len(df_new)} estaciones.")
+                    # 5. Convertir coordenadas a numérico
+                    for c in ['longitud', 'latitud', 'altitud']:
+                        if c in df_final.columns:
+                            df_final[c] = pd.to_numeric(df_final[c].astype(str).str.replace(',', '.'), errors='coerce')
+
+                    # --- LA CORRECCIÓN MAESTRA ---
+                    # Usamos 'append' porque la tabla YA EXISTE (la creó el botón de reinicio)
+                    # y 'replace' intentaría borrarla (causando el error).
+                    df_final.to_sql('estaciones', engine, if_exists='append', index=False)
+                    
+                    st.success(f"✅ Catálogo cargado: {len(df_final)} estaciones insertadas en la estructura maestra.")
+                    st.balloons()
+                    
                 except Exception as ex:
-                    st.error(f"Error: {ex}")
-
+                    st.error("Error cargando estaciones.")
+                    st.warning(f"Detalle técnico: {ex}")
+                    # Si falla por duplicados (PK), sugerimos limpiar primero
+                    if "unique constraint" in str(ex).lower():
+                        st.info("💡 Consejo: Si estás recargando datos, usa primero el botón de 'Reinicio Total' para limpiar la tabla.")
 
 # ==============================================================================
 # TAB 2: ÍNDICES (FORZANDO PUNTO Y COMA)
