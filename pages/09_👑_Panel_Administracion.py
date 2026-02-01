@@ -721,50 +721,118 @@ with tabs[10]: # Índice 10 porque es la pestaña número 11 (0-10)
 # ==============================================================================
 # TAB 12: Precipitación MENSUAL
 # ==============================================================================
-
+# --- PESTAÑA 12: GESTIÓN DE LLUVIA (Depurada y Mejorada) ---
 with tabs[11]:
-    st.header("🌧️ Archivo Maestro de Lluvia")
-    st.info("Carga el archivo `DatosPptnmes_ENSO.csv`. Se omitirán las celdas vacías (no se rellenan con ceros).")
-    
-    sb1, sb2 = st.tabs(["👁️ Ver BD", "🚀 Migrar CSV"])
-    
-    with sb1:
-        try:
-            df_bd = pd.read_sql("SELECT * FROM precipitacion ORDER BY fecha DESC LIMIT 100", engine)
-            st.dataframe(df_bd)
-        except: st.warning("No se pudo leer la tabla 'precipitacion'.")
+    st.header("🌧️ Gestión de Series de Tiempo (Precipitación)")
+    st.info("Sube datos mensuales. El sistema acepta formato matriz (Fechas en columnas) o lista.")
 
-    with sb2:
-        up_rain = st.file_uploader("CSV Maestro", type=["csv"])
-        if up_rain and st.button("Migrar a BD"):
-            try:
-                df = pd.read_csv(up_rain)
-                # Detección formato ancho (Estaciones en columnas o filas)
-                # Asumimos formato matriz: Col 1 = Codigo, Cols 2..N = Fechas
+    # Opción de descargar plantilla
+    with st.expander("ℹ️ Ver formato requerido y descargar plantilla"):
+        st.write("El archivo debe tener la primera columna con el código de la estación y las siguientes con las fechas.")
+        # Generar un csv de ejemplo en memoria
+        df_ejemplo = pd.DataFrame({
+            'codigo_estacion': ['27010550', '27010560'],
+            '2024-01-01': [120.5, 98.2],
+            '2024-02-01': [45.0, 12.0]
+        })
+        csv_ejemplo = df_ejemplo.to_csv(index=False).encode('utf-8')
+        st.download_button("⬇️ Descargar Plantilla CSV", csv_ejemplo, "plantilla_lluvia.csv", "text/csv")
+
+    col_up, col_mode = st.columns([2, 1])
+    
+    with col_up:
+        uploaded_rain = st.file_uploader("Cargar Excel/CSV", type=["csv", "xlsx"], key="rain_uploader")
+    
+    with col_mode:
+        modo_carga = st.radio(
+            "Modo de Carga:",
+            ["Actualizar / Agregar", "Reemplazo TOTAL"],
+            help="Actualizar: Agrega datos nuevos y corrige los existentes. Reemplazo TOTAL: BORRA TODA LA HISTORIA y pone lo nuevo."
+        )
+
+    if uploaded_rain:
+        try:
+            # 1. Lectura inteligente
+            if uploaded_rain.name.endswith('.csv'):
+                df = pd.read_csv(uploaded_rain)
+            else:
+                df = pd.read_excel(uploaded_rain)
+            
+            st.write("Vista previa de datos cargados (Formato Original):")
+            st.dataframe(df.head(), height=150)
+
+            if st.button("🚀 Procesar e Integrar a Base de Datos"):
+                status = st.status("Iniciando procesamiento...", expanded=True)
+                
+                # --- PASO A: TRANSFORMACIÓN (MELT) ---
+                status.write("🔄 Transformando matriz a formato de base de datos...")
+                
+                # Asumimos que la Columna 0 es el ID, y el resto son Fechas
                 id_col = df.columns[0]
-                fechas = df.columns[1:]
+                fechas_cols = df.columns[1:]
                 
-                status = st.status("Transformando...", expanded=True)
+                # "Derretimos" la tabla (Wide to Long)
+                df_long = df.melt(id_vars=[id_col], value_vars=fechas_cols, var_name='fecha', value_name='valor')
                 
-                # Melt: De Ancho a Largo
-                df_long = df.melt(id_vars=[id_col], value_vars=fechas, var_name='fecha', value_name='valor')
+                # Renombramos para que coincida con la BD (ajusta estos nombres si tu tabla tiene otros)
                 df_long = df_long.rename(columns={id_col: 'id_estacion'})
                 
-                # Conversión
+                # Limpieza de Tipos
                 df_long['fecha'] = pd.to_datetime(df_long['fecha'], errors='coerce')
                 df_long['valor'] = pd.to_numeric(df_long['valor'], errors='coerce')
                 
-                # --- REGLA DE ORO: OMITIR VACÍOS ---
-                # Eliminamos filas donde la fecha o el valor sean NaT/NaN.
-                # NO llenamos con cero.
-                df_final = df_long.dropna(subset=['fecha', 'valor'])
+                # Eliminar datos vacíos o fechas inválidas
+                df_final = df_long.dropna(subset=['fecha', 'valor', 'id_estacion'])
                 
-                status.write(f"Registros válidos: {len(df_final)}")
-                status.write("Subiendo a BD...")
+                rows_count = len(df_final)
+                status.write(f"✅ Se identificaron {rows_count} registros válidos.")
+
+                if rows_count == 0:
+                    status.update(label="❌ Error: No hay datos válidos para subir.", state="error")
+                    st.stop()
+
+                # --- PASO B: CARGA A BASE DE DATOS ---
+                # Usamos engine para SQLAlchemy
                 
-                df_final.to_sql('precipitacion', engine, if_exists='replace', index=False, chunksize=5000)
-                
-                status.update(label="¡Migración Completa!", state="complete")
-                st.success("Archivo migrado correctamente respetando vacíos.")
-            except Exception as e:
-                st.error(f"Error: {e}")
+                if modo_carga == "Reemplazo TOTAL":
+                    status.write("⚠️ BORRANDO tabla antigua y creando nueva...")
+                    df_final.to_sql('precipitacion', engine, if_exists='replace', index=False)
+                    status.write("✅ Tabla reemplazada completamente.")
+                    
+                else: # MODO UPSERT (Actualizar Inteligente)
+                    status.write("🛠️ Realizando fusión de datos (Upsert)...")
+                    
+                    # 1. Subir a una tabla temporal
+                    temp_table = "temp_precip_upload"
+                    df_final.to_sql(temp_table, engine, if_exists='replace', index=False)
+                    
+                    with engine.begin() as conn:
+                        # 2. Borrar de la tabla oficial los registros que coincidan (ID + Fecha) con los nuevos
+                        # Esto evita duplicados y permite corregir datos viejos
+                        delete_query = text(f"""
+                            DELETE FROM precipitacion
+                            USING {temp_table}
+                            WHERE precipitacion.id_estacion = {temp_table}.id_estacion
+                            AND precipitacion.fecha = {temp_table}.fecha;
+                        """)
+                        conn.execute(delete_query)
+                        
+                        # 3. Insertar los nuevos (que ahora son únicos)
+                        insert_query = text(f"""
+                            INSERT INTO precipitacion (id_estacion, fecha, valor)
+                            SELECT id_estacion, fecha, valor FROM {temp_table};
+                        """)
+                        conn.execute(insert_query)
+                        
+                        # 4. Borrar tabla temporal
+                        conn.execute(text(f"DROP TABLE {temp_table}"))
+                        
+                    status.write("✅ Datos actualizados e insertados correctamente.")
+
+                status.update(label="¡Proceso Terminado con Éxito! 🎉", state="complete")
+                st.balloons()
+                time.sleep(2)
+                st.rerun()
+
+        except Exception as e:
+            st.error(f"Ocurrió un error en el proceso: {e}")
