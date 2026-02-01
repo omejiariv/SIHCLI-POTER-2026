@@ -10,6 +10,13 @@ import geopandas as gpd
 from scipy.interpolate import griddata
 import os
 
+
+from modules import hydro_physics as physics
+from modules import visualizer as viz
+from modules.admin_utils import download_raster_to_temp
+from modules.interpolation import interpolador_maestro 
+
+
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="SIHCLI-POTER", page_icon="🌦️", layout="wide")
 warnings.filterwarnings("ignore")
@@ -413,79 +420,86 @@ def main():
         st.header("🌍 Modelación Hidrológica Distribuida (Aleph)")
         
         try:
-            from modules import hydro_physics as physics
             from modules import visualizer as viz
-            from modules.admin_utils import download_raster_to_temp 
         except ImportError as e:
             st.error(f"Error cargando módulos: {e}"); st.stop()
 
-        # --- A. GEOMETRÍAS (FIX BUFFER VS REAL) ---
+        # --- A. CONFIGURACIÓN ESPACIAL
+        st.markdown("#### 📐 Configuración del Dominio")
+        col_conf1, col_conf2 = st.columns(2)
+        
+        with col_conf1:
+            # ¡ESTA LÍNEA FALTABA! Definimos el buffer antes de usarlo
+            buffer_km = st.slider("Radio del Buffer (km)", 0.0, 50.0, 20.0, help="Expande el área de cálculo para mejorar la interpolación en los bordes.")
+            
+        # --- B. GEOMETRÍAS (FIX BUFFER VS REAL) ---
         if gdf_zona is None: gdf_zona = gdf_filtered
         
-        # 1. Definimos el Buffer de Cálculo
+        # 1. Definimos el Buffer de Cálculo (Ahora buffer_km ya existe)
         buffer_dist_deg = buffer_km / 111.0 
         gdf_buffer = gdf_zona.buffer(buffer_dist_deg) if buffer_km > 0 else gdf_zona
 
-        # 2. Definimos el Grid sobre el BUFFER (para no tener efectos de borde)
+        # 2. Definimos el Grid sobre el BUFFER
         minx, miny, maxx, maxy = gdf_buffer.total_bounds
-        # Ajustamos resolución para Kriging (Gstools es pesado, 150-200 es buen balance)
-        grid_res = 200 
-        # NOTA: Gstools prefiere coordenadas unicas para los ejes (structured grid)
+        
+        # Resolución del Grid
+        with col_conf2:
+            grid_res = st.slider("Resolución del Grid (Celdas)", 100, 500, 200, help="Mayor resolución = Más detalle pero más lento.")
+            
         xi = np.linspace(minx, maxx, grid_res)
         yi = np.linspace(miny, maxy, grid_res)
         grid_x, grid_y = np.meshgrid(xi, yi)
         bounds_calc = (minx, miny, maxx, maxy)
 
-        # --- B. DATOS DE ESTACIONES ---
+        # --- C. DATOS DE ESTACIONES ---
         if 'year' not in df_monthly_filtered.columns:
             df_monthly_filtered['year'] = df_monthly_filtered[Config.DATE_COL].dt.year
         df_annual = df_monthly_filtered.groupby([Config.STATION_NAME_COL, 'year'])[Config.PRECIPITATION_COL].sum().reset_index()
         df_mean = df_annual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index(name='ppt_media')
         gdf_calc = gdf_filtered.merge(df_mean, on=Config.STATION_NAME_COL)
         
-        # Blindaje geométrico
         if not isinstance(gdf_calc, gpd.GeoDataFrame):
              if 'geometry' in gdf_calc.columns: gdf_calc = gpd.GeoDataFrame(gdf_calc, geometry='geometry')
 
-        # --- C. DESCARGA DE RASTERS (DEM NECESARIO PARA KED) ---
+        # --- D. DESCARGA DE RASTERS (DEM NECESARIO PARA KED) ---
         dem_path, cob_path = None, None
-        dem_array = None # Para pasar al interpolador
+        dem_array = None 
         
         with st.spinner("☁️ Preparando terreno digital..."):
             dem_path = download_raster_to_temp("DemAntioquia_EPSG3116.tif")
             cob_path = download_raster_to_temp("Cob25m_WGS84.tif")
             
-            # Pre-cargamos el DEM en memoria para el interpolador KED
+            # Pre-cargamos el DEM para KED (Kriging con Deriva)
             if dem_path:
                 dem_array = physics.warper_raster_to_grid(dem_path, bounds_calc, grid_x.shape)
 
-        # --- D. CONFIGURACIÓN DE INTERPOLACIÓN ---
+        # --- E. CONFIGURACIÓN DE INTERPOLACIÓN (INTEGRADO CON TU MÓDULO) ---
         st.markdown("#### ⚙️ Motor Geoespacial")
         c_int1, c_int2 = st.columns([1, 2])
         
         with c_int1:
-            # Selector de método
+            # Opciones disponibles
             opts = ['kriging', 'idw', 'spline']
-            if dem_array is not None: opts.insert(1, 'ked') # Solo si hay DEM
+            if dem_array is not None: opts.insert(1, 'ked') # Solo activamos KED si hay DEM
             
             metodo_sel = st.selectbox(
                 "Método de Interpolación:", opts,
                 format_func=lambda x: {
-                    'kriging': 'Kriging Ordinario (Estocástico)',
-                    'ked': 'Kriging con Deriva (Usa DEM)',
+                    'kriging': 'Kriging Ordinario (Geoestadístico)',
+                    'ked': 'Kriging con Deriva (Usa DEM - Montaña)',
                     'idw': 'Distancia Inversa (IDW)',
                     'spline': 'Spline (Suavizado)'
                 }.get(x, x)
             )
         
         with c_int2:
-            if metodo_sel == 'kriging': st.info("ℹ️ **Kriging Ordinario:** Minimiza el error estadístico. Genera mapa de incertidumbre.")
-            elif metodo_sel == 'ked': st.success("🌟 **KED:** El mejor para montaña. Usa la elevación para corregir la lluvia (Efecto orográfico).")
-            elif metodo_sel == 'idw': st.warning("ℹ️ **IDW:** Método geométrico rápido. Tienda a generar 'ojos de buey' alrededor de estaciones.")
+            if metodo_sel == 'kriging': st.info("ℹ️ **Kriging:** Minimiza el error global. Ideal para lluvia en zonas planas.")
+            elif metodo_sel == 'ked': st.success("🌟 **KED:** ¡Recomendado! Usa la elevación para corregir la lluvia (Efecto orográfico).")
+            elif metodo_sel == 'idw': st.warning("ℹ️ **IDW:** Rápido pero genera 'ojos de buey' alrededor de las estaciones.")
             
-        # --- E. EJECUCIÓN DEL MODELO ---
+        # --- F. EJECUCIÓN DEL MODELO ---
         with st.spinner(f"Ejecutando Interpolación ({metodo_sel})..."):
-            # 1. Interpolar Lluvia (Z_P) y obtener Error (Z_Error)
+            # Usamos TU nuevo interpolador maestro a través del puente en physics
             Z_P, Z_P_Error = physics.interpolar_variable(
                 gdf_calc, 'ppt_media', grid_x, grid_y, 
                 method=metodo_sel, dem_array=dem_array
@@ -493,20 +507,20 @@ def main():
             
         with st.spinner("Calculando Balance Hídrico Distribuido..."):
             paths = {'dem': dem_path, 'cobertura': cob_path}
-            # 2. Correr Física
+            # Correr Física
             matrices = physics.run_distributed_model(Z_P, grid_x, grid_y, paths, bounds_calc)
             
-            # 3. Inyectar el Error de Interpolación para visualizarlo
+            # Inyectar Error para visualización
             if Z_P_Error is not None:
                 matrices['Incertidumbre_Lluvia'] = Z_P_Error
 
-        # --- F. MÁSCARA VISUAL (SOLO CUENCA REAL) ---
+        # --- G. MÁSCARA VISUAL (SOLO CUENCA REAL) ---
         mask_inside = None
         if gdf_zona is not None:
             from shapely.ops import unary_union
             from matplotlib import path as mpath
             
-            # Usamos gdf_zona (REAL), no gdf_buffer
+            # Usamos gdf_zona (REAL) para recortar visualmente
             zona_union = gdf_zona.unary_union
             polys = [zona_union] if zona_union.geom_type == 'Polygon' else list(zona_union.geoms)
             points_flat = np.vstack((grid_x.flatten(), grid_y.flatten())).T
@@ -520,98 +534,45 @@ def main():
                 full_mask = full_mask | inside
             mask_inside = full_mask.reshape(grid_x.shape)
 
-        # --- G. PREDIOS ---
+        # --- H. CARGA DE PREDIOS ---
         gdf_predios = None
         try:
             xmin, ymin, xmax, ymax = gdf_zona.total_bounds
+            # Ajusta el nombre de la columna si es diferente (ej: "nombre_predio" vs "NOMBRE_PRE")
             q = f'SELECT "NOMBRE_PRE" as nombre_predio, geometry FROM predios WHERE ST_Intersects(geometry, ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}, 4326))'
             gdf_predios = gpd.read_postgis(q, engine, geom_col='geometry')
         except: pass
 
-        # --- H. VISUALIZACIÓN ---
+        # --- I. VISUALIZACIÓN ---
         viz.display_advanced_maps_tab(
             gdf_stations=gdf_calc, matrices=matrices, grid=(grid_x, grid_y),
             mask=mask_inside, gdf_zona=gdf_zona, gdf_buffer=gdf_buffer if buffer_km > 0 else None,
             gdf_predios=gdf_predios
         )
         
-        
-        # --- I. PANEL DE RESULTADOS (FIX ESTADÍSTICAS) ---
+        # --- J. PANEL DE RESULTADOS (ESTADÍSTICAS REALES) ---
         st.markdown("---")
         st.subheader("📊 Panel de Resultados Hidrológicos")
         
-        # 1. Cálculos Geométricos (Sobre la CUENCA REAL - gdf_zona)
-        # Proyectamos a Magna Sirgas (3116) para medir metros reales
+        # Cálculos sobre Cuenca Real
         gdf_zona_proj = gdf_zona.to_crs(epsg=3116)
-        area_m2 = gdf_zona_proj.area.sum()
-        area_ha = area_m2 / 10000          # Hectáreas reales
-        perimetro_km = gdf_zona_proj.length.sum() / 1000 # Perímetro real
+        area_ha = gdf_zona_proj.area.sum() / 10000
+        perimetro_km = gdf_zona_proj.length.sum() / 1000
         
-        # 2. Promedios de Matrices (Usando la MÁSCARA REAL)
-        # mask_inside debe haber sido generado con gdf_zona (no con el buffer)
         stats = {}
         for key, mat in matrices.items():
             val = mat.copy()
-            if mask_inside is not None: 
-                val = val[mask_inside] # Filtramos solo pixels dentro de la cuenca real
+            if mask_inside is not None: val = val[mask_inside]
             stats[key] = np.nanmean(val)
+            
+        rendimiento = stats.get('Rendimiento', 0)
+        q_medio = (rendimiento * area_ha) / 31536000
         
-        # 3. Caudales y Rendimiento
-        # Rendimiento (m3/ha-año) obtenido del promedio espacial del raster
-        rendimiento_medio = stats.get('Rendimiento', 0)
-        
-        # Q Medio (m3/s)
-        # Fórmula: (Rendimiento * Area_ha) / Segundos_Año
-        seconds_per_year = 31536000
-        q_medio_m3s = (rendimiento_medio * area_ha) / seconds_per_year
-        
-        # Caudal Ecológico (Estimación normativa simple, ajustables)
-        q_eco_m3s = q_medio_m3s * 0.25 # 25% del Q Medio
-        
-        # 4. Índices Derivados
-        ppt_media = stats.get('P', 0)
-        etr_media = stats.get('ETR', 1)
-        indice_aridez = ppt_media / etr_media if etr_media > 0 else 0
-        
-        # --- VISUALIZACIÓN DE KPI ---
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Área Cuenca Real", f"{area_ha:,.1f} ha", f"Perímetro: {perimetro_km:.1f} km")
-        k2.metric("Caudal Medio", f"{q_medio_m3s:,.3f} m³/s", "Oferta Hídrica Neta")
-        k3.metric("Caudal Ecológico", f"{q_eco_m3s:,.3f} m³/s", "25% Q.Medio")
-        k4.metric("Rendimiento", f"{rendimiento_medio:,.1f} m³/ha", "Volumen Específico")
-        
-        st.divider()
-        
-        # Tabla Detallada
-        data_resumen = {
-            "Parámetro": [
-                "Precipitación Media", "ETR Media", "Escorrentía Superficial", 
-                "Infiltración Potencial", "Recarga Real (Acuíferos)", 
-                "Índice de Aridez", "Riesgo Erosión Promedio"
-            ],
-            "Valor": [
-                stats.get('P'), stats.get('ETR'), stats.get('Q'),
-                stats.get('Infiltracion'), stats.get('Recarga_Real'),
-                indice_aridez, stats.get('Erosion')
-            ],
-            "Unidad": ["mm/año", "mm/año", "mm/año", "mm/año", "mm/año", "-", "Índice"]
-        }
-        
-        df_resumen = pd.DataFrame(data_resumen)
-        st.dataframe(df_resumen.style.format({"Valor": "{:,.2f}"}), use_container_width=True)
-
-        # --- 9. ZONA DE DESCARGAS ---
-        st.subheader("📥 Descarga de Datos")
-        col_d1, col_d2 = st.columns(2)
-        
-        # CSV
-        csv = df_resumen.to_csv(index=False).encode('utf-8')
-        col_d1.download_button("📄 Descargar Reporte (CSV)", csv, "reporte_hidrologico.csv", "text/csv")
-        
-        # GeoJSON Cuenca (Solo la geometría real)
-        geojson = gdf_zona.to_json()
-        col_d2.download_button("🗺️ Descargar Cuenca (GeoJSON)", geojson, "cuenca_real.geojson", "application/json")
-
+        k1.metric("Área Real", f"{area_ha:,.1f} ha", f"P: {perimetro_km:.1f} km")
+        k2.metric("Caudal Medio", f"{q_medio:,.3f} m³/s", "Oferta Neta")
+        k3.metric("Rendimiento", f"{rendimiento:,.1f} m³/ha", "Espacial")
+        k4.metric("Incertidumbre", f"±{stats.get('Incertidumbre_Lluvia', 0):.1f} mm", "Error Medio")
 
 
     elif selected_module == "🧪 Sesgo":
