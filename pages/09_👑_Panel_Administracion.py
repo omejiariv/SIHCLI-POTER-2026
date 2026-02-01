@@ -19,6 +19,32 @@ import shutil
 
 from modules.admin_utils import get_raster_list, upload_raster_to_storage, delete_raster_from_storage
 
+from supabase import create_client
+
+# --- BLOQUE DE PRUEBA (BORRAR AL FINALIZAR) ---
+st.write("--- INICIO TEST DE CONEXIÓN ---")
+try:
+    # 1. Pon aquí tus datos DIRECTAMENTE (Copia y pega de tu bloc de notas)
+    url_test = "https://ldunpssoxvifemoyeuac.supabase.co" 
+    key_test = "sb_secret_JeppvZnN2pkkeDlIJTviXA_XZMErqgz" # <--- ¡PÉGALA AQUÍ DENTRO!
+    
+    # 2. Intentamos conectar
+    client = create_client(url_test, key_test)
+    
+    # 3. Intentamos listar el bucket
+    res = client.storage.from_("rasters").list()
+    
+    st.success(f"✅ ¡CONEXIÓN EXITOSA! Supabase respondió. Archivos encontrados: {len(res)}")
+except Exception as e:
+    st.error(f"❌ FALLÓ LA CONEXIÓN DIRECTA: {e}")
+    st.write("Pista: Verifica que la KEY sea la 'service_role' (secret) y no tenga espacios extra.")
+st.stop() # Detenemos la app aquí para ver el resultado
+# -----------------------------------------------
+
+# ... aquí sigue el resto de tu código normal ...
+
+
+
 # --- 1. CONFIGURACIÓN DE RUTAS E IMPORTACIONES ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
