@@ -166,78 +166,69 @@ tabs = st.tabs([
 # ==============================================================================
 # TAB 1: ESTACIONES
 # ==============================================================================
-with tabs[0]:
-    st.header("📡 Gestión de Estaciones")
-    sub_editar, sub_crear, sub_carga = st.tabs(["✏️ Editar Existente", "➕ Crear Nueva", "📂 Carga Masiva"])
+with tabs[0]: # Pestaña Estaciones
+    st.header("📍 Gestión de Estaciones (Catálogo)")
     
-    with sub_editar:
-        st.info("Busca una estación para corregir sus coordenadas.")
-        if engine:
-            with engine.connect() as conn:
-                try:
-                    df_l = pd.read_sql(text("SELECT id_estacion, nom_est FROM estaciones ORDER BY nom_est"), conn)
-                    if not df_l.empty:
-                        df_l['display'] = df_l['nom_est'] + " (" + df_l['id_estacion'].astype(str) + ")"
-                        seleccion = st.selectbox("Buscar Estación:", df_l['display'].tolist(), index=None)
-                        if seleccion:
-                            id_sel = seleccion.split('(')[-1].replace(')', '').strip()
-                            df_f = pd.read_sql(text("SELECT * FROM estaciones WHERE id_estacion = :id"), conn, params={"id": id_sel})
-                            if not df_f.empty:
-                                est_data = df_f.iloc[0]
-                                with st.form("edit_est"):
-                                    c1, c2 = st.columns(2)
-                                    nn = c1.text_input("Nombre", value=est_data.get('nom_est', ''))
-                                    nm = c1.text_input("Municipio", value=est_data.get('municipio', ''))
-                                    nl = c2.number_input("Latitud", value=float(est_data.get('latitud') or 0.0), format="%.5f")
-                                    nlo = c2.number_input("Longitud", value=float(est_data.get('longitud') or 0.0), format="%.5f")
-                                    if st.form_submit_button("Guardar Cambios"):
-                                        conn.execute(text("UPDATE estaciones SET nom_est=:n, municipio=:m, latitud=:l, longitud=:lo WHERE id_estacion=:id"),
-                                                    {"n": nn, "m": nm, "l": nl, "lo": nlo, "id": id_sel})
-                                        conn.commit()
-                                        st.success("Actualizado.")
-                                        time.sleep(0.5)
-                                        st.rerun()
-                except: st.warning("Error cargando lista.")
+    col_up, col_info = st.columns([1, 2])
+    with col_up:
+        up_est = st.file_uploader("Cargar mapaCVENSO.csv", type=["csv"])
+    
+    if up_est:
+        try:
+            # 1. Lectura robusta (Detectar ; y decimales ,)
+            df_est = pd.read_csv(up_est, sep=';', decimal=',', encoding='latin1')
+            
+            # 2. Selección y Renombramiento de columnas clave
+            # Mapeamos tus nombres originales a nombres limpios de BD
+            col_map = {
+                'Id_estacio': 'id_estacion',
+                'Nom_Est': 'nombre',
+                'Longitud_geo': 'longitude',
+                'Latitud_geo': 'latitude',
+                'alt_est': 'altitud',
+                'municipio': 'municipio',
+                'SUBREGION': 'subregion'
+            }
+            
+            # Filtramos solo las columnas que existen en el mapeo
+            cols_to_keep = [c for c in df_est.columns if c in col_map]
+            df_clean = df_est[cols_to_keep].rename(columns=col_map)
+            
+            # 3. Limpieza de Coordenadas (Crucial)
+            # A veces quedan como strings o con comas raras
+            for col in ['longitude', 'latitude', 'altitud']:
+                if col in df_clean.columns:
+                    df_clean[col] = pd.to_numeric(
+                        df_clean[col].astype(str).str.replace(',', '.'), 
+                        errors='coerce'
+                    )
+            
+            st.dataframe(df_clean.head())
+            
+            if st.button("🚀 Actualizar Catálogo de Estaciones"):
+                # UPSERT: Si la estación ya existe, actualiza sus datos; si no, la crea.
+                # Usamos tabla temporal para el upsert
+                df_clean.to_sql('temp_estaciones', engine, if_exists='replace', index=False)
+                
+                with engine.begin() as conn:
+                    # Upsert en PostgreSQL
+                    sql = text("""
+                        INSERT INTO estaciones (id_estacion, nombre, longitude, latitude, altitud, municipio, subregion)
+                        SELECT id_estacion, nombre, longitude, latitude, altitud, municipio, subregion FROM temp_estaciones
+                        ON CONFLICT (id_estacion) DO UPDATE 
+                        SET nombre = EXCLUDED.nombre, 
+                            longitude = EXCLUDED.longitude, 
+                            latitude = EXCLUDED.latitude,
+                            altitud = EXCLUDED.altitud;
+                    """)
+                    conn.execute(sql)
+                    conn.execute(text("DROP TABLE temp_estaciones"))
+                    
+                st.success(f"✅ Catálogo actualizado: {len(df_clean)} estaciones procesadas.")
+                
+        except Exception as e:
+            st.error(f"Error procesando archivo: {e}")
 
-    with sub_crear:
-        with st.form("new_est"):
-            c1, c2 = st.columns(2)
-            nid = c1.text_input("ID")
-            nnom = c1.text_input("Nombre")
-            nlat = c2.number_input("Latitud", value=6.0)
-            nlon = c2.number_input("Longitud", value=-75.0)
-            if st.form_submit_button("Crear"):
-                if nid and nnom:
-                    with engine.connect() as conn:
-                        try:
-                            conn.execute(text("INSERT INTO estaciones (id_estacion, nom_est, latitud, longitud) VALUES (:id, :n, :la, :lo)"),
-                                        {"id": nid, "n": nnom, "la": nlat, "lo": nlon})
-                            conn.commit()
-                            st.success("Creada.")
-                        except Exception as e: st.error(f"Error: {e}")
-
-    with sub_carga:
-        up_meta = st.file_uploader("Cargar 'mapaCVENSO.csv'", type=["csv"], key="up_meta_csv")
-        if up_meta and st.button("Procesar", key="btn_proc_meta"):
-            try:
-                df = pd.read_csv(up_meta, sep=';', encoding='latin-1')
-                with engine.connect() as conn:
-                    for _, row in df.iterrows():
-                        try:
-                            sid = str(row['Id_estacio']).strip()
-                            snom = str(row['Nom_Est']).strip()
-                            slat = float(str(row['Latitud_geo']).replace(',', '.'))
-                            slon = float(str(row['Longitud_geo']).replace(',', '.'))
-                            conn.execute(text("""
-                                INSERT INTO estaciones (id_estacion, nom_est, latitud, longitud)
-                                VALUES (:id, :n, :la, :lo)
-                                ON CONFLICT (id_estacion) DO UPDATE SET
-                                nom_est = EXCLUDED.nom_est, latitud = EXCLUDED.latitud, longitud = EXCLUDED.longitud
-                            """), {"id": sid, "n": snom, "la": slat, "lo": slon})
-                        except: pass
-                    conn.commit()
-                st.success("Procesado.")
-            except Exception as e: st.error(f"Error: {e}")
 
 # ==============================================================================
 # TAB 2: ÍNDICES (FORZANDO PUNTO Y COMA)
