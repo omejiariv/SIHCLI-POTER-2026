@@ -531,15 +531,32 @@ def main():
             mask_inside = full_mask.reshape(grid_x.shape)
 
 
+        # --- 6.1 CARGAR PREDIOS (NUEVO) ---
+        # Consultamos solo los predios que tocan la zona para no sobrecargar
+        gdf_predios = None
+        try:
+            if gdf_zona is not None:
+                # Convertimos el bounds a string para SQL
+                xmin, ymin, xmax, ymax = gdf_zona.total_bounds
+                query_predios = f"""
+                    SELECT nombre_predio, geometry 
+                    FROM predios 
+                    WHERE ST_Intersects(geometry, ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}, 4326))
+                """
+                gdf_predios = gpd.read_postgis(query_predios, engine, geom_col='geometry')
+        except Exception as e:
+            # Si falla (ej: tabla no existe), seguimos sin predios
+            print(f"No se pudieron cargar predios: {e}")
+
         # --- 7. VISUALIZACIÓN ---
         viz.display_advanced_maps_tab(
             gdf_stations=gdf_calc,
             matrices=matrices,
             grid=(grid_x, grid_y),
             mask=mask_inside,
-            gdf_zona=gdf_zona
+            gdf_zona=gdf_zona,     # Tu límite de cuenca (buffer o real)
+            gdf_predios=gdf_predios # <--- NUEVO ARGUMENTO
         )
-
 
     elif selected_module == "🧪 Sesgo":
         try: display_bias_correction_tab(**display_args)

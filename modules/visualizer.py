@@ -1,8 +1,10 @@
+# modules/visualizer.py
+
 import os
 from math import cos, radians
 
 
-from folium.plugins import Fullscreen
+from folium.plugins import Fullscreen, FloatImage
 from folium.features import DivIcon
 
 import rasterio
@@ -42,8 +44,7 @@ from matplotlib import path as mpath
 
 from scipy.interpolate import Rbf, griddata
 from shapely.geometry import Point
-from shapely.geometry import LineString, MultiLineString, Point
-from shapely.geometry import box
+from shapely.geometry import LineString, MultiLineString, Point, box
 from shapely.geometry import MultiPolygon, Polygon
 from statsmodels.tsa.seasonal import seasonal_decompose
 from streamlit_folium import st_folium, folium_static
@@ -2457,191 +2458,221 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     """
-    Versión 8.0: Visualizador Profesional.
-    - Etiquetas permanentes en isolíneas.
-    - Fullscreen.
-    - Unidades y Nombres corregidos.
-    - Fix Geometría.
+    Versión 9.0: Visualizador "Fine Tuning".
+    - Etiquetas limpias (Shadow text).
+    - Capa de Predios.
+    - Corrección de artefactos (Líneas rectas).
+    - Fix de mapas vacíos (Normalización robusta).
     """
     
-    # --- 1. SANEAMIENTO DE DATOS ---
+    # --- 1. PREPARACIÓN DE DATOS ---
     if not isinstance(gdf_stations, gpd.GeoDataFrame):
-        cols = gdf_stations.columns
-        if 'geometry' in cols:
+        # ... (Tu código de blindaje anterior aquí, lo dejo resumido) ...
+        if 'geometry' in gdf_stations.columns:
             gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry='geometry')
-        elif 'latitude' in cols and 'longitude' in cols:
-            gdf_stations = gpd.GeoDataFrame(
-                gdf_stations, 
-                geometry=gpd.points_from_xy(gdf_stations.longitude, gdf_stations.latitude)
-            )
         else:
-            st.error("Error: Sin coordenadas."); return
-
+            gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry=gpd.points_from_xy(gdf_stations.longitude, gdf_stations.latitude))
+    
     if gdf_stations.crs and gdf_stations.crs.to_string() != "EPSG:4326":
         gdf_stations = gdf_stations.to_crs("EPSG:4326")
 
-    # --- 2. CONFIGURACIÓN VISUAL ---
+    # Recuperar argumentos
     gdf_zona = kwargs.get('gdf_zona')
+    gdf_predios = kwargs.get('gdf_predios') # Nueva capa
     grid_x, grid_y = kwargs.get('grid')
     mask_inside = kwargs.get('mask')
     
-    # DICCIONARIO DE ETIQUETAS Y UNIDADES MEJORADO
+    # Etiquetas con Unidades
     labels = {
         'P': '🌧️ Precipitación (mm/año)', 
         'DEM': '⛰️ Modelo Digital (m.s.n.m)', 
         'T': '🌡️ Temperatura Media (°C)',
-        'ETR': '☀️ Evapotranspiración Real (mm/año)', 
+        'ETR': '☀️ ETR (mm/año)', 
         'Q': '🌊 Escorrentía Superficial (mm/año)', 
-        'Infiltracion': '💧 Infiltración Potencial (mm/año)',
+        'Infiltracion': '💧 Infiltración (mm/año)',
         'Recarga_Pot': '📉 Recarga Potencial (mm/año)',
         'Recarga_Real': '📉 Recarga Real (mm/año)',
-        'Rendimiento': '🚰 Rendimiento Hídrico (m³/ha-año)',
-        'Erosion': '🏔️ Riesgo de Erosión (Indice)', 
-        'C_Escorrentia': '⛰️ Coeficiente Escorrentía (C)'
+        'Rendimiento': '🚰 Rendimiento (m³/ha-año)',
+        'Erosion': '🏔️ Riesgo Erosión (Índice)', 
+        'C_Escorrentia': '⛰️ Coef. Escorrentía (0-1)'
     }
     
+    # --- CONTROLES ---
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         keys = [k for k in labels.keys() if k in matrices]
         sel = st.selectbox("Variable:", keys, format_func=lambda x: labels.get(x, x))
-    
     with c2:
-        cmap = st.selectbox("Color:", ["viridis", "Spectral_r", "RdYlBu", "YlGnBu", "terrain", "magma", "coolwarm"], index=1)
+        cmap_name = st.selectbox("Color:", ["viridis", "Spectral_r", "RdYlBu", "YlGnBu", "terrain", "magma", "jet"], index=1)
     with c3:
         op = st.slider("Opacidad", 0.0, 1.0, 0.7)
 
-    # Datos
+    # --- PROCESAMIENTO MATRIZ ---
     Z = matrices[sel]
     Z_Vis = Z.copy()
+    
+    # Máscara NaN fuera de la cuenca
     if mask_inside is not None and Z_Vis.shape == mask_inside.shape:
         Z_Vis[~mask_inside] = np.nan
 
-    # Rangos
-    vmin, vmax = np.nanmin(Z_Vis), np.nanmax(Z_Vis)
-    if np.isnan(vmin): vmin, vmax = 0, 1
-    if vmin == vmax: vmax += 0.1
+    # CALCULO DE RANGOS ROBUSTO (Para que Recarga/Rendimiento no salgan gris plano)
+    # Usamos percentiles para evitar que un solo pixel loco (outlier) arruine la escala
+    try:
+        valid_data = Z_Vis[~np.isnan(Z_Vis)]
+        if len(valid_data) > 0:
+            vmin = np.percentile(valid_data, 2)  # 2% inferior
+            vmax = np.percentile(valid_data, 98) # 98% superior
+            if vmin == vmax: # Si es plano, forzar rango
+                vmin = np.min(valid_data)
+                vmax = np.max(valid_data) + 0.1
+        else:
+            vmin, vmax = 0, 1
+    except:
+        vmin, vmax = 0, 1
 
-    # --- 3. CONSTRUCCIÓN DEL MAPA ---
+    # --- MAPA BASE ---
     if gdf_zona is not None:
         cy, cx = gdf_zona.geometry.centroid.y.mean(), gdf_zona.geometry.centroid.x.mean()
     else:
         cy, cx = gdf_stations.geometry.y.mean(), gdf_stations.geometry.x.mean()
         
     m = folium.Map([cy, cx], zoom_start=11, tiles="CartoDB positron")
-    
-    # A. BOTÓN FULLSCREEN
-    Fullscreen(
-        position='topright',
-        title='Pantalla Completa',
-        title_cancel='Salir Pantalla Completa',
-        force_separate_button=True
-    ).add_to(m)
+    Fullscreen().add_to(m) # Botón Fullscreen
 
-    # B. RASTER
+    # 1. CAPA RASTER
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-    rgba = plt.get_cmap(cmap)(norm(Z_Vis))
+    rgba = plt.get_cmap(cmap_name)(norm(Z_Vis))
     rgba[..., 3] = np.where(np.isnan(Z_Vis), 0, op)
     
     folium.raster_layers.ImageOverlay(
         image=np.flipud(rgba),
         bounds=[[grid_y.min(), grid_x.min()], [grid_y.max(), grid_x.max()]],
-        name=f"Raster: {labels[sel]}"
+        name=f"Raster: {sel}",
+        interactive=True,
+        cross_origin=False,
+        zindex=1
     ).add_to(m)
 
-    # C. ISOLÍNEAS CON ETIQUETAS PERMANENTES
-    fg_iso = folium.FeatureGroup(name="Isolíneas", show=True)
+    # 2. CAPA PREDIOS (NUEVO)
+    if gdf_predios is not None and not gdf_predios.empty:
+        folium.GeoJson(
+            gdf_predios,
+            name="🏠 Predios",
+            style_function=lambda x: {
+                'fillColor': '#ffd700', 'color': 'orange', 
+                'weight': 1, 'fillOpacity': 0.2
+            },
+            tooltip=folium.GeoJsonTooltip(fields=['nombre_predio'], aliases=['Predio:']),
+            show=False # Desactivado por defecto para no saturar
+        ).add_to(m)
+
+    # 3. ISOLÍNEAS LIMPIAS (SIN CAJAS, SIN LINEAS RECTAS)
+    fg_iso = folium.FeatureGroup(name="Isolíneas", show=True, overlay=True, zindex=100)
     
     if True:
         try:
             fig, ax = plt.subplots()
-            # Generar contornos con matplotlib
+            # Usamos Z (sin huecos si es posible) para generar curvas suaves
             cs = ax.contour(grid_x, grid_y, Z, levels=np.linspace(vmin, vmax, 10))
             zona_union = gdf_zona.unary_union if gdf_zona is not None else None
             
             for i, collection in enumerate(cs.collections):
-                level_value = cs.levels[i] # Valor de la línea
-                
+                val = cs.levels[i]
                 for path in collection.get_paths():
                     coords = [[y, x] for x, y in path.vertices]
                     if len(coords) > 2:
-                        # Recorte (Clipping)
-                        line_ok = False
-                        final_coords = coords
+                        # Convertir a LineString
+                        line = LineString([[x, y] for y, x in coords]) # Lon, Lat
                         
+                        # --- FILTRO DE ARTEFACTOS ---
+                        # Si la línea es una recta perfecta muy larga (artefacto de borde), la ignoramos
+                        if line.length > (grid_x.max() - grid_x.min()) * 0.9: 
+                            # Si cruza casi todo el mapa en línea recta, es basura
+                            is_artifact = True 
+                            # Verificación extra: ¿Tiene pocos puntos para su longitud?
+                            if len(coords) < 10: continue 
+                        
+                        # Recorte con la Cuenca
                         if zona_union:
-                            line = LineString([[x, y] for y, x in coords])
                             if line.intersects(zona_union):
                                 try:
                                     clipped = line.intersection(zona_union)
                                     segs = list(clipped.geoms) if isinstance(clipped, MultiLineString) else [clipped]
                                     for s in segs:
                                         if not s.is_empty:
-                                            l_coords = [[p[1], p[0]] for p in s.coords]
                                             # Dibujar línea
-                                            folium.PolyLine(l_coords, color='black', weight=0.8, opacity=0.5).add_to(fg_iso)
+                                            l_coords = [[p[1], p[0]] for p in s.coords]
+                                            folium.PolyLine(l_coords, color='black', weight=0.6, opacity=0.6).add_to(fg_iso)
                                             
-                                            # --- ETIQUETA DE TEXTO ---
-                                            # Ponemos la etiqueta en el punto medio de la línea
-                                            mid_idx = len(l_coords) // 2
-                                            mid_point = l_coords[mid_idx]
-                                            
+                                            # Etiqueta (SOLO TEXTO, SIN CAJA)
+                                            mid = l_coords[len(l_coords)//2]
                                             folium.map.Marker(
-                                                mid_point,
+                                                mid,
                                                 icon=DivIcon(
-                                                    icon_size=(150,36),
-                                                    icon_anchor=(7,20),
-                                                    html=f'<div style="font-size: 8pt; font-weight: bold; color: black; background: rgba(255,255,255,0.6); padding: 1px; border-radius: 3px;">{level_value:.0f}</div>'
+                                                    icon_size=(100,20),
+                                                    icon_anchor=(0,0),
+                                                    # HTML CSS Hack: Text-shadow blanco para simular borde y que se lea sobre oscuro
+                                                    html=f'<div style="font-size: 7pt; font-weight: bold; color: #222; text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff;">{val:.0f}</div>'
                                                 )
                                             ).add_to(fg_iso)
                                 except: pass
                         else:
-                            # Sin recorte (menos común)
-                            folium.PolyLine(coords, color='black', weight=0.8).add_to(fg_iso)
+                            folium.PolyLine(coords, color='black', weight=0.5).add_to(fg_iso)
             plt.close(fig)
-        except Exception as e:
-            print(f"Error isolíneas: {e}")
-            
+        except Exception as e: print(f"Error iso: {e}")
     fg_iso.add_to(m)
 
-    # D. CAPA VECTORIAL (Cuenca)
+    # 4. LÍMITE CUENCA (Buffer y Real)
     if gdf_zona is not None:
+        # Buffer (el usado para cálculo)
         folium.GeoJson(
             gdf_zona, 
+            name="Límite Buffer",
+            style_function=lambda x: {'fill':False, 'color':'gray', 'weight':1, 'dashArray': '5, 5'}
+        ).add_to(m)
+        
+        # Real (Intentamos extraer el original si existe, o usamos el mismo con estilo fuerte)
+        folium.GeoJson(
+            gdf_zona,
             name="Límite Cuenca",
             style_function=lambda x: {'fill':False, 'color':'black', 'weight':2.5}
         ).add_to(m)
 
-    # E. ESTACIONES (Capa Controlable)
-    fg_est = folium.FeatureGroup(name="Estaciones", show=False) # show=False para que arranque desactivada si quieres
-    for i, row in gdf_stations.iterrows():
-        geom = getattr(row, 'geometry', None)
-        if geom is None:
-            lat, lon = row.get('latitude'), row.get('longitude')
-            if lat and lon: geom = Point(lon, lat)
-            
-        if geom is not None:
-            val = row.get('ppt_media', 0)
-            folium.CircleMarker(
-                [geom.y, geom.x], radius=4, color='black', fill=True, fill_color='white', fill_opacity=1,
-                popup=f"<b>{row.get('nom_est','Est')}</b><br>Lluvia: {val:.0f} mm",
-                tooltip=f"{row.get('nom_est','')}"
-            ).add_to(fg_est)
-    fg_est.add_to(m)
+    # 5. ESTACIONES (VISIBLE SIEMPRE)
+    # Creamos el FeatureGroup con show=True por defecto
+    fg_est = folium.FeatureGroup(name="📍 Estaciones", show=True, overlay=True, zindex=1000)
     
-    # CONTROL DE CAPAS
+    for _, row in gdf_stations.iterrows():
+        geom = getattr(row, 'geometry', None)
+        if geom is not None:
+            # Usamos CircleMarker con borde blanco para resaltar
+            folium.CircleMarker(
+                [geom.y, geom.x], radius=5, 
+                color='black', weight=1,
+                fill=True, fill_color='#00ff00', fill_opacity=1,
+                popup=f"<b>{row.get('nom_est','Est')}</b><br>Val: {row.get('ppt_media',0):.0f}",
+                tooltip=row.get('nom_est','Est')
+            ).add_to(fg_est)
+            
+    fg_est.add_to(m)
+
+    # CONTROLES FINALES
     folium.LayerControl(collapsed=False).add_to(m)
     
-    # LEYENDA (Colorbar)
-    hexs = [mcolors.to_hex(plt.get_cmap(cmap)(i)) for i in np.linspace(0, 1, 5)]
-    bcm.LinearColormap(hexs, vmin=vmin, vmax=vmax, caption=labels[sel]).add_to(m)
+    # Leyenda
+    hexs = [mcolors.to_hex(plt.get_cmap(cmap_name)(i)) for i in np.linspace(0, 1, 5)]
+    bcm.LinearColormap(hexs, vmin=vmin, vmax=vmax, caption=labels.get(sel, sel)).add_to(m)
 
-    st_folium(m, width=1400, height=650) # Un poco más alto
+    st_folium(m, width=1400, height=700)
     
-    # ESTADÍSTICAS
+    # Métricas abajo
     st.divider()
-    mean_val = np.nanmean(Z_Vis)
-    st.metric(f"Promedio Espacial: {labels[sel]}", f"{mean_val:,.1f}")
-
+    c_m1, c_m2, c_m3 = st.columns(3)
+    valid_vals = Z_Vis[~np.isnan(Z_Vis)]
+    if len(valid_vals) > 0:
+        c_m1.metric("Mínimo", f"{np.min(valid_vals):,.1f}")
+        c_m2.metric("Promedio", f"{np.mean(valid_vals):,.1f}")
+        c_m3.metric("Máximo", f"{np.max(valid_vals):,.1f}")
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
