@@ -246,28 +246,45 @@ with tabs[1]:
     st.header("📊 Índices Climáticos")
     sb1, sb2 = st.tabs(["👁️ Ver Tabla Completa", "📂 Cargar/Actualizar CSV"])
     
-    with sb1:
+    with sb1: # Sub-pestaña: Tabla Completa
+        st.markdown("### 📋 Inventario de Predios")
+        
         try:
-            # 1. Averiguar qué columnas existen realmente
-            inspector_q = text("SELECT column_name FROM information_schema.columns WHERE table_name = 'predios' AND column_name != 'geometry'")
-            with engine.connect() as conn:
-                cols_existentes = pd.read_sql(inspector_q, conn)['column_name'].tolist()
+            # 1. DIAGNÓSTICO: ¿Existe la tabla?
+            # Intentamos leer solo 1 fila para ver si la tabla responde y qué columnas tiene
+            df_test = pd.read_sql('SELECT * FROM predios LIMIT 1', engine)
             
-            if not cols_existentes:
-                st.warning("La tabla 'predios' existe pero parece vacía de columnas de datos.")
+            # Si llegamos aquí, la tabla EXISTE. Ahora filtramos la geometría para que no rompa la tabla visual.
+            columnas_todas = df_test.columns.tolist()
+            columnas_visibles = [c for c in columnas_todas if c != 'geometry']
+            
+            if not columnas_visibles:
+                st.warning("⚠️ La tabla 'predios' existe, pero solo tiene columna de geometría o está vacía.")
             else:
-                # 2. Construir consulta dinámica
-                cols_str = ", ".join([f'"{c}"' for c in cols_existentes]) # Comillas para evitar errores de mayúsculas
-                query = f"SELECT {cols_str} FROM predios LIMIT 1000"
+                # 2. CONSULTA SEGURA: Traemos solo las columnas de texto/números
+                # Usamos comillas dobles "{c}" para respetar mayúsculas/minúsculas exactas (ej: "NOMBRE_PRE")
+                cols_sql = ", ".join([f'"{c}"' for c in columnas_visibles])
+                query = f"SELECT {cols_sql} FROM predios"
                 
-                df_p = pd.read_sql(query, engine)
-                st.success(f"✅ Cargados {len(df_p)} registros. Columnas encontradas: {cols_existentes}")
-                st.data_editor(df_p, key="ed_pred_dynamic", use_container_width=True)
+                df_final = pd.read_sql(query, engine)
+                
+                st.success(f"✅ Conexión establecida. Se encontraron {len(df_final)} registros.")
+                st.dataframe(df_final, use_container_width=True)
                 
         except Exception as e:
-            st.error(f"Error leyendo tabla: {e}")
-            st.info("Intenta volver a cargar el archivo GeoJSON en la pestaña de al lado.")
-
+            # Si falla, mostramos un diagnóstico detallado
+            st.error("❌ No se puede visualizar la tabla.")
+            st.warning(f"Error técnico: {e}")
+            
+            st.markdown("---")
+            st.info("🔍 **Herramienta de Diagnóstico:**")
+            if st.button("Verificar tablas en Base de Datos"):
+                try:
+                    q_check = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+                    df_tablas = pd.read_sql(q_check, engine)
+                    st.write("Tablas encontradas en Supabase:", df_tablas)
+                except Exception as ex:
+                    st.error(f"Ni siquiera pudimos listar las tablas: {ex}")
 
     with sb2:
         st.markdown("### Cargar Archivo de Índices")
