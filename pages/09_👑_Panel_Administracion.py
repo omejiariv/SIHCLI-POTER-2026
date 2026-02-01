@@ -315,69 +315,70 @@ with tabs[1]:
 # ==============================================================================
 with tabs[2]:
     st.header("🏠 Gestión de Predios")
+    st.info("Aquí administras la capa base de predios (Catastro).")
+
     sb1, sb2 = st.tabs(["👁️ Tabla Completa", "📂 Carga GeoJSON"])
-    
+
+    # --- SUB-PESTAÑA 1: VISUALIZAR ---
     with sb1:
         try:
-            # Consultamos sin geometría para que sea rápido de ver
-            df_p = pd.read_sql("SELECT id_predio, nombre_predio, municipio, area_ha FROM predios LIMIT 2000", engine)
-            st.data_editor(df_p, key="ed_pred", use_container_width=True)
-        except: st.warning("Sin datos o tabla no existe.")
+            # 1. Leemos la tabla cruda sin filtros
+            query_check = "SELECT * FROM predios LIMIT 5"
+            df_preview = pd.read_sql(query_check, engine)
+            
+            # Si no da error, traemos todo (excluyendo geometría pesada)
+            cols = [c for c in df_preview.columns if c != 'geometry']
+            cols_sql = ", ".join([f'"{c}"' for c in cols]) # Protegemos nombres
+            
+            df_predios = pd.read_sql(f"SELECT {cols_sql} FROM predios", engine)
+            
+            st.success(f"✅ Se encontraron {len(df_predios)} predios en la base de datos.")
+            st.dataframe(df_predios, use_container_width=True)
+            
+        except Exception as e:
+            st.warning("No se pudo leer la tabla 'predios'. Posiblemente aún no se ha cargado correctamente.")
+            st.error(f"Detalle técnico: {e}")
 
+    # --- SUB-PESTAÑA 2: CARGAR (AQUÍ ESTÁ LA MAGIA) ---
     with sb2:
-        st.info("Carga 'PrediosEjecutados.geojson'. El sistema detectará automáticamente la geometría y reemplazará la tabla existente.")
+        st.write("Sube el archivo `PrediosEjecutados.geojson`.")
+        up_file = st.file_uploader("GeoJSON Predios", type=["geojson", "json"], key="up_pred")
         
-        # Key única para evitar conflictos
-        up_gp = st.file_uploader("GeoJSON Predios", type=["geojson", "json"], key="up_pred_geo_smart_v2")
-        
-        if up_gp:
-            try:
-                # 1. Leemos CON GEOPANDAS (Para conservar el mapa)
-                gdf_p = gpd.read_file(up_gp)
-                cols_p = list(gdf_p.columns)
-                
-                st.markdown("##### 🛠️ Configuración de Columnas")
-                c1, c2, c3 = st.columns(3)
-                
-                # Buscamos columnas candidatas automáticamente
-                idx_nom = next((i for i, c in enumerate(cols_p) if c.lower() in ['nombre_pre', 'nombre_predio', 'nombre', 'predio']), 0)
-                idx_id = next((i for i, c in enumerate(cols_p) if c.lower() in ['pk_predios', 'id_predio', 'codigo', 'id']), 0)
-                idx_mun = next((i for i, c in enumerate(cols_p) if c.lower() in ['nomb_mpio', 'municipio', 'mpio']), 0)
-                
-                # SELECTORES MANUALES (Tú tienes el control)
-                col_nom_p = c1.selectbox("📌 Nombre Predio:", cols_p, index=idx_nom, key="sel_nom_pred")
-                col_id_p = c2.selectbox("🔑 ID Único:", cols_p, index=idx_id, key="sel_id_pred")
-                col_mun_p = c3.selectbox("🏙️ Municipio:", cols_p, index=idx_mun, key="sel_mun_pred")
-                
-                if st.button("🚀 Reemplazar y Guardar Predios", key="btn_save_pred_smart"):
-                    status = st.status("Procesando...", expanded=True)
-                    
-                    # 2. Asegurar WGS84
-                    if gdf_p.crs and gdf_p.crs.to_string() != "EPSG:4326":
-                        status.write("🔄 Reproyectando a WGS84...")
-                        gdf_p = gdf_p.to_crs("EPSG:4326")
-                    
-                    # 3. Renombrar a estándar (nombre_predio, id_predio)
-                    # Esto asegura que el visualizador encuentre las columnas
-                    gdf_p = gdf_p.rename(columns={
-                        col_nom_p: 'nombre_predio',
-                        col_id_p: 'id_predio',
-                        col_mun_p: 'municipio'
-                    })
-                    
-                    # 4. SUBIDA GEESPACIAL (to_postgis) con 'replace'
-                    # 'if_exists="replace"' elimina el error de duplicados borrando lo viejo
-                    status.write("📤 Guardando geometría en Base de Datos...")
-                    gdf_p.to_postgis('predios', engine, if_exists='replace', index=False)
-                    
-                    status.update(label="¡Predios Recuperados!", state="complete")
-                    st.success(f"✅ Se cargaron {len(gdf_p)} predios con su geometría correctamente.")
-                    st.balloons()
-                    time.sleep(2)
-                    st.rerun()
-                    
-            except Exception as e:
-                st.error(f"Error procesando archivo: {e}")
+        if up_file:
+            if st.button("🚀 Reemplazar Base de Datos de Predios"):
+                with st.spinner("Procesando geometría y normalizando datos..."):
+                    try:
+                        # 1. Leer el archivo
+                        import geopandas as gpd
+                        gdf = gpd.read_file(up_file)
+                        
+                        # 2. NORMALIZACIÓN (La Clave del Éxito)
+                        # Convertimos todos los nombres de columnas a minúsculas para evitar conflictos SQL
+                        gdf.columns = map(str.lower, gdf.columns)
+                        
+                        # 3. Verificar y corregir proyección
+                        if gdf.crs is None:
+                            gdf.set_crs(epsg=4326, inplace=True)
+                        else:
+                            gdf = gdf.to_crs(epsg=4326)
+                            
+                        # 4. Limpieza de geometrías
+                        # Convertimos MultiPolygon a Polygon si es necesario o arreglamos geometrías inválidas
+                        gdf['geometry'] = gdf.geometry.buffer(0) 
+                        
+                        # 5. SUBIDA A SUPABASE (PostGIS)
+                        # if_exists='replace' BORRA lo anterior y crea la tabla nueva limpia
+                        gdf.to_postgis("predios", engine, if_exists='replace', index=False)
+                        
+                        st.success("✅ ¡Carga Exitosa! La tabla 'predios' ha sido creada correctamente.")
+                        st.balloons()
+                        
+                        # Mostrar resumen de lo que se subió
+                        st.write("Resumen de columnas creadas (Minúsculas):")
+                        st.write(list(gdf.columns))
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error crítico subiendo predios: {e}")
 
 
 # ==============================================================================
