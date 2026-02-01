@@ -558,6 +558,7 @@ def main():
             gdf_predios=gdf_predios # <--- NUEVO ARGUMENTO
         )
 
+
     elif selected_module == "🧪 Sesgo":
         try: display_bias_correction_tab(**display_args)
         except: st.info("Módulo Sesgo cargando...")

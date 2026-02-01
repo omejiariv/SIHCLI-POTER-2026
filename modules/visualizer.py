@@ -2460,6 +2460,7 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     """
     Versión 9.0: Visualizador "Fine Tuning".
     - Etiquetas limpias (Shadow text).
+    - Prevención de bloqueos (Filtro de líneas pequeñas).
     - Capa de Predios.
     - Corrección de artefactos (Líneas rectas).
     - Fix de mapas vacíos (Normalización robusta).
@@ -2468,7 +2469,8 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     # --- 1. PREPARACIÓN DE DATOS ---
     if not isinstance(gdf_stations, gpd.GeoDataFrame):
         # ... (Tu código de blindaje anterior aquí, lo dejo resumido) ...
-        if 'geometry' in gdf_stations.columns:
+        cols = gdf_stations.columns
+        if 'geometry' in cols:
             gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry='geometry')
         else:
             gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry=gpd.points_from_xy(gdf_stations.longitude, gdf_stations.latitude))
@@ -2566,13 +2568,13 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
             show=False # Desactivado por defecto para no saturar
         ).add_to(m)
 
-    # 3. ISOLÍNEAS LIMPIAS (SIN CAJAS, SIN LINEAS RECTAS)
+    # 3. ISOLÍNEAS LIMPIAS (OPTIMIZADAS PARA NO COLGAR EL NAVEGADOR)
     fg_iso = folium.FeatureGroup(name="Isolíneas", show=True, overlay=True, zindex=100)
     
     if True:
         try:
             fig, ax = plt.subplots()
-            # Usamos Z (sin huecos si es posible) para generar curvas suaves
+            # Usamos menos niveles para mapas complejos para evitar saturación
             cs = ax.contour(grid_x, grid_y, Z, levels=np.linspace(vmin, vmax, 10))
             zona_union = gdf_zona.unary_union if gdf_zona is not None else None
             
@@ -2580,17 +2582,18 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
                 val = cs.levels[i]
                 for path in collection.get_paths():
                     coords = [[y, x] for x, y in path.vertices]
+                    
+                    # FILTRO ANTI-BLOQUEO: Si la línea es muy corta (ruido), no la dibujamos
+                    # Esto evita el error de "Recarga Potencial" saturada
+                    if len(coords) < 10: continue 
+
                     if len(coords) > 2:
-                        # Convertir a LineString
                         line = LineString([[x, y] for y, x in coords]) # Lon, Lat
                         
-                        # --- FILTRO DE ARTEFACTOS ---
-                        # Si la línea es una recta perfecta muy larga (artefacto de borde), la ignoramos
+                        # --- FILTRO DE ARTEFACTOS (Líneas rectas) ---
+                        # Si cruza casi todo el mapa en línea recta, es basura
                         if line.length > (grid_x.max() - grid_x.min()) * 0.9: 
-                            # Si cruza casi todo el mapa en línea recta, es basura
-                            is_artifact = True 
-                            # Verificación extra: ¿Tiene pocos puntos para su longitud?
-                            if len(coords) < 10: continue 
+                            continue 
                         
                         # Recorte con la Cuenca
                         if zona_union:
@@ -2599,22 +2602,24 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
                                     clipped = line.intersection(zona_union)
                                     segs = list(clipped.geoms) if isinstance(clipped, MultiLineString) else [clipped]
                                     for s in segs:
-                                        if not s.is_empty:
+                                        if not s.is_empty and s.length > 0.001: # Filtro extra de longitud
                                             # Dibujar línea
                                             l_coords = [[p[1], p[0]] for p in s.coords]
                                             folium.PolyLine(l_coords, color='black', weight=0.6, opacity=0.6).add_to(fg_iso)
                                             
                                             # Etiqueta (SOLO TEXTO, SIN CAJA)
-                                            mid = l_coords[len(l_coords)//2]
-                                            folium.map.Marker(
-                                                mid,
-                                                icon=DivIcon(
-                                                    icon_size=(100,20),
-                                                    icon_anchor=(0,0),
-                                                    # HTML CSS Hack: Text-shadow blanco para simular borde y que se lea sobre oscuro
-                                                    html=f'<div style="font-size: 7pt; font-weight: bold; color: #222; text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff;">{val:.0f}</div>'
-                                                )
-                                            ).add_to(fg_iso)
+                                            # Solo ponemos etiqueta si la linea es decentemente larga
+                                            if len(l_coords) > 20:
+                                                mid = l_coords[len(l_coords)//2]
+                                                folium.map.Marker(
+                                                    mid,
+                                                    icon=DivIcon(
+                                                        icon_size=(100,20),
+                                                        icon_anchor=(0,0),
+                                                        # Texto con sombra blanca para legibilidad
+                                                        html=f'<div style="font-size: 8pt; font-weight: bold; color: #222; text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff;">{val:.0f}</div>'
+                                                    )
+                                                ).add_to(fg_iso)
                                 except: pass
                         else:
                             folium.PolyLine(coords, color='black', weight=0.5).add_to(fg_iso)
@@ -2624,28 +2629,27 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
 
     # 4. LÍMITE CUENCA (Buffer y Real)
     if gdf_zona is not None:
-        # Buffer (el usado para cálculo)
+        # Buffer (el usado para cálculo) - Línea punteada
         folium.GeoJson(
             gdf_zona, 
             name="Límite Buffer",
             style_function=lambda x: {'fill':False, 'color':'gray', 'weight':1, 'dashArray': '5, 5'}
         ).add_to(m)
         
-        # Real (Intentamos extraer el original si existe, o usamos el mismo con estilo fuerte)
+        # Real (Usamos estilo fuerte negro)
+        # Nota: Si tuvieras el shape original sin buffer, pásalo en kwargs
         folium.GeoJson(
             gdf_zona,
             name="Límite Cuenca",
             style_function=lambda x: {'fill':False, 'color':'black', 'weight':2.5}
         ).add_to(m)
 
-    # 5. ESTACIONES (VISIBLE SIEMPRE)
-    # Creamos el FeatureGroup con show=True por defecto
-    fg_est = folium.FeatureGroup(name="📍 Estaciones", show=True, overlay=True, zindex=1000)
+    # 5. ESTACIONES (VISIBLE SIEMPRE - ZINDEX ALTO)
+    fg_est = folium.FeatureGroup(name="📍 Estaciones", show=True, overlay=True)
     
     for _, row in gdf_stations.iterrows():
         geom = getattr(row, 'geometry', None)
         if geom is not None:
-            # Usamos CircleMarker con borde blanco para resaltar
             folium.CircleMarker(
                 [geom.y, geom.x], radius=5, 
                 color='black', weight=1,
@@ -2673,6 +2677,7 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
         c_m1.metric("Mínimo", f"{np.min(valid_vals):,.1f}")
         c_m2.metric("Promedio", f"{np.mean(valid_vals):,.1f}")
         c_m3.metric("Máximo", f"{np.max(valid_vals):,.1f}")
+
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)
