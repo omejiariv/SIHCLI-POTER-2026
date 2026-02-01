@@ -1,6 +1,10 @@
 import os
 from math import cos, radians
 
+
+from folium.plugins import Fullscreen
+from folium.features import DivIcon
+
 import rasterio
 import tempfile
 import zipfile
@@ -38,7 +42,7 @@ from matplotlib import path as mpath
 
 from scipy.interpolate import Rbf, griddata
 from shapely.geometry import Point
-from shapely.geometry import LineString, MultiLineString
+from shapely.geometry import LineString, MultiLineString, Point
 from shapely.geometry import box
 from shapely.geometry import MultiPolygon, Polygon
 from statsmodels.tsa.seasonal import seasonal_decompose
@@ -2453,81 +2457,87 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     """
-    Versión SIHCLI-POTER 6.3: Visualizador Indestructible.
-    - Maneja mezcla de CRS y pérdida de geometría tras merges.
-    - Dibuja Rasters, Isolíneas y Vectores.
+    Versión 8.0: Visualizador Profesional.
+    - Etiquetas permanentes en isolíneas.
+    - Fullscreen.
+    - Unidades y Nombres corregidos.
+    - Fix Geometría.
     """
     
-    # --- 1. SANEAMIENTO DE DATOS (CRÍTICO) ---
-    # A veces el merge convierte el GeoDataFrame en DataFrame y pierde la 'geometry'
-    
-    # Intento 1: Verificar si es GeoDataFrame
+    # --- 1. SANEAMIENTO DE DATOS ---
     if not isinstance(gdf_stations, gpd.GeoDataFrame):
-        # Buscar columnas de coordenadas comunes
         cols = gdf_stations.columns
         if 'geometry' in cols:
             gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry='geometry')
-        elif 'geom' in cols:
-            gdf_stations = gpd.GeoDataFrame(gdf_stations.rename(columns={'geom': 'geometry'}), geometry='geometry')
         elif 'latitude' in cols and 'longitude' in cols:
             gdf_stations = gpd.GeoDataFrame(
                 gdf_stations, 
                 geometry=gpd.points_from_xy(gdf_stations.longitude, gdf_stations.latitude)
             )
         else:
-            st.error("Error Crítico: No se encontraron coordenadas (geometry, geom, o lat/lon) en los datos.")
-            return
+            st.error("Error: Sin coordenadas."); return
 
-    # Asegurar CRS WGS84 para Folium
-    if gdf_stations.crs is not None and gdf_stations.crs.to_string() != "EPSG:4326":
+    if gdf_stations.crs and gdf_stations.crs.to_string() != "EPSG:4326":
         gdf_stations = gdf_stations.to_crs("EPSG:4326")
 
-    # --- 2. CONFIGURACIÓN ---
+    # --- 2. CONFIGURACIÓN VISUAL ---
     gdf_zona = kwargs.get('gdf_zona')
     grid_x, grid_y = kwargs.get('grid')
     mask_inside = kwargs.get('mask')
     
+    # DICCIONARIO DE ETIQUETAS Y UNIDADES MEJORADO
+    labels = {
+        'P': '🌧️ Precipitación (mm/año)', 
+        'DEM': '⛰️ Modelo Digital (m.s.n.m)', 
+        'T': '🌡️ Temperatura Media (°C)',
+        'ETR': '☀️ Evapotranspiración Real (mm/año)', 
+        'Q': '🌊 Escorrentía Superficial (mm/año)', 
+        'Infiltracion': '💧 Infiltración Potencial (mm/año)',
+        'Recarga_Pot': '📉 Recarga Potencial (mm/año)',
+        'Recarga_Real': '📉 Recarga Real (mm/año)',
+        'Rendimiento': '🚰 Rendimiento Hídrico (m³/ha-año)',
+        'Erosion': '🏔️ Riesgo de Erosión (Indice)', 
+        'C_Escorrentia': '⛰️ Coeficiente Escorrentía (C)'
+    }
+    
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
-        labels = {
-            'P': '🌧️ Precipitación', 'DEM': '⛰️ Elevación (DEM)', 'T': '🌡️ Temperatura',
-            'ETR': '☀️ ETR', 'Q': '🌊 Escorrentía', 'Infiltracion': '💧 Infiltración',
-            'Recarga': '📉 Recarga', 'Erosion': '🏔️ Erosión', 'C_Escorrentia': '⛰️ Coef. C'
-        }
         keys = [k for k in labels.keys() if k in matrices]
-        if not keys: st.warning("Esperando cálculo..."); return
         sel = st.selectbox("Variable:", keys, format_func=lambda x: labels.get(x, x))
     
     with c2:
-        cmap = st.selectbox("Color:", ["viridis", "Spectral_r", "RdYlBu", "YlGnBu", "terrain", "magma"], index=1)
+        cmap = st.selectbox("Color:", ["viridis", "Spectral_r", "RdYlBu", "YlGnBu", "terrain", "magma", "coolwarm"], index=1)
     with c3:
         op = st.slider("Opacidad", 0.0, 1.0, 0.7)
 
     # Datos
     Z = matrices[sel]
     Z_Vis = Z.copy()
-    
-    # Máscara visual
-    if mask_inside is not None: 
-        # Asegurar dimensiones iguales
-        if Z_Vis.shape == mask_inside.shape:
-            Z_Vis[~mask_inside] = np.nan
+    if mask_inside is not None and Z_Vis.shape == mask_inside.shape:
+        Z_Vis[~mask_inside] = np.nan
 
     # Rangos
     vmin, vmax = np.nanmin(Z_Vis), np.nanmax(Z_Vis)
     if np.isnan(vmin): vmin, vmax = 0, 1
     if vmin == vmax: vmax += 0.1
 
-    # --- 3. MAPA ---
-    # Centro del mapa
+    # --- 3. CONSTRUCCIÓN DEL MAPA ---
     if gdf_zona is not None:
         cy, cx = gdf_zona.geometry.centroid.y.mean(), gdf_zona.geometry.centroid.x.mean()
     else:
         cy, cx = gdf_stations.geometry.y.mean(), gdf_stations.geometry.x.mean()
         
     m = folium.Map([cy, cx], zoom_start=11, tiles="CartoDB positron")
+    
+    # A. BOTÓN FULLSCREEN
+    Fullscreen(
+        position='topright',
+        title='Pantalla Completa',
+        title_cancel='Salir Pantalla Completa',
+        force_separate_button=True
+    ).add_to(m)
 
-    # A. RASTER
+    # B. RASTER
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
     rgba = plt.get_cmap(cmap)(norm(Z_Vis))
     rgba[..., 3] = np.where(np.isnan(Z_Vis), 0, op)
@@ -2535,20 +2545,29 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     folium.raster_layers.ImageOverlay(
         image=np.flipud(rgba),
         bounds=[[grid_y.min(), grid_x.min()], [grid_y.max(), grid_x.max()]],
-        name="Raster"
+        name=f"Raster: {labels[sel]}"
     ).add_to(m)
 
-    # B. ISOLÍNEAS
+    # C. ISOLÍNEAS CON ETIQUETAS PERMANENTES
+    fg_iso = folium.FeatureGroup(name="Isolíneas", show=True)
+    
     if True:
         try:
             fig, ax = plt.subplots()
+            # Generar contornos con matplotlib
             cs = ax.contour(grid_x, grid_y, Z, levels=np.linspace(vmin, vmax, 10))
             zona_union = gdf_zona.unary_union if gdf_zona is not None else None
             
-            for col in cs.collections:
-                for path in col.get_paths():
+            for i, collection in enumerate(cs.collections):
+                level_value = cs.levels[i] # Valor de la línea
+                
+                for path in collection.get_paths():
                     coords = [[y, x] for x, y in path.vertices]
                     if len(coords) > 2:
+                        # Recorte (Clipping)
+                        line_ok = False
+                        final_coords = coords
+                        
                         if zona_union:
                             line = LineString([[x, y] for y, x in coords])
                             if line.intersects(zona_union):
@@ -2557,47 +2576,71 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
                                     segs = list(clipped.geoms) if isinstance(clipped, MultiLineString) else [clipped]
                                     for s in segs:
                                         if not s.is_empty:
-                                            l = [[p[1], p[0]] for p in s.coords]
-                                            folium.PolyLine(l, color='black', weight=0.6, opacity=0.5).add_to(m)
+                                            l_coords = [[p[1], p[0]] for p in s.coords]
+                                            # Dibujar línea
+                                            folium.PolyLine(l_coords, color='black', weight=0.8, opacity=0.5).add_to(fg_iso)
+                                            
+                                            # --- ETIQUETA DE TEXTO ---
+                                            # Ponemos la etiqueta en el punto medio de la línea
+                                            mid_idx = len(l_coords) // 2
+                                            mid_point = l_coords[mid_idx]
+                                            
+                                            folium.map.Marker(
+                                                mid_point,
+                                                icon=DivIcon(
+                                                    icon_size=(150,36),
+                                                    icon_anchor=(7,20),
+                                                    html=f'<div style="font-size: 8pt; font-weight: bold; color: black; background: rgba(255,255,255,0.6); padding: 1px; border-radius: 3px;">{level_value:.0f}</div>'
+                                                )
+                                            ).add_to(fg_iso)
                                 except: pass
                         else:
-                            folium.PolyLine(coords, color='black', weight=0.6).add_to(m)
+                            # Sin recorte (menos común)
+                            folium.PolyLine(coords, color='black', weight=0.8).add_to(fg_iso)
             plt.close(fig)
-        except: pass
+        except Exception as e:
+            print(f"Error isolíneas: {e}")
+            
+    fg_iso.add_to(m)
 
-    # C. VECTORES (Cuenca)
+    # D. CAPA VECTORIAL (Cuenca)
     if gdf_zona is not None:
-        folium.GeoJson(gdf_zona, style_function=lambda x: {'fill':False, 'color':'black', 'weight':2}).add_to(m)
+        folium.GeoJson(
+            gdf_zona, 
+            name="Límite Cuenca",
+            style_function=lambda x: {'fill':False, 'color':'black', 'weight':2.5}
+        ).add_to(m)
 
-    # D. ESTACIONES (Iteración Segura)
-    fg = folium.FeatureGroup("Estaciones", show=False)
-    
-    # Aquí usamos el GeoDataFrame saneado del paso 1
+    # E. ESTACIONES (Capa Controlable)
+    fg_est = folium.FeatureGroup(name="Estaciones", show=False) # show=False para que arranque desactivada si quieres
     for i, row in gdf_stations.iterrows():
-        # Usamos getattr para seguridad máxima. Si falla, usa lat/lon explícito si existe
         geom = getattr(row, 'geometry', None)
-        
         if geom is None:
-            # Intento desesperado por columnas lat/lon
-            lat = row.get('latitude', row.get('lat', None))
-            lon = row.get('longitude', row.get('lon', None))
+            lat, lon = row.get('latitude'), row.get('longitude')
             if lat and lon: geom = Point(lon, lat)
             
         if geom is not None:
             val = row.get('ppt_media', 0)
             folium.CircleMarker(
-                [geom.y, geom.x], radius=3, color='black', fill=True,
-                popup=f"{row.get('nom_est','')}: {val:.0f}"
-            ).add_to(fg)
-            
-    fg.add_to(m)
-    folium.LayerControl().add_to(m)
+                [geom.y, geom.x], radius=4, color='black', fill=True, fill_color='white', fill_opacity=1,
+                popup=f"<b>{row.get('nom_est','Est')}</b><br>Lluvia: {val:.0f} mm",
+                tooltip=f"{row.get('nom_est','')}"
+            ).add_to(fg_est)
+    fg_est.add_to(m)
     
-    # Leyenda
+    # CONTROL DE CAPAS
+    folium.LayerControl(collapsed=False).add_to(m)
+    
+    # LEYENDA (Colorbar)
     hexs = [mcolors.to_hex(plt.get_cmap(cmap)(i)) for i in np.linspace(0, 1, 5)]
     bcm.LinearColormap(hexs, vmin=vmin, vmax=vmax, caption=labels[sel]).add_to(m)
 
-    st_folium(m, width=1400, height=600)
+    st_folium(m, width=1400, height=650) # Un poco más alto
+    
+    # ESTADÍSTICAS
+    st.divider()
+    mean_val = np.nanmean(Z_Vis)
+    st.metric(f"Promedio Espacial: {labels[sel]}", f"{mean_val:,.1f}")
 
 
 

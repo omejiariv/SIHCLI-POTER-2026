@@ -499,16 +499,37 @@ def main():
             from shapely.ops import unary_union
             from matplotlib import path as mpath
             
+            # Crear polígono unificado
             zona_union = gdf_zona.unary_union
-            polys = [zona_union] if zona_union.geom_type == 'Polygon' else list(zona_union.geoms)
+            
+            # Crear lista de polígonos (para manejar MultiPolygons)
+            if zona_union.geom_type == 'MultiPolygon':
+                polys = list(zona_union.geoms)
+            else:
+                polys = [zona_union]
+                
+            # Crear puntos de la grilla
             points_flat = np.vstack((grid_x.flatten(), grid_y.flatten())).T
+            
+            # Inicializar máscara (False = fuera)
             full_mask = np.zeros(points_flat.shape[0], dtype=bool)
             
+            # Verificar inclusión punto por punto (Matplotlib Path es rápido)
             for poly in polys:
+                if poly.is_empty: continue
+                # Exterior
                 p_path = mpath.Path(list(poly.exterior.coords))
-                full_mask = full_mask | p_path.contains_points(points_flat)
+                inside = p_path.contains_points(points_flat)
+                
+                # Restar agujeros (Interiores)
+                for interior in poly.interiors:
+                    p_path_int = mpath.Path(list(interior.coords))
+                    inside = inside & ~p_path_int.contains_points(points_flat)
+                    
+                full_mask = full_mask | inside
             
             mask_inside = full_mask.reshape(grid_x.shape)
+
 
         # --- 7. VISUALIZACIÓN ---
         viz.display_advanced_maps_tab(
