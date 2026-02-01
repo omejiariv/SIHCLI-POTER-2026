@@ -5,6 +5,8 @@ import os
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
+import tempfile
+
 from modules.utils import standardize_numeric_column
 
 def parse_spanish_date(date_str):
@@ -190,3 +192,21 @@ def delete_raster_from_storage(file_name, bucket_name="rasters"):
         return True, f"🗑️ Eliminado: {file_name}"
     except Exception as e:
         return False, f"❌ Error: {str(e)}"
+
+
+def download_raster_to_temp(file_name, bucket_name="rasters"):
+    """
+    Descarga un archivo de Supabase y devuelve la ruta temporal local.
+    """
+    try:
+        supabase = init_supabase()
+        # Descargamos los bytes
+        data = supabase.storage.from_(bucket_name).download(file_name)
+        
+        # Guardamos en un archivo temporal que el sistema pueda leer
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".tif") as tmp:
+            tmp.write(data)
+            return tmp.name # Retornamos la ruta (ej: /tmp/tmpxyz.tif)
+    except Exception as e:
+        print(f"Error descargando {file_name}: {e}")
+        return None

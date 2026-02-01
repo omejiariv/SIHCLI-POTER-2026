@@ -416,7 +416,8 @@ def main():
         try:
             from modules import hydro_physics as physics
             from modules import visualizer as viz
-            import os # Importante para rutas
+            # Importamos la nueva función de descarga
+            from modules.admin_utils import download_raster_to_temp 
         except ImportError as e:
             st.error(f"Error cargando módulos: {e}")
             st.stop()
@@ -431,7 +432,7 @@ def main():
         # Merge seguro
         gdf_calc = gdf_filtered.merge(df_mean, on=Config.STATION_NAME_COL)
         
-        # Corrección de geometría si se pierde en el merge
+        # Corrección de geometría (Blindaje)
         if not isinstance(gdf_calc, gpd.GeoDataFrame):
              if 'geometry' in gdf_calc.columns:
                  gdf_calc = gpd.GeoDataFrame(gdf_calc, geometry='geometry')
@@ -450,7 +451,7 @@ def main():
         dx, dy = maxx - minx, maxy - miny
         pad_x, pad_y = dx * 0.2, dy * 0.2
         
-        # --- DEFINICIÓN DE BOUNDS (CRÍTICO PARA EL ERROR) ---
+        # --- DEFINICIÓN DE BOUNDS (CRÍTICO) ---
         bounds_wgs84 = (minx - pad_x, miny - pad_y, maxx + pad_x, maxy + pad_y)
         
         # Grid
@@ -463,22 +464,33 @@ def main():
         with st.spinner("Interpolando Precipitación..."):
             Z_P = physics.interpolar_variable(gdf_calc, 'ppt_media', grid_x, grid_y)
 
-        # --- 5. EJECUCIÓN MODELO FÍSICO ---
-        # Usamos rutas absolutas para evitar errores de "File not found"
-        base_dir = os.getcwd()
+        # --- 5. DESCARGA Y EJECUCIÓN MODELO FÍSICO ---
+        
+        # Rutas por defecto (Vacías)
+        dem_path = None
+        cob_path = None
+        
+        # Intentamos descargar de la nube
+        with st.spinner("☁️ Descargando topografía desde Supabase..."):
+            dem_path = download_raster_to_temp("DemAntioquia_EPSG3116.tif")
+            if not dem_path:
+                st.warning("⚠️ No se encontró el DEM en la nube. Usando terreno plano.")
+            
+            cob_path = download_raster_to_temp("Cob25m_WGS84.tif")
+
         paths = {
-            'dem': os.path.join(base_dir, 'DemAntioquia_EPSG3116.tif'),
-            'cobertura': os.path.join(base_dir, 'Cob25m_WGS84.tif')
+            'dem': dem_path,
+            'cobertura': cob_path
         }
         
         with st.spinner("Calculando Balance Distribuido (Warping)..."):
-            # AQUÍ ESTABA EL ERROR: Asegúrate de pasar 'bounds=bounds_wgs84'
+            # AQUÍ PASAMOS TODOS LOS ARGUMENTOS, INCLUYENDO BOUNDS
             matrices = physics.run_distributed_model(
                 Z_P=Z_P, 
                 grid_x=grid_x, 
                 grid_y=grid_y, 
                 paths=paths, 
-                bounds=bounds_wgs84  # <--- ESTE ARGUMENTO FALTABA
+                bounds=bounds_wgs84 
             )
 
         # --- 6. MÁSCARA VISUAL ---
@@ -506,6 +518,7 @@ def main():
             mask=mask_inside,
             gdf_zona=gdf_zona
         )
+
 
     elif selected_module == "🧪 Sesgo":
         try: display_bias_correction_tab(**display_args)
