@@ -166,68 +166,74 @@ tabs = st.tabs([
 # ==============================================================================
 # TAB 1: ESTACIONES
 # ==============================================================================
-with tabs[0]: # Pestaña Estaciones
-    st.header("📍 Gestión de Estaciones (Catálogo)")
+# --- PESTAÑA 0: GESTIÓN DE ESTACIONES ---
+with tabs[0]: 
+    st.header("📍 Gestión de Estaciones")
     
-    col_up, col_info = st.columns([1, 2])
-    with col_up:
-        up_est = st.file_uploader("Cargar mapaCVENSO.csv", type=["csv"])
+    subtab_ver, subtab_carga = st.tabs(["👁️ Editor de Catálogo", "📂 Carga Masiva (CSV)"])
     
-    if up_est:
+    # --- SUB-PESTAÑA: VER Y EDITAR ---
+    with subtab_ver:
+        st.info("Edita las propiedades directamente en la tabla y guarda los cambios.")
+        
+        # Botón de recarga manual
+        if st.button("🔄 Refrescar Tabla Estaciones"):
+            st.cache_data.clear()
+            
         try:
-            # 1. Lectura robusta (Detectar ; y decimales ,)
-            df_est = pd.read_csv(up_est, sep=';', decimal=',', encoding='latin1')
+            # Traemos todas las estaciones
+            df_est_db = pd.read_sql("SELECT * FROM estaciones ORDER BY id_estacion", engine)
             
-            # 2. Selección y Renombramiento de columnas clave
-            # Mapeamos tus nombres originales a nombres limpios de BD
-            col_map = {
-                'Id_estacio': 'id_estacion',
-                'Nom_Est': 'nombre',
-                'Longitud_geo': 'longitude',
-                'Latitud_geo': 'latitude',
-                'alt_est': 'altitud',
-                'municipio': 'municipio',
-                'SUBREGION': 'subregion'
-            }
+            # EDITOR DE DATOS INTERACTIVO
+            df_editado = st.data_editor(
+                df_est_db,
+                num_rows="dynamic", # Permite agregar/borrar filas
+                key="editor_estaciones",
+                use_container_width=True,
+                column_config={
+                    "id_estacion": st.column_config.TextColumn("Código", disabled=True), # Bloqueamos ID para no romper integridad
+                    "nombre": "Nombre",
+                    "municipio": "Municipio",
+                    "latitud": st.column_config.NumberColumn("Latitud", format="%.6f"),
+                    "longitud": st.column_config.NumberColumn("Longitud", format="%.6f")
+                }
+            )
             
-            # Filtramos solo las columnas que existen en el mapeo
-            cols_to_keep = [c for c in df_est.columns if c in col_map]
-            df_clean = df_est[cols_to_keep].rename(columns=col_map)
-            
-            # 3. Limpieza de Coordenadas (Crucial)
-            # A veces quedan como strings o con comas raras
-            for col in ['longitude', 'latitude', 'altitud']:
-                if col in df_clean.columns:
-                    df_clean[col] = pd.to_numeric(
-                        df_clean[col].astype(str).str.replace(',', '.'), 
-                        errors='coerce'
-                    )
-            
-            st.dataframe(df_clean.head())
-            
-            if st.button("🚀 Actualizar Catálogo de Estaciones"):
-                # UPSERT: Si la estación ya existe, actualiza sus datos; si no, la crea.
-                # Usamos tabla temporal para el upsert
-                df_clean.to_sql('temp_estaciones', engine, if_exists='replace', index=False)
-                
-                with engine.begin() as conn:
-                    # Upsert en PostgreSQL
-                    sql = text("""
-                        INSERT INTO estaciones (id_estacion, nombre, longitude, latitude, altitud, municipio, subregion)
-                        SELECT id_estacion, nombre, longitude, latitude, altitud, municipio, subregion FROM temp_estaciones
-                        ON CONFLICT (id_estacion) DO UPDATE 
-                        SET nombre = EXCLUDED.nombre, 
-                            longitude = EXCLUDED.longitude, 
-                            latitude = EXCLUDED.latitude,
-                            altitud = EXCLUDED.altitud;
-                    """)
-                    conn.execute(sql)
-                    conn.execute(text("DROP TABLE temp_estaciones"))
+            # BOTÓN GUARDAR
+            if st.button("💾 Guardar Cambios en Catálogo"):
+                with st.spinner("Actualizando base de datos..."):
+                    # Reemplazo seguro: Borramos y volvemos a escribir la tabla (rápido para <2000 filas)
+                    df_editado.to_sql('estaciones', engine, if_exists='replace', index=False)
+                    st.success("✅ Catálogo actualizado correctamente.")
+                    time.sleep(1)
+                    st.rerun()
                     
-                st.success(f"✅ Catálogo actualizado: {len(df_clean)} estaciones procesadas.")
-                
         except Exception as e:
-            st.error(f"Error procesando archivo: {e}")
+            st.warning("No se pudo cargar el catálogo. ¿Quizás está vacío?")
+            st.error(f"Error: {e}")
+
+    # --- SUB-PESTAÑA: CARGA MASIVA (Tu código de carga limpio) ---
+    with subtab_carga:
+        st.write("Sube `mapaCVENSO.csv` limpio.")
+        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv")
+        
+        if up_est:
+            if st.button("🚀 Reemplazar Catálogo Completo"):
+                try:
+                    df_new = pd.read_csv(up_est, sep=';', decimal=',')
+                    # Limpieza final por seguridad
+                    df_new.columns = df_new.columns.str.lower().str.strip()
+                    
+                    # Convertir coords a números
+                    cols_num = ['longitud', 'latitud', 'altitud']
+                    for c in cols_num:
+                        if c in df_new.columns:
+                            df_new[c] = pd.to_numeric(df_new[c].astype(str).str.replace(',', '.'), errors='coerce')
+
+                    df_new.to_sql('estaciones', engine, if_exists='replace', index=False)
+                    st.success(f"✅ Cargadas {len(df_new)} estaciones.")
+                except Exception as ex:
+                    st.error(f"Error: {ex}")
 
 
 # ==============================================================================
@@ -712,118 +718,131 @@ with tabs[10]: # Índice 10 porque es la pestaña número 11 (0-10)
 # ==============================================================================
 # TAB 12: Precipitación MENSUAL
 # ==============================================================================
-# --- PESTAÑA 12: GESTIÓN DE LLUVIA (Depurada y Mejorada) ---
+# --- PESTAÑA 11: GESTIÓN DE LLUVIA ---
 with tabs[11]:
-    st.header("🌧️ Gestión de Series de Tiempo (Precipitación)")
-    st.info("Sube datos mensuales. El sistema acepta formato matriz (Fechas en columnas) o lista.")
-
-    # Opción de descargar plantilla
-    with st.expander("ℹ️ Ver formato requerido y descargar plantilla"):
-        st.write("El archivo debe tener la primera columna con el código de la estación y las siguientes con las fechas.")
-        # Generar un csv de ejemplo en memoria
-        df_ejemplo = pd.DataFrame({
-            'codigo_estacion': ['27010550', '27010560'],
-            '2024-01-01': [120.5, 98.2],
-            '2024-02-01': [45.0, 12.0]
-        })
-        csv_ejemplo = df_ejemplo.to_csv(index=False).encode('utf-8')
-        st.download_button("⬇️ Descargar Plantilla CSV", csv_ejemplo, "plantilla_lluvia.csv", "text/csv")
-
-    col_up, col_mode = st.columns([2, 1])
+    st.header("🌧️ Gestión de Lluvia e Índices")
     
-    with col_up:
-        uploaded_rain = st.file_uploader("Cargar Excel/CSV", type=["csv", "xlsx"], key="rain_uploader")
+    t_explorar, t_carga = st.tabs(["🔍 Explorar y Editar Datos", "📂 Carga Masiva (Matriz)"])
     
-    with col_mode:
-        modo_carga = st.radio(
-            "Modo de Carga:",
-            ["Actualizar / Agregar", "Reemplazo TOTAL"],
-            help="Actualizar: Agrega datos nuevos y corrige los existentes. Reemplazo TOTAL: BORRA TODA LA HISTORIA y pone lo nuevo."
-        )
-
-    if uploaded_rain:
+    # --- SUB-PESTAÑA: EXPLORADOR Y EDICIÓN ---
+    with t_explorar:
+        st.info("Aquí puedes corregir datos puntuales de una estación específica.")
+        
+        # 1. Selector de Estación
         try:
-            # 1. Lectura inteligente
-            if uploaded_rain.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_rain)
-            else:
-                df = pd.read_excel(uploaded_rain)
+            estaciones_list = pd.read_sql("SELECT id_estacion, nombre FROM estaciones", engine)
+            opciones = estaciones_list.apply(lambda x: f"{x['id_estacion']} - {x['nombre']}", axis=1)
+            sel_est = st.selectbox("Selecciona Estación para editar:", opciones)
             
-            st.write("Vista previa de datos cargados (Formato Original):")
-            st.dataframe(df.head(), height=150)
-
-            if st.button("🚀 Procesar e Integrar a Base de Datos"):
-                status = st.status("Iniciando procesamiento...", expanded=True)
+            if sel_est:
+                cod_est = sel_est.split(" - ")[0]
                 
-                # --- PASO A: TRANSFORMACIÓN (MELT) ---
-                status.write("🔄 Transformando matriz a formato de base de datos...")
+                # 2. Selector de Año (Para no traer toda la historia)
+                anio_sel = st.selectbox("Selecciona Año:", range(2026, 1969, -1))
                 
-                # Asumimos que la Columna 0 es el ID, y el resto son Fechas
-                id_col = df.columns[0]
-                fechas_cols = df.columns[1:]
+                # 3. Traer datos
+                query_data = text(f"""
+                    SELECT fecha, valor, origen 
+                    FROM precipitacion 
+                    WHERE id_estacion = '{cod_est}' 
+                    AND EXTRACT(YEAR FROM fecha) = {anio_sel}
+                    ORDER BY fecha ASC
+                """)
+                df_lluvia_est = pd.read_sql(query_data, engine)
                 
-                # "Derretimos" la tabla (Wide to Long)
-                df_long = df.melt(id_vars=[id_col], value_vars=fechas_cols, var_name='fecha', value_name='valor')
-                
-                # Renombramos para que coincida con la BD (ajusta estos nombres si tu tabla tiene otros)
-                df_long = df_long.rename(columns={id_col: 'id_estacion'})
-                
-                # Limpieza de Tipos
-                df_long['fecha'] = pd.to_datetime(df_long['fecha'], errors='coerce')
-                df_long['valor'] = pd.to_numeric(df_long['valor'], errors='coerce')
-                
-                # Eliminar datos vacíos o fechas inválidas
-                df_final = df_long.dropna(subset=['fecha', 'valor', 'id_estacion'])
-                
-                rows_count = len(df_final)
-                status.write(f"✅ Se identificaron {rows_count} registros válidos.")
-
-                if rows_count == 0:
-                    status.update(label="❌ Error: No hay datos válidos para subir.", state="error")
-                    st.stop()
-
-                # --- PASO B: CARGA A BASE DE DATOS ---
-                # Usamos engine para SQLAlchemy
-                
-                if modo_carga == "Reemplazo TOTAL":
-                    status.write("⚠️ BORRANDO tabla antigua y creando nueva...")
-                    df_final.to_sql('precipitacion', engine, if_exists='replace', index=False)
-                    status.write("✅ Tabla reemplazada completamente.")
+                # 4. EDITOR
+                if df_lluvia_est.empty:
+                    st.warning("No hay datos para este año.")
+                else:
+                    col_edit, col_chart = st.columns([1, 2])
                     
-                else: # MODO UPSERT (Actualizar Inteligente)
-                    status.write("🛠️ Realizando fusión de datos (Upsert)...")
-                    
-                    # 1. Subir a una tabla temporal
-                    temp_table = "temp_precip_upload"
-                    df_final.to_sql(temp_table, engine, if_exists='replace', index=False)
-                    
-                    with engine.begin() as conn:
-                        # 2. Borrar de la tabla oficial los registros que coincidan (ID + Fecha) con los nuevos
-                        # Esto evita duplicados y permite corregir datos viejos
-                        delete_query = text(f"""
-                            DELETE FROM precipitacion
-                            USING {temp_table}
-                            WHERE precipitacion.id_estacion = {temp_table}.id_estacion
-                            AND precipitacion.fecha = {temp_table}.fecha;
-                        """)
-                        conn.execute(delete_query)
+                    with col_edit:
+                        st.write(f"**Editando:** {cod_est} ({anio_sel})")
+                        df_lluvia_editado = st.data_editor(
+                            df_lluvia_est,
+                            num_rows="dynamic",
+                            key=f"edit_rain_{cod_est}_{anio_sel}",
+                            column_config={
+                                "fecha": st.column_config.DateColumn("Fecha", format="Ys-MM-DD"),
+                                "valor": st.column_config.NumberColumn("Precipitación (mm)"),
+                                "origen": st.column_config.SelectboxColumn("Origen", options=["real", "interpolado", "editado"])
+                            }
+                        )
                         
-                        # 3. Insertar los nuevos (que ahora son únicos)
-                        insert_query = text(f"""
-                            INSERT INTO precipitacion (id_estacion, fecha, valor)
-                            SELECT id_estacion, fecha, valor FROM {temp_table};
-                        """)
-                        conn.execute(insert_query)
-                        
-                        # 4. Borrar tabla temporal
-                        conn.execute(text(f"DROP TABLE {temp_table}"))
-                        
-                    status.write("✅ Datos actualizados e insertados correctamente.")
+                        if st.button("💾 Guardar Correcciones"):
+                            with st.spinner("Aplicando cambios..."):
+                                with engine.begin() as conn:
+                                    # A. Borramos datos de ese año para esa estación
+                                    conn.execute(text(f"""
+                                        DELETE FROM precipitacion 
+                                        WHERE id_estacion = '{cod_est}' 
+                                        AND EXTRACT(YEAR FROM fecha) = {anio_sel}
+                                    """))
+                                    
+                                    # B. Insertamos los nuevos datos editados
+                                    # Añadimos el ID que falta en el DF editado
+                                    df_lluvia_editado['id_estacion'] = cod_est
+                                    df_lluvia_editado.to_sql('precipitacion', engine, if_exists='append', index=False)
+                                    
+                                st.success("✅ Datos actualizados.")
+                                time.sleep(0.5)
+                                st.rerun()
 
-                status.update(label="¡Proceso Terminado con Éxito! 🎉", state="complete")
-                st.balloons()
-                time.sleep(2)
-                st.rerun()
+                    with col_chart:
+                        st.line_chart(df_lluvia_editado.set_index('fecha')['valor'])
 
         except Exception as e:
-            st.error(f"Ocurrió un error en el proceso: {e}")
+            st.error("Primero debes cargar el catálogo de estaciones.")
+
+    # --- SUB-PESTAÑA: CARGA MASIVA (Tu archivo DatosPptnmes_ENSO.csv) ---
+    with t_carga:
+        st.write("Sube `DatosPptnmes_ENSO.csv` (Formato Matriz: Fecha | Est1 | Est2...).")
+        up_rain = st.file_uploader("Cargar Matriz de Lluvia", type=["csv"], key="up_rain_matrix")
+        
+        if up_rain:
+            if st.button("🚀 Procesar y Cargar Lluvia"):
+                status = st.status("Iniciando carga masiva...", expanded=True)
+                try:
+                    # 1. Leer
+                    df = pd.read_csv(up_rain, sep=';', decimal=',')
+                    df['fecha'] = pd.to_datetime(df['fecha'])
+                    
+                    status.write("Transformando datos...")
+                    # 2. Melt (Pivot)
+                    est_cols = [c for c in df.columns if c != 'fecha']
+                    df_long = df.melt(id_vars=['fecha'], value_vars=est_cols, var_name='id_estacion', value_name='valor')
+                    df_long = df_long.dropna(subset=['valor'])
+                    df_long['origen'] = 'real'
+                    
+                    status.write(f"Cargando {len(df_long)} registros en lotes...")
+                    
+                    # 3. Carga por lotes (Segura)
+                    chunk_size = 50000
+                    total_chunks = (len(df_long) // chunk_size) + 1
+                    
+                    progress_bar = status.progress(0)
+                    
+                    for i, chunk in enumerate(range(0, len(df_long), chunk_size)):
+                        batch = df_long.iloc[chunk : chunk + chunk_size]
+                        batch.to_sql('temp_rain_load', engine, if_exists='replace', index=False)
+                        
+                        with engine.begin() as conn:
+                            # Upsert masivo usando tabla temporal
+                            conn.execute(text("""
+                                DELETE FROM precipitacion 
+                                USING temp_rain_load 
+                                WHERE precipitacion.id_estacion = temp_rain_load.id_estacion 
+                                AND precipitacion.fecha = temp_rain_load.fecha;
+                            """))
+                            conn.execute(text("""
+                                INSERT INTO precipitacion (fecha, id_estacion, valor, origen)
+                                SELECT fecha, id_estacion, valor, origen FROM temp_rain_load;
+                            """))
+                        
+                        progress_bar.progress((i + 1) / total_chunks)
+                    
+                    status.update(label="✅ ¡Carga Masiva Exitosa!", state="complete")
+                    
+                except Exception as ex:
+                    status.update(label="❌ Error en la carga", state="error")
+                    st.error(ex)
