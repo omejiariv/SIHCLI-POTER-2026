@@ -412,214 +412,188 @@ def main():
     elif selected_module == "🌍 Mapas Avanzados":
         st.header("🌍 Modelación Hidrológica Distribuida (Aleph)")
         
-        # --- 1. IMPORTACIÓN DE MOTORES ---
         try:
             from modules import hydro_physics as physics
             from modules import visualizer as viz
-            # Importamos la nueva función de descarga
             from modules.admin_utils import download_raster_to_temp 
         except ImportError as e:
-            st.error(f"Error cargando módulos: {e}")
-            st.stop()
+            st.error(f"Error cargando módulos: {e}"); st.stop()
 
-        # --- 2. PREPARACIÓN DE DATOS ---
+        # --- A. DEFINICIÓN DE GEOMETRÍAS (CRÍTICO) ---
+        # 1. gdf_zona es la CUENCA REAL (Original)
+        if gdf_zona is None:
+            gdf_zona = gdf_filtered # Fallback si no hay zona seleccionada
+            
+        # 2. gdf_buffer es la GEOMETRÍA DE CÁLCULO (Expandida)
+        #    Usamos el buffer definido en la barra lateral
+        buffer_dist_deg = buffer_km / 111.0 # Aprox km a grados
+        gdf_buffer = gdf_zona.buffer(buffer_dist_deg) if buffer_km > 0 else gdf_zona
+
+        # --- B. DEFINICIÓN DEL GRID DE CÁLCULO ---
+        # El Grid se crea basado en el BUFFER para cubrir todo el área necesaria
+        minx, miny, maxx, maxy = gdf_buffer.total_bounds
+        
+        # Grid Resolution (Aumentada a 400 para mejor definición)
+        grid_res = 400 
+        xi = np.linspace(minx, maxx, grid_res)
+        yi = np.linspace(miny, maxy, grid_res)
+        grid_x, grid_y = np.meshgrid(xi, yi)
+        
+        # Bounds para Rasterio (Usamos los del Buffer)
+        bounds_calc = (minx, miny, maxx, maxy)
+
+        # --- C. PREPARACIÓN DE DATOS DE ESTACIONES ---
         if 'year' not in df_monthly_filtered.columns:
             df_monthly_filtered['year'] = df_monthly_filtered[Config.DATE_COL].dt.year
-            
         df_annual = df_monthly_filtered.groupby([Config.STATION_NAME_COL, 'year'])[Config.PRECIPITATION_COL].sum().reset_index()
         df_mean = df_annual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index(name='ppt_media')
-        
-        # Merge seguro
         gdf_calc = gdf_filtered.merge(df_mean, on=Config.STATION_NAME_COL)
         
-        # Corrección de geometría (Blindaje)
         if not isinstance(gdf_calc, gpd.GeoDataFrame):
-             if 'geometry' in gdf_calc.columns:
-                 gdf_calc = gpd.GeoDataFrame(gdf_calc, geometry='geometry')
+             if 'geometry' in gdf_calc.columns: gdf_calc = gpd.GeoDataFrame(gdf_calc, geometry='geometry')
         
-        if len(gdf_calc) < 3:
-            st.warning("⚠️ Se requieren al menos 3 estaciones.")
-            st.stop()
+        if len(gdf_calc) < 3: st.warning("⚠️ Se requieren al menos 3 estaciones."); st.stop()
 
-        # --- 3. DEFINICIÓN DEL GRID ---
-        if gdf_zona is not None:
-            minx, miny, maxx, maxy = gdf_zona.total_bounds
-        else:
-            minx, miny, maxx, maxy = gdf_filtered.total_bounds
-            
-        # Margen 20%
-        dx, dy = maxx - minx, maxy - miny
-        pad_x, pad_y = dx * 0.2, dy * 0.2
-        
-        # --- DEFINICIÓN DE BOUNDS (CRÍTICO) ---
-        bounds_wgs84 = (minx - pad_x, miny - pad_y, maxx + pad_x, maxy + pad_y)
-        
-        # Grid
-        grid_res = 300
-        xi = np.linspace(bounds_wgs84[0], bounds_wgs84[2], grid_res)
-        yi = np.linspace(bounds_wgs84[1], bounds_wgs84[3], grid_res)
-        grid_x, grid_y = np.meshgrid(xi, yi)
-
-        # --- 4. INTERPOLACIÓN INICIAL ---
-        with st.spinner("Interpolando Precipitación..."):
+        # --- D. INTERPOLACIÓN (Usa IDW ahora) ---
+        with st.spinner("Interpolando Precipitación (IDW)..."):
             Z_P = physics.interpolar_variable(gdf_calc, 'ppt_media', grid_x, grid_y)
 
-        # --- 5. DESCARGA Y EJECUCIÓN MODELO FÍSICO ---
-        
-        # Rutas por defecto (Vacías)
-        dem_path = None
-        cob_path = None
-        
-        # Intentamos descargar de la nube
-        with st.spinner("☁️ Descargando topografía desde Supabase..."):
+        # --- E. DESCARGA Y MODELADO ---
+        dem_path, cob_path = None, None
+        with st.spinner("☁️ Descargando topografía..."):
             dem_path = download_raster_to_temp("DemAntioquia_EPSG3116.tif")
-            if not dem_path:
-                st.warning("⚠️ No se encontró el DEM en la nube. Usando terreno plano.")
-            
             cob_path = download_raster_to_temp("Cob25m_WGS84.tif")
 
-        paths = {
-            'dem': dem_path,
-            'cobertura': cob_path
-        }
+        paths = {'dem': dem_path, 'cobertura': cob_path}
         
-        with st.spinner("Calculando Balance Distribuido (Warping)..."):
-            # AQUÍ PASAMOS TODOS LOS ARGUMENTOS, INCLUYENDO BOUNDS
-            matrices = physics.run_distributed_model(
-                Z_P=Z_P, 
-                grid_x=grid_x, 
-                grid_y=grid_y, 
-                paths=paths, 
-                bounds=bounds_wgs84 
-            )
+        with st.spinner("Calculando Balance Hidrológico..."):
+            # Pasamos bounds_calc (del buffer) para que el warp funcione bien
+            matrices = physics.run_distributed_model(Z_P, grid_x, grid_y, paths, bounds_calc)
 
-        # --- 6. MÁSCARA VISUAL ---
+        # --- F. MÁSCARA VISUAL (SOLO DENTRO DE LA CUENCA REAL) ---
+        # Aquí está el truco: Calculamos sobre el Buffer, pero recortamos visualmente con la Cuenca Real
         mask_inside = None
         if gdf_zona is not None:
             from shapely.ops import unary_union
             from matplotlib import path as mpath
             
-            # Crear polígono unificado
+            # Usamos la geometría REAL (gdf_zona) para la máscara
             zona_union = gdf_zona.unary_union
+            polys = [zona_union] if zona_union.geom_type == 'Polygon' else list(zona_union.geoms)
             
-            # Crear lista de polígonos (para manejar MultiPolygons)
-            if zona_union.geom_type == 'MultiPolygon':
-                polys = list(zona_union.geoms)
-            else:
-                polys = [zona_union]
-                
-            # Crear puntos de la grilla
             points_flat = np.vstack((grid_x.flatten(), grid_y.flatten())).T
-            
-            # Inicializar máscara (False = fuera)
             full_mask = np.zeros(points_flat.shape[0], dtype=bool)
             
-            # Verificar inclusión punto por punto (Matplotlib Path es rápido)
             for poly in polys:
-                if poly.is_empty: continue
-                # Exterior
                 p_path = mpath.Path(list(poly.exterior.coords))
                 inside = p_path.contains_points(points_flat)
-                
-                # Restar agujeros (Interiores)
+                # Huecos
                 for interior in poly.interiors:
                     p_path_int = mpath.Path(list(interior.coords))
                     inside = inside & ~p_path_int.contains_points(points_flat)
-                    
                 full_mask = full_mask | inside
             
             mask_inside = full_mask.reshape(grid_x.shape)
 
-
-        # --- 6.1 CARGAR PREDIOS (NUEVO) ---
-        # Consultamos solo los predios que tocan la zona para no sobrecargar
+        # --- G. CARGAR PREDIOS ---
         gdf_predios = None
         try:
-            if gdf_zona is not None:
-                # Convertimos el bounds a string para SQL
-                xmin, ymin, xmax, ymax = gdf_zona.total_bounds
-                query_predios = f"""
-                    SELECT nombre_predio, geometry 
-                    FROM predios 
-                    WHERE ST_Intersects(geometry, ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}, 4326))
-                """
-                gdf_predios = gpd.read_postgis(query_predios, engine, geom_col='geometry')
-        except Exception as e:
-            # Si falla (ej: tabla no existe), seguimos sin predios
-            print(f"No se pudieron cargar predios: {e}")
+            # Consultamos usando el BOUNDS de la cuenca real
+            xmin, ymin, xmax, ymax = gdf_zona.total_bounds
+            query_predios = f"""
+                SELECT "NOMBRE_PRE" as nombre_predio, geometry 
+                FROM predios 
+                WHERE ST_Intersects(geometry, ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}, 4326))
+            """ # Nota: Cambié nombre_predio por NOMBRE_PRE según tu imagen del Admin
+            gdf_predios = gpd.read_postgis(query_predios, engine, geom_col='geometry')
+        except: pass
 
-        # --- 7. VISUALIZACIÓN ---
+        # --- H. VISUALIZACIÓN ---
         viz.display_advanced_maps_tab(
             gdf_stations=gdf_calc,
             matrices=matrices,
             grid=(grid_x, grid_y),
-            mask=mask_inside,
-            gdf_zona=gdf_zona,     # Tu límite de cuenca (buffer o real)
-            gdf_predios=gdf_predios # <--- NUEVO ARGUMENTO
+            mask=mask_inside,     # Máscara recortada a la real
+            gdf_zona=gdf_zona,    # Cuenca REAL (Borde negro)
+            gdf_buffer=gdf_buffer if buffer_km > 0 else None, # Buffer (Borde gris punteado)
+            gdf_predios=gdf_predios
         )
-
-        # --- 8. PANEL DE ESTADÍSTICAS E INFORMES ---
+        
+        # --- I. PANEL DE RESULTADOS (FIX ESTADÍSTICAS) ---
         st.markdown("---")
         st.subheader("📊 Panel de Resultados Hidrológicos")
         
-        if gdf_zona is not None:
-            # 1. Cálculos Geométricos
-            gdf_zona_proj = gdf_zona.to_crs(epsg=3116) # Proyectar a metros para medir
-            area_ha = gdf_zona_proj.area.sum() / 10000
-            perimetro_km = gdf_zona_proj.length.sum() / 1000
-            
-            # 2. Promedios de Matrices (Dentro de la cuenca)
-            stats = {}
-            for key, mat in matrices.items():
-                val = mat.copy()
-                if mask_inside is not None: val = val[mask_inside]
-                stats[key] = np.nanmean(val)
-            
-            # 3. Caudales
-            # Q (m3/s) = Rendimiento (m3/ha/año) * Area (ha) / (31536000 seg/año)
-            rendimiento_medio = stats.get('Rendimiento', 0)
-            q_medio_m3s = (rendimiento_medio * area_ha) / 31536000
-            q_eco_m3s = q_medio_m3s * 0.25 # 25% del medio (estimado)
-            
-            # Índices
-            indice_aridez = stats.get('P', 0) / stats.get('ETR', 1) if stats.get('ETR', 0) > 0 else 0
-            
-            # --- VISUALIZACIÓN DE KPI ---
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Área Cuenca", f"{area_ha:,.1f} ha", f"P: {perimetro_km:.1f} km")
-            k2.metric("Caudal Medio", f"{q_medio_m3s:,.3f} m³/s", "Oferta Hídrica")
-            k3.metric("Caudal Ecológico", f"{q_eco_m3s:,.3f} m³/s", "25% Q.Medio")
-            k4.metric("Rendimiento", f"{rendimiento_medio:,.1f} m³/ha", "Anual")
-            
-            st.divider()
-            
-            # Tabla Detallada
-            data_resumen = {
-                "Parámetro": [
-                    "Precipitación Media", "ETR Media", "Escorrentía Superficial", 
-                    "Infiltración Potencial", "Recarga Real (Acuíferos)", 
-                    "Índice de Aridez", "Riesgo Erosión Promedio"
-                ],
-                "Valor": [
-                    stats.get('P'), stats.get('ETR'), stats.get('Q'),
-                    stats.get('Infiltracion'), stats.get('Recarga_Real'),
-                    indice_aridez, stats.get('Erosion')
-                ],
-                "Unidad": ["mm/año", "mm/año", "mm/año", "mm/año", "mm/año", "-", "Índice"]
-            }
-            st.dataframe(pd.DataFrame(data_resumen).style.format({"Valor": "{:,.2f}"}), use_container_width=True)
+        # 1. Cálculos Geométricos (Sobre la CUENCA REAL - gdf_zona)
+        # Proyectamos a Magna Sirgas (3116) para medir metros reales
+        gdf_zona_proj = gdf_zona.to_crs(epsg=3116)
+        area_m2 = gdf_zona_proj.area.sum()
+        area_ha = area_m2 / 10000          # Hectáreas reales
+        perimetro_km = gdf_zona_proj.length.sum() / 1000 # Perímetro real
+        
+        # 2. Promedios de Matrices (Usando la MÁSCARA REAL)
+        # mask_inside debe haber sido generado con gdf_zona (no con el buffer)
+        stats = {}
+        for key, mat in matrices.items():
+            val = mat.copy()
+            if mask_inside is not None: 
+                val = val[mask_inside] # Filtramos solo pixels dentro de la cuenca real
+            stats[key] = np.nanmean(val)
+        
+        # 3. Caudales y Rendimiento
+        # Rendimiento (m3/ha-año) obtenido del promedio espacial del raster
+        rendimiento_medio = stats.get('Rendimiento', 0)
+        
+        # Q Medio (m3/s)
+        # Fórmula: (Rendimiento * Area_ha) / Segundos_Año
+        seconds_per_year = 31536000
+        q_medio_m3s = (rendimiento_medio * area_ha) / seconds_per_year
+        
+        # Caudal Ecológico (Estimación normativa simple, ajustables)
+        q_eco_m3s = q_medio_m3s * 0.25 # 25% del Q Medio
+        
+        # 4. Índices Derivados
+        ppt_media = stats.get('P', 0)
+        etr_media = stats.get('ETR', 1)
+        indice_aridez = ppt_media / etr_media if etr_media > 0 else 0
+        
+        # --- VISUALIZACIÓN DE KPI ---
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Área Cuenca Real", f"{area_ha:,.1f} ha", f"Perímetro: {perimetro_km:.1f} km")
+        k2.metric("Caudal Medio", f"{q_medio_m3s:,.3f} m³/s", "Oferta Hídrica Neta")
+        k3.metric("Caudal Ecológico", f"{q_eco_m3s:,.3f} m³/s", "25% Q.Medio")
+        k4.metric("Rendimiento", f"{rendimiento_medio:,.1f} m³/ha", "Volumen Específico")
+        
+        st.divider()
+        
+        # Tabla Detallada
+        data_resumen = {
+            "Parámetro": [
+                "Precipitación Media", "ETR Media", "Escorrentía Superficial", 
+                "Infiltración Potencial", "Recarga Real (Acuíferos)", 
+                "Índice de Aridez", "Riesgo Erosión Promedio"
+            ],
+            "Valor": [
+                stats.get('P'), stats.get('ETR'), stats.get('Q'),
+                stats.get('Infiltracion'), stats.get('Recarga_Real'),
+                indice_aridez, stats.get('Erosion')
+            ],
+            "Unidad": ["mm/año", "mm/año", "mm/año", "mm/año", "mm/año", "-", "Índice"]
+        }
+        
+        df_resumen = pd.DataFrame(data_resumen)
+        st.dataframe(df_resumen.style.format({"Valor": "{:,.2f}"}), use_container_width=True)
 
-            # --- 9. ZONA DE DESCARGAS ---
-            st.subheader("📥 Descarga de Datos")
-            col_d1, col_d2 = st.columns(2)
-            
-            # CSV
-            csv = pd.DataFrame(data_resumen).to_csv(index=False).encode('utf-8')
-            col_d1.download_button("📄 Descargar Reporte (CSV)", csv, "reporte_hidrologico.csv", "text/csv")
-            
-            # GeoJSON Cuenca
-            geojson = gdf_zona.to_json()
-            col_d2.download_button("🗺️ Descargar Cuenca (GeoJSON)", geojson, "cuenca.geojson", "application/json")
+        # --- 9. ZONA DE DESCARGAS ---
+        st.subheader("📥 Descarga de Datos")
+        col_d1, col_d2 = st.columns(2)
+        
+        # CSV
+        csv = df_resumen.to_csv(index=False).encode('utf-8')
+        col_d1.download_button("📄 Descargar Reporte (CSV)", csv, "reporte_hidrologico.csv", "text/csv")
+        
+        # GeoJSON Cuenca (Solo la geometría real)
+        geojson = gdf_zona.to_json()
+        col_d2.download_button("🗺️ Descargar Cuenca (GeoJSON)", geojson, "cuenca_real.geojson", "application/json")
 
 
 
