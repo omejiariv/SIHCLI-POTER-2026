@@ -164,17 +164,23 @@ tabs = st.tabs([
 
 
 # --- PESTAÑA DE CONFIGURACIÓN INICIAL (Ejecutar solo una vez) ---
-# Puedes poner esto en una pestaña nueva o al inicio del script temporalmente.
-
 with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expanded=False):
-    st.warning("⚠️ Este botón crea las tablas vacías con la estructura correcta. Úsalo si es la primera vez o si quieres reiniciar el sistema.")
+    st.warning("⚠️ ¡ATENCIÓN! Este botón BORRARÁ las tablas 'precipitacion', 'estaciones' e 'indices_climaticos' existentes y las creará desde cero con la estructura perfecta. Úsalo para limpiar errores de estructura.")
     
-    if st.button("🚀 Crear Tablas Maestras"):
+    if st.button("☢️ BORRAR TODO Y REINICIAR BASES DE DATOS"):
         try:
             with engine.begin() as conn:
-                # 1. TABLA ESTACIONES
+                st.write("🗑️ Eliminando tablas antiguas (si existen)...")
+                # CASCADE asegura que si borramos estaciones, se borre la lluvia asociada para evitar errores
+                conn.execute(text("DROP TABLE IF EXISTS precipitacion CASCADE;"))
+                conn.execute(text("DROP TABLE IF EXISTS estaciones CASCADE;"))
+                conn.execute(text("DROP TABLE IF EXISTS indices_climaticos CASCADE;"))
+                
+                st.write("🏗️ Creando Estructura Maestra...")
+                
+                # 1. TABLA ESTACIONES (Con Primary Key real)
                 conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS estaciones (
+                    CREATE TABLE estaciones (
                         id_estacion TEXT PRIMARY KEY,
                         nombre TEXT,
                         longitud FLOAT,
@@ -189,7 +195,7 @@ with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expan
                 
                 # 2. TABLA ÍNDICES CLIMÁTICOS
                 conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS indices_climaticos (
+                    CREATE TABLE indices_climaticos (
                         fecha DATE PRIMARY KEY,
                         enso_año TEXT,
                         enso_mes TEXT,
@@ -202,10 +208,9 @@ with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expan
                     );
                 """))
                 
-                # 3. TABLA PRECIPITACIÓN (La Gigante)
-                # Incluimos índices para que las consultas sean instantáneas
+                # 3. TABLA PRECIPITACIÓN (Con Foreign Key)
                 conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS precipitacion (
+                    CREATE TABLE precipitacion (
                         fecha DATE,
                         id_estacion TEXT,
                         valor FLOAT,
@@ -213,14 +218,16 @@ with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expan
                         PRIMARY KEY (fecha, id_estacion),
                         CONSTRAINT fk_estacion FOREIGN KEY (id_estacion) REFERENCES estaciones(id_estacion)
                     );
-                    CREATE INDEX IF NOT EXISTS idx_precip_fecha ON precipitacion(fecha);
-                    CREATE INDEX IF NOT EXISTS idx_precip_estacion ON precipitacion(id_estacion);
+                    CREATE INDEX idx_precip_fecha ON precipitacion(fecha);
+                    CREATE INDEX idx_precip_estacion ON precipitacion(id_estacion);
                 """))
                 
-            st.success("✅ ¡Tablas creadas exitosamente! Ahora puedes cargar los CSV.")
+            st.success("✅ ¡Sistema Reiniciado! Las tablas están limpias y listas para recibir datos.")
+            st.balloons()
             
         except Exception as e:
-            st.error(f"Error creando tablas: {e}")
+            st.error(f"Error crítico: {e}")
+
 
 # ==============================================================================
 # TAB 1: ESTACIONES
