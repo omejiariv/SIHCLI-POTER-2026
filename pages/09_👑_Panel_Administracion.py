@@ -849,14 +849,13 @@ with tabs[10]: # Índice 10 porque es la pestaña número 11 (0-10)
 
 
 # ==============================================================================
-# TAB 12: Precipitación MENSUAL
-# ==============================================================================
-# TAB 11: GESTIÓN DE LLUVIA (CÓDIGO COMPLETO)
+# TAB 11: GESTIÓN DE LLUVIA (CÓDIGO CORREGIDO)
 # ==============================================================================
 with tabs[11]:
     st.header("🌧️ Gestión de Lluvia e Índices")
     
-    # --- 1. DEFINICIÓN DE SUB-PESTAÑAS (ESTA LÍNEA FALTABA) ---
+    # --- 1. ESTA ES LA LÍNEA QUE FALTABA ---
+    # Aquí definimos las variables t_explorar y t_carga
     t_explorar, t_carga = st.tabs(["🔍 Explorar y Editar Datos", "📂 Carga Masiva (Matriz)"])
     
     # --- 2. SUB-PESTAÑA: EXPLORADOR Y EDICIÓN ---
