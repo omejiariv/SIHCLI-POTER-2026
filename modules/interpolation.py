@@ -545,3 +545,109 @@ def interpolate_spatial(df_points, val_col, gx, gy, method='linear'):
         gz[mask_nan] = gz_nearest[mask_nan]
         
     return gz
+
+# -----------------------------------------------------------------------------
+# MOTOR DE INTERPOLACIÓN UNIFICADO (PARA EL MODELO FÍSICO)
+# -----------------------------------------------------------------------------
+def interpolador_maestro(df_puntos, col_val, grid_x, grid_y, metodo='kriging', dem_grid=None):
+    """
+    Función pura que conecta el modelo hidrológico con la geoestadística.
+    
+    Args:
+        df_puntos: GeoDataFrame con las estaciones.
+        col_val: Nombre de la columna a interpolar (ej: 'ppt_media').
+        grid_x, grid_y: Mallas de coordenadas destino (numpy arrays).
+        metodo: 'kriging', 'ked' (con elevación), 'idw', 'spline', 'nearest'.
+        dem_grid: (Opcional) Array numpy con el DEM interpolado al mismo grid (para KED).
+    
+    Returns:
+        Z_grid (array): Matriz de valores interpolados.
+        Sigma_grid (array): Matriz de varianza del error (solo Kriging).
+    """
+    # 1. Preparar datos
+    lons = df_puntos.geometry.x.values
+    lats = df_puntos.geometry.y.values
+    vals = df_puntos[col_val].values
+    
+    # Limpieza de NaNs
+    mask = ~np.isnan(vals)
+    lons, lats, vals = lons[mask], lats[mask], vals[mask]
+    
+    if len(vals) < 4:
+        # Fallback a vecino más cercano si hay muy pocos datos
+        from scipy.interpolate import griddata
+        z = griddata((lons, lats), vals, (grid_x, grid_y), method='nearest')
+        return np.nan_to_num(z), None
+
+    # 2. Selección de Método
+    try:
+        # --- A. KRIGING ORDINARIO (Geoestadística Robusta) ---
+        if metodo == 'kriging':
+            # Estimar variograma automáticamente
+            bin_center, gamma = gs.vario_estimate((lons, lats), vals)
+            model = gs.Spherical(dim=2)
+            model.fit_variogram(bin_center, gamma, nugget=True)
+            
+            # Ejecutar Kriging
+            krig = gs.krige.Ordinary(model, (lons, lats), vals)
+            z_krig, ss_krig = krig.structured([grid_x[0,:], grid_y[:,0]]) # Asume grid regular rectangular
+            # Si el grid no es regular (meshgrid curvo), usar execute con loop (más lento) o flat
+            if z_krig.shape != grid_x.shape:
+                 z_krig, ss_krig = krig.execute('grid', grid_x[0,:], grid_y[:,0])
+            
+            return z_krig, np.sqrt(ss_krig) # Devolvemos Desviación Estándar (Sigma)
+
+        # --- B. KRIGING CON DERIVA EXTERNA (KED) - ¡LA JOYA PARA MONTAÑA! ---
+        elif metodo == 'ked' and dem_grid is not None:
+            # Necesitamos la elevación en los puntos de las estaciones
+            # Muestreamos el DEM en las coordenadas de las estaciones
+            # Nota: Esto es una aproximación rápida. Lo ideal es tener la Z en el GDF.
+            from scipy.interpolate import RectBivariateSpline
+            # Asumimos que grid_x y grid_y son regulares
+            x_range = grid_x[0,:]
+            y_range = grid_y[:,0]
+            
+            # Interpolador del DEM
+            dem_interpolator = RectBivariateSpline(y_range, x_range, dem_grid)
+            elev_stations = dem_interpolator.ev(lats, lons)
+            
+            # Variograma
+            bin_center, gamma = gs.vario_estimate((lons, lats), vals)
+            model = gs.Spherical(dim=2)
+            model.fit_variogram(bin_center, gamma, nugget=True)
+            
+            # KED: Usa la elevación como variable secundaria
+            krig = gs.krige.ExtDrift(model, (lons, lats), vals, drift_src=elev_stations)
+            # Pasamos el DEM completo como 'drift target'
+            z_ked, ss_ked = krig.structured([x_range, y_range], drift_tgt=dem_grid)
+            
+            return z_ked, np.sqrt(ss_ked)
+
+        # --- C. IDW (Distancia Inversa) ---
+        elif metodo == 'idw':
+            # Implementación vectorizada manual (más rápida que loops)
+            xi, yi = grid_x.flatten(), grid_y.flatten()
+            dist = np.sqrt((xi[:,None]-lons[None,:])**2 + (yi[:,None]-lats[None,:])**2)
+            dist = np.where(dist == 0, 1e-10, dist) # Evitar div/0
+            weights = 1.0 / dist**2
+            z_idw = np.sum(weights * vals, axis=1) / np.sum(weights, axis=1)
+            return z_idw.reshape(grid_x.shape), None
+
+        # --- D. SPLINE (Suavizado Geométrico) ---
+        elif metodo == 'spline':
+            from scipy.interpolate import Rbf
+            # 'thin_plate' es excelente para superficies suaves como lluvia
+            rbf = Rbf(lons, lats, vals, function='thin_plate')
+            z_rbf = rbf(grid_x, grid_y)
+            return z_rbf, None
+
+    except Exception as e:
+        print(f"Error en interpolación ({metodo}): {e}")
+        # Fallback de seguridad: Vecino más cercano
+        from scipy.interpolate import griddata
+        z = griddata((lons, lats), vals, (grid_x, grid_y), method='nearest')
+        return np.nan_to_num(z), None
+    
+    # Default fallback
+    return np.zeros_like(grid_x), None
+

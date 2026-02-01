@@ -419,105 +419,122 @@ def main():
         except ImportError as e:
             st.error(f"Error cargando módulos: {e}"); st.stop()
 
-        # --- A. DEFINICIÓN DE GEOMETRÍAS (CRÍTICO) ---
-        # 1. gdf_zona es la CUENCA REAL (Original)
-        if gdf_zona is None:
-            gdf_zona = gdf_filtered # Fallback si no hay zona seleccionada
-            
-        # 2. gdf_buffer es la GEOMETRÍA DE CÁLCULO (Expandida)
-        #    Usamos el buffer definido en la barra lateral
-        buffer_dist_deg = buffer_km / 111.0 # Aprox km a grados
+        # --- A. GEOMETRÍAS (FIX BUFFER VS REAL) ---
+        if gdf_zona is None: gdf_zona = gdf_filtered
+        
+        # 1. Definimos el Buffer de Cálculo
+        buffer_dist_deg = buffer_km / 111.0 
         gdf_buffer = gdf_zona.buffer(buffer_dist_deg) if buffer_km > 0 else gdf_zona
 
-        # --- B. DEFINICIÓN DEL GRID DE CÁLCULO ---
-        # El Grid se crea basado en el BUFFER para cubrir todo el área necesaria
+        # 2. Definimos el Grid sobre el BUFFER (para no tener efectos de borde)
         minx, miny, maxx, maxy = gdf_buffer.total_bounds
-        
-        # Grid Resolution (Aumentada a 400 para mejor definición)
-        grid_res = 400 
+        # Ajustamos resolución para Kriging (Gstools es pesado, 150-200 es buen balance)
+        grid_res = 200 
+        # NOTA: Gstools prefiere coordenadas unicas para los ejes (structured grid)
         xi = np.linspace(minx, maxx, grid_res)
         yi = np.linspace(miny, maxy, grid_res)
         grid_x, grid_y = np.meshgrid(xi, yi)
-        
-        # Bounds para Rasterio (Usamos los del Buffer)
         bounds_calc = (minx, miny, maxx, maxy)
 
-        # --- C. PREPARACIÓN DE DATOS DE ESTACIONES ---
+        # --- B. DATOS DE ESTACIONES ---
         if 'year' not in df_monthly_filtered.columns:
             df_monthly_filtered['year'] = df_monthly_filtered[Config.DATE_COL].dt.year
         df_annual = df_monthly_filtered.groupby([Config.STATION_NAME_COL, 'year'])[Config.PRECIPITATION_COL].sum().reset_index()
         df_mean = df_annual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL].mean().reset_index(name='ppt_media')
         gdf_calc = gdf_filtered.merge(df_mean, on=Config.STATION_NAME_COL)
         
+        # Blindaje geométrico
         if not isinstance(gdf_calc, gpd.GeoDataFrame):
              if 'geometry' in gdf_calc.columns: gdf_calc = gpd.GeoDataFrame(gdf_calc, geometry='geometry')
-        
-        if len(gdf_calc) < 3: st.warning("⚠️ Se requieren al menos 3 estaciones."); st.stop()
 
-        # --- D. INTERPOLACIÓN (Usa IDW ahora) ---
-        with st.spinner("Interpolando Precipitación (IDW)..."):
-            Z_P = physics.interpolar_variable(gdf_calc, 'ppt_media', grid_x, grid_y)
-
-        # --- E. DESCARGA Y MODELADO ---
+        # --- C. DESCARGA DE RASTERS (DEM NECESARIO PARA KED) ---
         dem_path, cob_path = None, None
-        with st.spinner("☁️ Descargando topografía..."):
+        dem_array = None # Para pasar al interpolador
+        
+        with st.spinner("☁️ Preparando terreno digital..."):
             dem_path = download_raster_to_temp("DemAntioquia_EPSG3116.tif")
             cob_path = download_raster_to_temp("Cob25m_WGS84.tif")
+            
+            # Pre-cargamos el DEM en memoria para el interpolador KED
+            if dem_path:
+                dem_array = physics.warper_raster_to_grid(dem_path, bounds_calc, grid_x.shape)
 
-        paths = {'dem': dem_path, 'cobertura': cob_path}
+        # --- D. CONFIGURACIÓN DE INTERPOLACIÓN ---
+        st.markdown("#### ⚙️ Motor Geoespacial")
+        c_int1, c_int2 = st.columns([1, 2])
         
-        with st.spinner("Calculando Balance Hidrológico..."):
-            # Pasamos bounds_calc (del buffer) para que el warp funcione bien
+        with c_int1:
+            # Selector de método
+            opts = ['kriging', 'idw', 'spline']
+            if dem_array is not None: opts.insert(1, 'ked') # Solo si hay DEM
+            
+            metodo_sel = st.selectbox(
+                "Método de Interpolación:", opts,
+                format_func=lambda x: {
+                    'kriging': 'Kriging Ordinario (Estocástico)',
+                    'ked': 'Kriging con Deriva (Usa DEM)',
+                    'idw': 'Distancia Inversa (IDW)',
+                    'spline': 'Spline (Suavizado)'
+                }.get(x, x)
+            )
+        
+        with c_int2:
+            if metodo_sel == 'kriging': st.info("ℹ️ **Kriging Ordinario:** Minimiza el error estadístico. Genera mapa de incertidumbre.")
+            elif metodo_sel == 'ked': st.success("🌟 **KED:** El mejor para montaña. Usa la elevación para corregir la lluvia (Efecto orográfico).")
+            elif metodo_sel == 'idw': st.warning("ℹ️ **IDW:** Método geométrico rápido. Tienda a generar 'ojos de buey' alrededor de estaciones.")
+            
+        # --- E. EJECUCIÓN DEL MODELO ---
+        with st.spinner(f"Ejecutando Interpolación ({metodo_sel})..."):
+            # 1. Interpolar Lluvia (Z_P) y obtener Error (Z_Error)
+            Z_P, Z_P_Error = physics.interpolar_variable(
+                gdf_calc, 'ppt_media', grid_x, grid_y, 
+                method=metodo_sel, dem_array=dem_array
+            )
+            
+        with st.spinner("Calculando Balance Hídrico Distribuido..."):
+            paths = {'dem': dem_path, 'cobertura': cob_path}
+            # 2. Correr Física
             matrices = physics.run_distributed_model(Z_P, grid_x, grid_y, paths, bounds_calc)
+            
+            # 3. Inyectar el Error de Interpolación para visualizarlo
+            if Z_P_Error is not None:
+                matrices['Incertidumbre_Lluvia'] = Z_P_Error
 
-        # --- F. MÁSCARA VISUAL (SOLO DENTRO DE LA CUENCA REAL) ---
-        # Aquí está el truco: Calculamos sobre el Buffer, pero recortamos visualmente con la Cuenca Real
+        # --- F. MÁSCARA VISUAL (SOLO CUENCA REAL) ---
         mask_inside = None
         if gdf_zona is not None:
             from shapely.ops import unary_union
             from matplotlib import path as mpath
             
-            # Usamos la geometría REAL (gdf_zona) para la máscara
+            # Usamos gdf_zona (REAL), no gdf_buffer
             zona_union = gdf_zona.unary_union
             polys = [zona_union] if zona_union.geom_type == 'Polygon' else list(zona_union.geoms)
-            
             points_flat = np.vstack((grid_x.flatten(), grid_y.flatten())).T
             full_mask = np.zeros(points_flat.shape[0], dtype=bool)
             
             for poly in polys:
                 p_path = mpath.Path(list(poly.exterior.coords))
                 inside = p_path.contains_points(points_flat)
-                # Huecos
                 for interior in poly.interiors:
-                    p_path_int = mpath.Path(list(interior.coords))
-                    inside = inside & ~p_path_int.contains_points(points_flat)
+                    inside = inside & ~mpath.Path(list(interior.coords)).contains_points(points_flat)
                 full_mask = full_mask | inside
-            
             mask_inside = full_mask.reshape(grid_x.shape)
 
-        # --- G. CARGAR PREDIOS ---
+        # --- G. PREDIOS ---
         gdf_predios = None
         try:
-            # Consultamos usando el BOUNDS de la cuenca real
             xmin, ymin, xmax, ymax = gdf_zona.total_bounds
-            query_predios = f"""
-                SELECT "NOMBRE_PRE" as nombre_predio, geometry 
-                FROM predios 
-                WHERE ST_Intersects(geometry, ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}, 4326))
-            """ # Nota: Cambié nombre_predio por NOMBRE_PRE según tu imagen del Admin
-            gdf_predios = gpd.read_postgis(query_predios, engine, geom_col='geometry')
+            q = f'SELECT "NOMBRE_PRE" as nombre_predio, geometry FROM predios WHERE ST_Intersects(geometry, ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}, 4326))'
+            gdf_predios = gpd.read_postgis(q, engine, geom_col='geometry')
         except: pass
 
         # --- H. VISUALIZACIÓN ---
         viz.display_advanced_maps_tab(
-            gdf_stations=gdf_calc,
-            matrices=matrices,
-            grid=(grid_x, grid_y),
-            mask=mask_inside,     # Máscara recortada a la real
-            gdf_zona=gdf_zona,    # Cuenca REAL (Borde negro)
-            gdf_buffer=gdf_buffer if buffer_km > 0 else None, # Buffer (Borde gris punteado)
+            gdf_stations=gdf_calc, matrices=matrices, grid=(grid_x, grid_y),
+            mask=mask_inside, gdf_zona=gdf_zona, gdf_buffer=gdf_buffer if buffer_km > 0 else None,
             gdf_predios=gdf_predios
         )
+        
         
         # --- I. PANEL DE RESULTADOS (FIX ESTADÍSTICAS) ---
         st.markdown("---")

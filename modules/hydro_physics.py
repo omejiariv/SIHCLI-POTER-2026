@@ -5,6 +5,7 @@ import rasterio
 from rasterio.warp import reproject, Resampling
 from rasterio.transform import from_bounds
 import os
+from modules.interpolation import interpolador_maestro
 
 # --- A. BASE DE CONOCIMIENTO (Sin Cambios) ---
 CLC_C_BASE = {
@@ -45,19 +46,24 @@ def idw_interpolation(x, y, z, grid_x, grid_y, power=2):
     
     return z_interp.reshape(grid_x.shape)
 
-def interpolar_variable(gdf_puntos, columna_valor, grid_x, grid_y):
-    # Extraemos coordenadas y valores
-    x = gdf_puntos.geometry.x.values
-    y = gdf_puntos.geometry.y.values
-    z = gdf_puntos[columna_valor].values
+def interpolar_variable(gdf_puntos, columna_valor, grid_x, grid_y, method='kriging', dem_array=None):
+    """
+    Función puente que llama al interpolador maestro de modules/interpolation.py
+    """
+    # Llamamos a la función que acabamos de crear/potenciar
+    Z_Interp, Z_Error = interpolador_maestro(
+        df_puntos=gdf_puntos,
+        col_val=columna_valor,
+        grid_x=grid_x,
+        grid_y=grid_y,
+        metodo=method,
+        dem_grid=dem_array # Pasamos el DEM por si se usa KED
+    )
     
-    # Usamos IDW en lugar de griddata
-    try:
-        Z = idw_interpolation(x, y, z, grid_x, grid_y, power=2.5) # Power 2.5 suaviza más
-        return np.maximum(Z, 0)
-    except Exception as e:
-        print(f"Error interpolación: {e}")
-        return np.zeros_like(grid_x)
+    # Saneamiento final para física
+    Z_Interp = np.nan_to_num(Z_Interp, nan=0)
+    return np.maximum(Z_Interp, 0), Z_Error
+
 
 # --- C. WARPING (Sin Cambios) ---
 def warper_raster_to_grid(raster_path, bounds, shape):

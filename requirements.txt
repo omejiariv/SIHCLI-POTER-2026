@@ -33,3 +33,5 @@ psycopg2-binary
 geoalchemy2
 sqlalchemy
 supabase
+scikit-learn
+pykrige
