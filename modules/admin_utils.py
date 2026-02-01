@@ -1,5 +1,6 @@
 # modules/admin_utils.py
 
+
 import os
 import streamlit as st
 from supabase import create_client, Client
@@ -152,3 +153,40 @@ def delete_raster_from_storage(file_name, bucket_name="rasters"):
         return True, f"🗑️ '{file_name}' eliminado."
     except Exception as e:
         return False, f"❌ Error eliminando: {str(e)}"
+
+
+
+@st.cache_resource
+def init_supabase():
+    # Ahora que corregiste la carpeta .streamlit, esto funcionará
+    url = st.secrets["supabase"]["SUPABASE_URL"]
+    key = st.secrets["supabase"]["SUPABASE_KEY"]
+    return create_client(url, key)
+
+def get_raster_list(bucket_name="rasters"):
+    try:
+        supabase = init_supabase()
+        res = supabase.storage.from_(bucket_name).list()
+        return res
+    except Exception as e:
+        return []
+
+def upload_raster_to_storage(file_bytes, file_name, bucket_name="rasters"):
+    try:
+        supabase = init_supabase()
+        res = supabase.storage.from_(bucket_name).upload(
+            path=file_name,
+            file=file_bytes,
+            file_options={"content-type": "image/tiff", "upsert": "true"}
+        )
+        return True, f"✅ Carga exitosa: {file_name}"
+    except Exception as e:
+        return False, f"❌ Error: {str(e)}"
+
+def delete_raster_from_storage(file_name, bucket_name="rasters"):
+    try:
+        supabase = init_supabase()
+        supabase.storage.from_(bucket_name).remove([file_name])
+        return True, f"🗑️ Eliminado: {file_name}"
+    except Exception as e:
+        return False, f"❌ Error: {str(e)}"

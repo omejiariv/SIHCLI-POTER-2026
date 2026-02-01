@@ -18,31 +18,7 @@ from shapely.geometry import shape
 import shutil
 
 from modules.admin_utils import get_raster_list, upload_raster_to_storage, delete_raster_from_storage
-
 from supabase import create_client
-
-# --- BLOQUE DE PRUEBA (BORRAR AL FINALIZAR) ---
-st.write("--- INICIO TEST DE CONEXIÓN ---")
-try:
-    # 1. Pon aquí tus datos DIRECTAMENTE (Copia y pega de tu bloc de notas)
-    url_test = "https://ldunpssoxvifemoyeuac.supabase.co" 
-    key_test = "sb_secret_JeppvZnN2pkkeDlIJTviXA_XZMErqgz" # <--- ¡PÉGALA AQUÍ DENTRO!
-    
-    # 2. Intentamos conectar
-    client = create_client(url_test, key_test)
-    
-    # 3. Intentamos listar el bucket
-    res = client.storage.from_("rasters").list()
-    
-    st.success(f"✅ ¡CONEXIÓN EXITOSA! Supabase respondió. Archivos encontrados: {len(res)}")
-except Exception as e:
-    st.error(f"❌ FALLÓ LA CONEXIÓN DIRECTA: {e}")
-    st.write("Pista: Verifica que la KEY sea la 'service_role' (secret) y no tenga espacios extra.")
-st.stop() # Detenemos la app aquí para ver el resultado
-# -----------------------------------------------
-
-# ... aquí sigue el resto de tu código normal ...
-
 
 
 # --- 1. CONFIGURACIÓN DE RUTAS E IMPORTACIONES ---
@@ -541,68 +517,38 @@ with tabs[4]:
 # ==============================================================================
 with tabs[5]:
     st.header("☁️ Gestión de Rasters (DEM / Coberturas)")
-    st.info("Aquí administras los archivos físicos (.tif) alojados en Supabase Storage. Estos archivos son vitales para el modelo hidrológico.")
+    st.info("Sube aquí los archivos .tif para que el modelo hidrológico los use.")
 
-    col_lista, col_accion = st.columns([1, 1])
+    col1, col2 = st.columns(2)
 
-    # --- LISTADO ---
-    with col_lista:
-        st.subheader("📂 Archivos en la Nube")
-        try:
-            raster_list = get_raster_list() # Llama a Supabase
-            if not raster_list:
-                st.warning("El bucket 'rasters' está vacío.")
-            else:
-                # Mostrar tabla limpia
-                data_files = []
-                for f in raster_list:
-                    # Convertir tamaño a MB
-                    size_mb = f.get('metadata', {}).get('size', 0) / (1024 * 1024)
-                    data_files.append({
-                        "Nombre": f['name'],
-                        "Tamaño (MB)": f"{size_mb:.2f}",
-                        "Creado": f.get('created_at', '')[:10]
-                    })
-                st.dataframe(pd.DataFrame(data_files), hide_index=True, use_container_width=True)
+    with col1:
+        st.subheader("📂 En la Nube")
+        rasters = get_raster_list()
+        if rasters:
+            df_r = pd.DataFrame(rasters)
+            if not df_r.empty and 'name' in df_r.columns:
+                st.dataframe(df_r[['name', 'created_at']], hide_index=True)
                 
-                # Selector para borrar
-                st.divider()
-                to_delete = st.selectbox("Seleccionar para eliminar:", [d["Nombre"] for d in data_files], index=None)
-                if to_delete and st.button(f"🗑️ Eliminar '{to_delete}'", type="primary"):
-                    with st.spinner("Eliminando..."):
-                        ok, msg = delete_raster_from_storage(to_delete)
-                        if ok: 
-                            st.success(msg)
-                            time.sleep(1)
-                            st.rerun()
-                        else: st.error(msg)
+                to_del = st.selectbox("Eliminar:", df_r['name'])
+                if st.button("🗑️ Borrar Archivo"):
+                    ok, msg = delete_raster_from_storage(to_del)
+                    if ok: st.success(msg); time.sleep(1); st.rerun()
+                    else: st.error(msg)
+            else:
+                st.info("Bucket vacío o sin acceso.")
+        else:
+            st.warning("No hay archivos cargados.")
 
-        except Exception as e:
-            st.error(f"Error conectando a Supabase: {e}")
-
-    # --- CARGA ---
-    with col_accion:
-        st.subheader("⬆️ Subir Nuevo Raster")
-        st.markdown("""
-        **Archivos requeridos para el modelo:**
-        1. `DemAntioquia_EPSG3116.tif` (Modelo de Elevación)
-        2. `Cob25m_WGS84.tif` (Coberturas Vegetales)
-        """)
+    with col2:
+        st.subheader("⬆️ Subir Archivo")
+        st.markdown("Requeridos: `DemAntioquia_EPSG3116.tif` y `Cob25m_WGS84.tif`")
+        f = st.file_uploader("GeoTIFF", type=["tif", "tiff"], key="up_cloud")
         
-        up_file = st.file_uploader("Arrastra tu archivo .tif aquí", type=["tif", "tiff"], key="up_raster_cloud")
-        
-        if up_file:
-            mb = up_file.size / (1024 * 1024)
-            st.caption(f"Tamaño: {mb:.2f} MB")
-            
-            # Nombre destino = Nombre archivo
-            target_name = up_file.name
-            
-            if st.button(f"🚀 Subir '{target_name}' a Supabase", key="btn_upload_cloud"):
-                with st.spinner("Subiendo a la nube... esto puede tardar un poco..."):
-                    bytes_data = up_file.getvalue()
-                    ok, msg = upload_raster_to_storage(bytes_data, target_name)
-                    
+        if f:
+            if st.button(f"🚀 Subir {f.name} a Supabase"):
+                with st.spinner("Subiendo..."):
+                    bytes_data = f.getvalue()
+                    ok, msg = upload_raster_to_storage(bytes_data, f.name)
                     if ok:
                         st.success(msg)
                         st.balloons()
