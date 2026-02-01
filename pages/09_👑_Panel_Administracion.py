@@ -163,24 +163,29 @@ tabs = st.tabs([
 ])
 
 
-# --- PESTAÑA DE CONFIGURACIÓN INICIAL ---
-with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expanded=False):
-    st.warning("⚠️ ¡ATENCIÓN! Este botón BORRARÁ TODO (Tablas y Datos). Usa CASCADE para romper vínculos.")
+# --- PESTAÑA DE CONFIGURACIÓN INICIAL (BLOQUE CORREGIDO) ---
+# Pega esto justo después de la línea: tabs = st.tabs([...])
+
+st.markdown("### 🛠️ Zona de Peligro: Reinicio del Sistema")
+with st.expander("Mostrar Controles de Reinicio de Base de Datos", expanded=True):
+    st.warning("⚠️ ESTA ACCIÓN ES IRREVERSIBLE. BORRARÁ TODOS LOS DATOS.")
     
-    if st.button("☢️ BORRAR TODO Y REINICIAR (CON CASCADE)"):
+    # HE CAMBIADO EL NOMBRE DEL BOTÓN PARA FORZAR LA ACTUALIZACIÓN
+    if st.button("🔥 EJECUTAR REINICIO TOTAL (CASCADE) 🔥", key="btn_nuke_v3"):
         try:
             with engine.begin() as conn:
-                st.write("🗑️ Eliminando tablas antiguas...")
+                st.write("⏳ Iniciando secuencia de borrado...")
                 
-                # --- SOLUCIÓN: CASCADE OBLIGATORIO ---
-                # El orden importa, pero CASCADE es la clave maestra
+                # 1. BORRADO EN ORDEN INVERSO (Hijos primero, luego Padres)
+                # Usamos CASCADE en todo por seguridad
                 conn.execute(text("DROP TABLE IF EXISTS precipitacion CASCADE;"))
                 conn.execute(text("DROP TABLE IF EXISTS indices_climaticos CASCADE;"))
                 conn.execute(text("DROP TABLE IF EXISTS estaciones CASCADE;"))
                 
-                st.write("🏗️ Creando Estructura Maestra...")
+                st.write("✅ Tablas eliminadas. Creando nueva estructura...")
                 
-                # 1. TABLA ESTACIONES
+                # 2. CREACIÓN DE TABLAS
+                # Estaciones (Padre)
                 conn.execute(text("""
                     CREATE TABLE estaciones (
                         id_estacion TEXT PRIMARY KEY,
@@ -195,7 +200,7 @@ with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expan
                     );
                 """))
                 
-                # 2. TABLA ÍNDICES
+                # Índices
                 conn.execute(text("""
                     CREATE TABLE indices_climaticos (
                         fecha DATE PRIMARY KEY,
@@ -210,7 +215,7 @@ with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expan
                     );
                 """))
                 
-                # 3. TABLA PRECIPITACIÓN
+                # Precipitacion (Hija)
                 conn.execute(text("""
                     CREATE TABLE precipitacion (
                         fecha DATE,
@@ -224,10 +229,13 @@ with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expan
                     CREATE INDEX idx_precip_estacion ON precipitacion(id_estacion);
                 """))
                 
-            st.success("✅ ¡Sistema Reiniciado! Las tablas están limpias y listas.")
+            st.success("✅ ¡BASE DE DATOS REINICIADA CORRECTAMENTE!")
+            st.balloons()
+            time.sleep(2)
+            st.rerun() # Recarga la página automáticamente
             
         except Exception as e:
-            st.error(f"Error crítico reiniciando BD: {e}")
+            st.error(f"❌ Error crítico: {e}")
 
 
 
