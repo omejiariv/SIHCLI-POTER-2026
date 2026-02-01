@@ -165,15 +165,15 @@ tabs = st.tabs([
 
 # --- PESTAÑA DE CONFIGURACIÓN INICIAL ---
 with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expanded=False):
-    st.warning("⚠️ ¡ATENCIÓN! Este botón BORRARÁ TODO y reiniciará el sistema. Usa CASCADE para romper vínculos.")
+    st.warning("⚠️ ¡ATENCIÓN! Este botón BORRARÁ TODO (Tablas y Datos). Usa CASCADE para romper vínculos.")
     
-    if st.button("☢️ BORRAR TODO Y REINICIAR (FUERZA BRUTA)"):
+    if st.button("☢️ BORRAR TODO Y REINICIAR (CON CASCADE)"):
         try:
             with engine.begin() as conn:
                 st.write("🗑️ Eliminando tablas antiguas...")
                 
-                # --- LA SOLUCIÓN: USAR CASCADE ---
-                # CASCADE borra la tabla y cualquier restricción que dependa de ella
+                # --- SOLUCIÓN: CASCADE OBLIGATORIO ---
+                # El orden importa, pero CASCADE es la clave maestra
                 conn.execute(text("DROP TABLE IF EXISTS precipitacion CASCADE;"))
                 conn.execute(text("DROP TABLE IF EXISTS indices_climaticos CASCADE;"))
                 conn.execute(text("DROP TABLE IF EXISTS estaciones CASCADE;"))
@@ -224,10 +224,11 @@ with st.expander("🛠️ Inicializar Base de Datos (Estructura Maestra)", expan
                     CREATE INDEX idx_precip_estacion ON precipitacion(id_estacion);
                 """))
                 
-            st.success("✅ ¡Sistema Reiniciado! Las tablas están limpias y desvinculadas.")
+            st.success("✅ ¡Sistema Reiniciado! Las tablas están limpias y listas.")
             
         except Exception as e:
             st.error(f"Error crítico reiniciando BD: {e}")
+
 
 
 # ==============================================================================
