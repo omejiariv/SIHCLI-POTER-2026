@@ -2460,45 +2460,38 @@ def display_satellite_imagery_tab(gdf_filtered):
 
 def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     """
-    Versión 9.1: Visualizador con Suavizado Gaussiano.
-    - Fix: Bloqueo de navegador en mapas ruidosos (Recarga).
-    - Render: Isolíneas suaves y optimizadas.
-    - Estaciones: Z-Index forzado para visibilidad.
+    Versión 10.0: Visualización de Alta Definición.
+    - Etiquetas: Solo texto con contorno blanco (Sin cajas).
+    - Capas: Cuenca Real vs Buffer, Predios, Estaciones siempre visibles.
+    - Render: Optimizado con filtro Gaussiano.
     """
     
-    # --- 1. SANEAMIENTO DE DATOS ---
+    # 1. SANEAMIENTO
     if not isinstance(gdf_stations, gpd.GeoDataFrame):
-        cols = gdf_stations.columns
-        if 'geometry' in cols:
+        if 'geometry' in gdf_stations.columns:
             gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry='geometry')
         else:
             gdf_stations = gpd.GeoDataFrame(gdf_stations, geometry=gpd.points_from_xy(gdf_stations.longitude, gdf_stations.latitude))
-    
     if gdf_stations.crs and gdf_stations.crs.to_string() != "EPSG:4326":
         gdf_stations = gdf_stations.to_crs("EPSG:4326")
 
     # Argumentos
-    gdf_zona = kwargs.get('gdf_zona')
+    gdf_zona = kwargs.get('gdf_zona')     # Esta suele ser la zona seleccionada (puede ser real o buffer)
+    gdf_buffer = kwargs.get('gdf_buffer') # Si existe, pasamos el buffer explícitamente
     gdf_predios = kwargs.get('gdf_predios')
     grid_x, grid_y = kwargs.get('grid')
     mask_inside = kwargs.get('mask')
     
-    # Etiquetas y Unidades
     labels = {
-        'P': '🌧️ Precipitación (mm/año)', 
-        'DEM': '⛰️ Modelo Digital (m.s.n.m)', 
-        'T': '🌡️ Temperatura Media (°C)',
-        'ETR': '☀️ ETR (mm/año)', 
-        'Q': '🌊 Escorrentía Superficial (mm/año)', 
-        'Infiltracion': '💧 Infiltración (mm/año)',
-        'Recarga_Pot': '📉 Recarga Potencial (mm/año)',
-        'Recarga_Real': '📉 Recarga Real (mm/año)',
-        'Rendimiento': '🚰 Rendimiento (m³/ha-año)',
-        'Erosion': '🏔️ Riesgo Erosión (Índice)', 
-        'C_Escorrentia': '⛰️ Coef. Escorrentía (0-1)'
+        'P': '🌧️ Precipitación (mm/año)', 'DEM': '⛰️ Elevación (m.s.n.m)', 
+        'T': '🌡️ Temperatura (°C)', 'ETR': '☀️ ETR (mm/año)', 
+        'Q': '🌊 Escorrentía (mm/año)', 'Infiltracion': '💧 Infiltración (mm/año)',
+        'Recarga_Pot': '📉 Recarga Potencial (mm/año)', 'Recarga_Real': '📉 Recarga Real (mm/año)',
+        'Rendimiento': '🚰 Rendimiento (m³/ha-año)', 'Erosion': '🏔️ Riesgo Erosión', 
+        'C_Escorrentia': '⛰️ Coef. Escorrentía'
     }
     
-    # --- CONTROLES ---
+    # Selectores
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         keys = [k for k in labels.keys() if k in matrices]
@@ -2508,150 +2501,94 @@ def display_advanced_maps_tab(gdf_stations, matrices, **kwargs):
     with c3:
         op = st.slider("Opacidad", 0.0, 1.0, 0.7)
 
-    # --- PROCESAMIENTO MATRIZ ---
+    # Datos
     Z = matrices[sel]
     Z_Vis = Z.copy()
-    
-    if mask_inside is not None and Z_Vis.shape == mask_inside.shape:
-        Z_Vis[~mask_inside] = np.nan
+    if mask_inside is not None: Z_Vis[~mask_inside] = np.nan
 
-    # Rangos inteligentes (Percentiles)
+    # Rangos Percentiles
     try:
-        valid_data = Z_Vis[~np.isnan(Z_Vis)]
-        if len(valid_data) > 0:
-            vmin = np.percentile(valid_data, 2)
-            vmax = np.percentile(valid_data, 98)
-            if vmin == vmax: vmin, vmax = np.min(valid_data), np.max(valid_data) + 0.1
-        else: vmin, vmax = 0, 1
+        valid = Z_Vis[~np.isnan(Z_Vis)]
+        vmin, vmax = (np.percentile(valid, 2), np.percentile(valid, 98)) if len(valid) > 0 else (0, 1)
+        if vmin == vmax: vmin, vmax = np.min(valid), np.max(valid) + 0.1
     except: vmin, vmax = 0, 1
 
-    # --- MAPA BASE ---
+    # --- MAPA ---
     center = [gdf_stations.geometry.y.mean(), gdf_stations.geometry.x.mean()]
     if gdf_zona is not None:
         center = [gdf_zona.geometry.centroid.y.mean(), gdf_zona.geometry.centroid.x.mean()]
-        
-    m = folium.Map(center, zoom_start=11, tiles="CartoDB positron")
+    
+    m = folium.Map(center, zoom_start=12, tiles="CartoDB positron")
     Fullscreen().add_to(m)
 
-    # 1. CAPA RASTER (IMAGEN)
+    # 1. RASTER
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
     rgba = plt.get_cmap(cmap_name)(norm(Z_Vis))
     rgba[..., 3] = np.where(np.isnan(Z_Vis), 0, op)
-    
-    folium.raster_layers.ImageOverlay(
-        image=np.flipud(rgba),
-        bounds=[[grid_y.min(), grid_x.min()], [grid_y.max(), grid_x.max()]],
-        name=f"Raster: {sel}",
-        zindex=1
-    ).add_to(m)
+    folium.raster_layers.ImageOverlay(np.flipud(rgba), [[grid_y.min(), grid_x.min()], [grid_y.max(), grid_x.max()]], name=labels[sel]).add_to(m)
 
-    # 2. ISOLÍNEAS (OPTIMIZADAS CON GAUSSIAN BLUR)
-    fg_iso = folium.FeatureGroup(name="Isolíneas", show=True, overlay=True, zindex=50)
-    
-    if True:
-        try:
-            fig, ax = plt.subplots()
-            
-            # --- EL FIX GAUSSIANO ---
-            # 1. Rellenamos NaNs temporalmente para que el filtro no propague huecos
-            Z_For_Contour = np.nan_to_num(Z, nan=np.nanmean(Z))
-            
-            # 2. Aplicamos el filtro: sigma=1.5 difumina el ruido de 1-2 pixeles
-            # Esto reduce drásticamente la cantidad de vértices sin perder la forma general
-            Z_Smooth = gaussian_filter(Z_For_Contour, sigma=1.5)
-            
-            # 3. Generamos contornos sobre la matriz suavizada
-            cs = ax.contour(grid_x, grid_y, Z_Smooth, levels=np.linspace(vmin, vmax, 10))
-            
-            zona_union = gdf_zona.unary_union if gdf_zona is not None else None
-            
-            for i, collection in enumerate(cs.collections):
-                val = cs.levels[i]
-                for path in collection.get_paths():
-                    coords = [[y, x] for x, y in path.vertices]
-                    
-                    # Filtro de longitud mínima (elimina ruido residual)
-                    if len(coords) < 15: continue 
-
-                    if len(coords) > 2:
-                        line = LineString([[x, y] for y, x in coords])
+    # 2. ISOLÍNEAS (Sin cajas, solo texto con halo)
+    fg_iso = folium.FeatureGroup("Isolíneas", overlay=True, show=True)
+    try:
+        fig, ax = plt.subplots()
+        Z_Smooth = gaussian_filter(np.nan_to_num(Z, nan=np.nanmean(Z)), sigma=1.5)
+        cs = ax.contour(grid_x, grid_y, Z_Smooth, levels=np.linspace(vmin, vmax, 10))
+        
+        for i, col in enumerate(cs.collections):
+            val = cs.levels[i]
+            for path in col.get_paths():
+                coords = [[y, x] for x, y in path.vertices]
+                if len(coords) > 15: # Filtro ruido
+                    line = LineString([[x, y] for y, x in coords])
+                    if line.length < (grid_x.max()-grid_x.min())*0.9: # Filtro rectas
+                        # Dibujar línea
+                        l_c = [[p[1], p[0]] for p in line.coords]
+                        folium.PolyLine(l_c, color='black', weight=0.6, opacity=0.5).add_to(fg_iso)
                         
-                        # Filtro de líneas rectas (bordes artificiales)
-                        if line.length > (grid_x.max() - grid_x.min()) * 0.9: continue
-                        
-                        if zona_union:
-                            if line.intersects(zona_union):
-                                try:
-                                    clipped = line.intersection(zona_union)
-                                    segs = list(clipped.geoms) if isinstance(clipped, MultiLineString) else [clipped]
-                                    for s in segs:
-                                        if not s.is_empty and s.length > 0.002:
-                                            l_coords = [[p[1], p[0]] for p in s.coords]
-                                            folium.PolyLine(l_coords, color='black', weight=0.6, opacity=0.5).add_to(fg_iso)
-                                            
-                                            # Etiqueta solo si la línea es larga
-                                            if len(l_coords) > 30:
-                                                mid = l_coords[len(l_coords)//2]
-                                                folium.map.Marker(
-                                                    mid,
-                                                    icon=DivIcon(
-                                                        icon_size=(100,20),
-                                                        icon_anchor=(0,0),
-                                                        html=f'<div style="font-size: 7pt; font-weight: bold; color: #222; text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff;">{val:.0f}</div>'
-                                                    )
-                                                ).add_to(fg_iso)
-                                except: pass
-                        else:
-                            folium.PolyLine(coords, color='black', weight=0.5).add_to(fg_iso)
-            plt.close(fig)
-        except Exception as e: print(f"Error iso: {e}")
+                        # Etiqueta limpia
+                        if len(l_c) > 30:
+                            mid = l_c[len(l_c)//2]
+                            # CSS Hack: text-shadow fuerte para simular borde blanco
+                            style = "font-size:8pt; font-weight:900; color:#222; text-shadow: 2px 0 #fff, -2px 0 #fff, 0 2px #fff, 0 -2px #fff, 1px 1px #fff, -1px -1px #fff, 1px -1px #fff, -1px 1px #fff;"
+                            folium.map.Marker(
+                                mid, icon=DivIcon(icon_size=(50,20), icon_anchor=(0,0), html=f'<div style="{style}">{val:.0f}</div>')
+                            ).add_to(fg_iso)
+        plt.close(fig)
+    except: pass
     fg_iso.add_to(m)
 
-    # 3. PREDIOS Y CUENCA
+    # 3. PREDIOS (Capa Amarilla Transparente)
     if gdf_predios is not None and not gdf_predios.empty:
         folium.GeoJson(
             gdf_predios, name="🏠 Predios",
-            style_function=lambda x: {'fillColor': '#ffd700', 'color': 'orange', 'weight': 1, 'fillOpacity': 0.2},
-            show=False
+            style_function=lambda x: {'fillColor': '#FFD700', 'color': 'orange', 'weight': 0.5, 'fillOpacity': 0.3},
+            tooltip=folium.GeoJsonTooltip(fields=['nombre_predio'], aliases=['Predio:']),
+            show=True # Visible por defecto si el usuario lo pide
         ).add_to(m)
 
+    # 4. LÍMITES (Buffer vs Real)
+    if gdf_buffer is not None:
+        folium.GeoJson(gdf_buffer, name="Límite Buffer", style_function=lambda x: {'fill':False, 'color':'gray', 'dashArray':'5,5', 'weight':1}).add_to(m)
+    
     if gdf_zona is not None:
-        folium.GeoJson(
-            gdf_zona, name="Límite Cuenca",
-            style_function=lambda x: {'fill':False, 'color':'black', 'weight':2.5},
-            zindex=200
-        ).add_to(m)
+        folium.GeoJson(gdf_zona, name="Límite Cuenca Real", style_function=lambda x: {'fill':False, 'color':'black', 'weight':2.5}).add_to(m)
 
-    # 4. ESTACIONES (Z-INDEX ALTO)
-    fg_est = folium.FeatureGroup(name="📍 Estaciones", show=True, overlay=True)
+    # 5. ESTACIONES (Z-Index Máximo)
+    fg_est = folium.FeatureGroup("📍 Estaciones", overlay=True, show=True)
     for _, row in gdf_stations.iterrows():
         geom = getattr(row, 'geometry', None)
         if geom is not None:
             folium.CircleMarker(
-                [geom.y, geom.x], radius=5, color='black', weight=1,
-                fill=True, fill_color='#00ff00', fill_opacity=1,
-                popup=f"<b>{row.get('nom_est','Est')}</b><br>Val: {row.get('ppt_media',0):.0f}",
-                tooltip=row.get('nom_est','Est'),
-                zindex_offset=1000 # Forzar al frente
+                [geom.y, geom.x], radius=6, color='black', weight=1.5,
+                fill=True, fill_color='#00FF00', fill_opacity=1,
+                popup=folium.Popup(f"<b>{row.get('nom_est','Est')}</b><br>Val: {row.get('ppt_media',0):.0f}", max_width=200),
+                tooltip=row.get('nom_est',''), zindex_offset=1000
             ).add_to(fg_est)
     fg_est.add_to(m)
 
-    folium.LayerControl(collapsed=False).add_to(m)
-    
-    # Leyenda
-    hexs = [mcolors.to_hex(plt.get_cmap(cmap_name)(i)) for i in np.linspace(0, 1, 5)]
-    bcm.LinearColormap(hexs, vmin=vmin, vmax=vmax, caption=labels.get(sel, sel)).add_to(m)
-
-    st_folium(m, width=1400, height=700)
-    
-    # Stats
-    st.divider()
-    c1, c2, c3 = st.columns(3)
-    valid_vals = Z_Vis[~np.isnan(Z_Vis)]
-    if len(valid_vals) > 0:
-        c1.metric("Mínimo", f"{np.min(valid_vals):,.1f}")
-        c2.metric("Promedio", f"{np.mean(valid_vals):,.1f}")
-        c3.metric("Máximo", f"{np.max(valid_vals):,.1f}")
+    folium.LayerControl().add_to(m)
+    bcm.LinearColormap([mcolors.to_hex(plt.get_cmap(cmap_name)(i)) for i in np.linspace(0,1,5)], vmin=vmin, vmax=vmax, caption=labels[sel]).add_to(m)
+    st_folium(m, width=1400, height=750)
 
 
 # PESTAÑA DE PRONÓSTICO CLIMÁTICO (INDICES + GENERADOR)

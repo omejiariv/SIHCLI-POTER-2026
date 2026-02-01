@@ -558,6 +558,70 @@ def main():
             gdf_predios=gdf_predios # <--- NUEVO ARGUMENTO
         )
 
+        # --- 8. PANEL DE ESTADÍSTICAS E INFORMES ---
+        st.markdown("---")
+        st.subheader("📊 Panel de Resultados Hidrológicos")
+        
+        if gdf_zona is not None:
+            # 1. Cálculos Geométricos
+            gdf_zona_proj = gdf_zona.to_crs(epsg=3116) # Proyectar a metros para medir
+            area_ha = gdf_zona_proj.area.sum() / 10000
+            perimetro_km = gdf_zona_proj.length.sum() / 1000
+            
+            # 2. Promedios de Matrices (Dentro de la cuenca)
+            stats = {}
+            for key, mat in matrices.items():
+                val = mat.copy()
+                if mask_inside is not None: val = val[mask_inside]
+                stats[key] = np.nanmean(val)
+            
+            # 3. Caudales
+            # Q (m3/s) = Rendimiento (m3/ha/año) * Area (ha) / (31536000 seg/año)
+            rendimiento_medio = stats.get('Rendimiento', 0)
+            q_medio_m3s = (rendimiento_medio * area_ha) / 31536000
+            q_eco_m3s = q_medio_m3s * 0.25 # 25% del medio (estimado)
+            
+            # Índices
+            indice_aridez = stats.get('P', 0) / stats.get('ETR', 1) if stats.get('ETR', 0) > 0 else 0
+            
+            # --- VISUALIZACIÓN DE KPI ---
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Área Cuenca", f"{area_ha:,.1f} ha", f"P: {perimetro_km:.1f} km")
+            k2.metric("Caudal Medio", f"{q_medio_m3s:,.3f} m³/s", "Oferta Hídrica")
+            k3.metric("Caudal Ecológico", f"{q_eco_m3s:,.3f} m³/s", "25% Q.Medio")
+            k4.metric("Rendimiento", f"{rendimiento_medio:,.1f} m³/ha", "Anual")
+            
+            st.divider()
+            
+            # Tabla Detallada
+            data_resumen = {
+                "Parámetro": [
+                    "Precipitación Media", "ETR Media", "Escorrentía Superficial", 
+                    "Infiltración Potencial", "Recarga Real (Acuíferos)", 
+                    "Índice de Aridez", "Riesgo Erosión Promedio"
+                ],
+                "Valor": [
+                    stats.get('P'), stats.get('ETR'), stats.get('Q'),
+                    stats.get('Infiltracion'), stats.get('Recarga_Real'),
+                    indice_aridez, stats.get('Erosion')
+                ],
+                "Unidad": ["mm/año", "mm/año", "mm/año", "mm/año", "mm/año", "-", "Índice"]
+            }
+            st.dataframe(pd.DataFrame(data_resumen).style.format({"Valor": "{:,.2f}"}), use_container_width=True)
+
+            # --- 9. ZONA DE DESCARGAS ---
+            st.subheader("📥 Descarga de Datos")
+            col_d1, col_d2 = st.columns(2)
+            
+            # CSV
+            csv = pd.DataFrame(data_resumen).to_csv(index=False).encode('utf-8')
+            col_d1.download_button("📄 Descargar Reporte (CSV)", csv, "reporte_hidrologico.csv", "text/csv")
+            
+            # GeoJSON Cuenca
+            geojson = gdf_zona.to_json()
+            col_d2.download_button("🗺️ Descargar Cuenca (GeoJSON)", geojson, "cuenca.geojson", "application/json")
+
+
 
     elif selected_module == "🧪 Sesgo":
         try: display_bias_correction_tab(**display_args)

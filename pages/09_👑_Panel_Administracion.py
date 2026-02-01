@@ -248,20 +248,26 @@ with tabs[1]:
     
     with sb1:
         try:
-            # Leemos la tabla
-            df_idx = pd.read_sql("SELECT * FROM indices_climaticos", engine)
+            # 1. Averiguar qué columnas existen realmente
+            inspector_q = text("SELECT column_name FROM information_schema.columns WHERE table_name = 'predios' AND column_name != 'geometry'")
+            with engine.connect() as conn:
+                cols_existentes = pd.read_sql(inspector_q, conn)['column_name'].tolist()
             
-            if not df_idx.empty:
-                # Verificamos si por error se guardó todo en una columna
-                if len(df_idx.columns) < 2:
-                    st.warning("⚠️ La tabla actual parece tener formato incorrecto (una sola columna). Por favor ve a la pestaña 'Cargar' y sube el archivo de nuevo para corregirlo.")
-                    st.dataframe(df_idx) # Mostramos dataframe simple para diagnosticar
-                else:
-                    st.success(f"✅ Datos cargados correctamente: {len(df_idx)} registros.")
-                    st.data_editor(df_idx, key="ed_idx_final", use_container_width=True, num_rows="dynamic", height=500)
+            if not cols_existentes:
+                st.warning("La tabla 'predios' existe pero parece vacía de columnas de datos.")
             else:
-                st.info("La tabla está vacía.")
-        except: st.warning("No hay datos.")
+                # 2. Construir consulta dinámica
+                cols_str = ", ".join([f'"{c}"' for c in cols_existentes]) # Comillas para evitar errores de mayúsculas
+                query = f"SELECT {cols_str} FROM predios LIMIT 1000"
+                
+                df_p = pd.read_sql(query, engine)
+                st.success(f"✅ Cargados {len(df_p)} registros. Columnas encontradas: {cols_existentes}")
+                st.data_editor(df_p, key="ed_pred_dynamic", use_container_width=True)
+                
+        except Exception as e:
+            st.error(f"Error leyendo tabla: {e}")
+            st.info("Intenta volver a cargar el archivo GeoJSON en la pestaña de al lado.")
+
 
     with sb2:
         st.markdown("### Cargar Archivo de Índices")
