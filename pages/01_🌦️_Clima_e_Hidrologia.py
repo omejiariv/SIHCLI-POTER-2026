@@ -416,6 +416,7 @@ def main():
         try:
             from modules import hydro_physics as physics
             from modules import visualizer as viz
+            import os # Importante para rutas
         except ImportError as e:
             st.error(f"Error cargando módulos: {e}")
             st.stop()
@@ -429,6 +430,11 @@ def main():
         
         # Merge seguro
         gdf_calc = gdf_filtered.merge(df_mean, on=Config.STATION_NAME_COL)
+        
+        # Corrección de geometría si se pierde en el merge
+        if not isinstance(gdf_calc, gpd.GeoDataFrame):
+             if 'geometry' in gdf_calc.columns:
+                 gdf_calc = gpd.GeoDataFrame(gdf_calc, geometry='geometry')
         
         if len(gdf_calc) < 3:
             st.warning("⚠️ Se requieren al menos 3 estaciones.")
@@ -444,7 +450,7 @@ def main():
         dx, dy = maxx - minx, maxy - miny
         pad_x, pad_y = dx * 0.2, dy * 0.2
         
-        # Definir límites explícitos (ESTO FALTABA)
+        # --- DEFINICIÓN DE BOUNDS (CRÍTICO PARA EL ERROR) ---
         bounds_wgs84 = (minx - pad_x, miny - pad_y, maxx + pad_x, maxy + pad_y)
         
         # Grid
@@ -458,14 +464,22 @@ def main():
             Z_P = physics.interpolar_variable(gdf_calc, 'ppt_media', grid_x, grid_y)
 
         # --- 5. EJECUCIÓN MODELO FÍSICO ---
+        # Usamos rutas absolutas para evitar errores de "File not found"
+        base_dir = os.getcwd()
         paths = {
-            'dem': 'DemAntioquia_EPSG3116.tif',
-            'cobertura': 'Cob25m_WGS84.tif'
+            'dem': os.path.join(base_dir, 'DemAntioquia_EPSG3116.tif'),
+            'cobertura': os.path.join(base_dir, 'Cob25m_WGS84.tif')
         }
         
         with st.spinner("Calculando Balance Distribuido (Warping)..."):
-            # Ahora bounds_wgs84 SÍ existe
-            matrices = physics.run_distributed_model(Z_P, grid_x, grid_y, paths, bounds_wgs84)
+            # AQUÍ ESTABA EL ERROR: Asegúrate de pasar 'bounds=bounds_wgs84'
+            matrices = physics.run_distributed_model(
+                Z_P=Z_P, 
+                grid_x=grid_x, 
+                grid_y=grid_y, 
+                paths=paths, 
+                bounds=bounds_wgs84  # <--- ESTE ARGUMENTO FALTABA
+            )
 
         # --- 6. MÁSCARA VISUAL ---
         mask_inside = None
@@ -492,7 +506,6 @@ def main():
             mask=mask_inside,
             gdf_zona=gdf_zona
         )
-
 
     elif selected_module == "🧪 Sesgo":
         try: display_bias_correction_tab(**display_args)
