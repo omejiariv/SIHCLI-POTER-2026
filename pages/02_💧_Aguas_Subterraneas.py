@@ -262,694 +262,271 @@ if gdf_zona is not None:
 
     st.divider()
 
-# ==============================================================================
-    # 2. PESTAÑAS DE ANÁLISIS DETALLADO
+# [ESTE CÓDIGO VA DESPUÉS DE st.divider()]
+
+    # ==============================================================================
+    # 2. PREPARACIÓN DE DATOS ESPACIALES (CRÍTICO: Define df_mapa_stats)
+    # ==============================================================================
+    # Inicializamos df_mapa_stats con los metadatos básicos
+    df_mapa_stats = df_puntos.copy()
+    
+    # Si hay datos de lluvia, enriquecemos los puntos
+    if 'df_raw' in locals() and not df_raw.empty:
+        try:
+            # 1. Agrupar lluvia histórica por estación
+            grp = df_raw.groupby('id_estacion')['valor'].agg(['mean', 'std']).reset_index()
+            grp.columns = ['id_estacion', 'p_media', 'std_lluvia']
+            
+            # 2. Unir con df_mapa_stats
+            # Aseguramos tipos string para el join
+            df_mapa_stats['id_estacion'] = df_mapa_stats['id_estacion'].astype(str)
+            grp['id_estacion'] = grp['id_estacion'].astype(str)
+            
+            df_mapa_stats = pd.merge(df_mapa_stats, grp, on='id_estacion', how='left')
+            
+            # 3. Calcular Balance Puntual (Turc) para el mapa
+            # T = 28 - 0.006*h
+            df_mapa_stats['temp'] = 28 - (0.006 * df_mapa_stats['altitud'])
+            # L = 300 + 25T + 0.05T^3
+            df_mapa_stats['L_turc'] = 300 + 25*df_mapa_stats['temp'] + 0.05*(df_mapa_stats['temp']**3)
+            
+            # ETR y Recarga
+            def calc_etr(row):
+                if pd.isna(row['p_media']) or row['L_turc'] == 0: return 0
+                return row['p_media'] / np.sqrt(0.9 + (row['p_media']/row['L_turc'])**2)
+
+            df_mapa_stats['etr_media'] = df_mapa_stats.apply(calc_etr, axis=1)
+            
+            # Factores globales (del sidebar)
+            factor_recarga = ki_final * kg_factor
+            df_mapa_stats['recarga_calc'] = (df_mapa_stats['p_media'] - df_mapa_stats['etr_media']) * factor_recarga
+            df_mapa_stats['escorrentia_media'] = df_mapa_stats['p_media'] - df_mapa_stats['etr_media'] - df_mapa_stats['recarga_calc']
+            
+        except Exception as e:
+            st.warning(f"Advertencia calculando mapa: {e}")
+
+    # ==============================================================================
+    # 3. PESTAÑAS DE ANÁLISIS
     # ==============================================================================
     tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "💧 Mapa Recarga", "📥 Descargas"])
 
-    # --- GUÍA TÉCNICA (Global) ---
+    # --- GUÍA TÉCNICA ---
     with st.expander("📘 Guía Técnica: Balance Hídrico y Recarga", expanded=False):
         st.markdown(r"""
-        **Ecuación Fundamental:** $R = P - ETR - E_s$
-        * **$P$:** Precipitación (Entrada).
-        * **$ETR$:** Evapotranspiración Real (Pérdida a la atmósfera).
-        * **$E_s$:** Escorrentía Superficial (Pérdida por flujo rápido).
-        * **$R$:** Recarga Potencial (Infiltración profunda al acuífero).
-        
-        **Metodología:**
-        1. **Turc Modificado:** Para estimar ETR en función de Temperatura y Lluvia.
-        2. **Balance de Suelos:** Estimación de Escorrentía usando coeficientes de cobertura ($K_c$) y suelo ($K_s$).
+        **Ecuación:** $R = P - ETR - E_s$
+        * $P$: Precipitación. $ETR$: Evapotranspiración (Turc). $E_s$: Escorrentía. $R$: Recarga.
+        * **Modelo Estocástico:** Gumbel (Máximos) y Log-Normal (Mínimos) para proyecciones de retorno.
         """)
 
-    # --------------------------------------------------------------------------
-    # TAB 1: ANÁLISIS TEMPORAL (BALANCE)
-    # --------------------------------------------------------------------------
+    # --- TAB 1: SERIE TEMPORAL ---
     with tab1:
         if not df_res.empty:
-            # Agrupar por fecha para obtener el promedio regional
-            # df_res viene del módulo hydrogeo_utils con nombres estandarizados
+            # Agrupar promedio regional
             df_avg = df_res.groupby(['fecha', 'tipo'])[[
-                'p_final', 'etr_mm', 'infiltracion_mm', 'recarga_mm', 
-                'escorrentia_mm', 'yhat_upper', 'yhat_lower'
+                'p_final', 'etr_mm', 'infiltracion_mm', 'recarga_mm', 'escorrentia_mm', 'yhat_upper', 'yhat_lower'
             ]].mean().reset_index().sort_values('fecha')
 
-            # --- A. GRÁFICA DE BALANCE ---
+            # Gráfica
+            fig = go.Figure()
             df_hist = df_avg[df_avg['tipo'] == 'Histórico']
             df_fut = df_avg[df_avg['tipo'] == 'Proyección']
             
-            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia', line=dict(color='#95a5a6', width=1)))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga', line=dict(color='#2980b9', width=2.5), fill='tozeroy'))
             
-            # Histórico
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia (Entrada)', line=dict(color='#95a5a6', width=1)))
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['etr_mm'], name='ETR (Salida)', line=dict(color='#e67e22', width=1.5)))
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga (Acuífero)', line=dict(color='#2980b9', width=2.5), fill='tozeroy'))
-            
-            # Proyección
             if not df_fut.empty:
-                fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['p_final'], name='Lluvia Proyectada', line=dict(color='#95a5a6', width=1, dash='dot')))
-                fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Recarga Proyectada', line=dict(color='#00d2d3', width=2, dash='dot')))
-                
-                # Banda de Incertidumbre
-                fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_upper'], showlegend=False, line=dict(width=0)))
-                fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(0,210,211,0.1)'))
+                fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Proyección', line=dict(color='#00d2d3', width=2, dash='dot')))
             
-            fig.update_layout(
-                title=f"Balance Hídrico Regional: {nombre_zona}",
-                yaxis_title="Lámina de Agua (mm)",
-                height=500, hovermode="x unified",
-                legend=dict(orientation="h", y=1.1)
-            )
+            fig.update_layout(title=f"Balance Regional: {nombre_zona}", height=450, hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
-
-            # --- B. TABLA DE DATOS ---
-            with st.expander("📅 Tabla de Datos Mensuales"):
-                st.dataframe(df_avg.style.format("{:.1f}", subset=['p_final', 'etr_mm', 'recarga_mm']), use_container_width=True)
-
+            
+            with st.expander("📅 Ver Tabla de Datos"):
+                st.dataframe(df_avg, use_container_width=True)
         else:
-            st.info("Seleccione una zona con estaciones para ver el balance.")
+            st.info("Sin datos suficientes para el balance.")
 
-
-# 1. Asegurar que df_mapa_stats exista
-if 'df_mapa_stats' not in locals():
-    # Inicializamos con los puntos básicos
-    df_mapa_stats = df_puntos.copy()
-    
-    # Si hay datos de lluvia (df_raw), calculamos promedios
-    if 'df_raw' in locals() and not df_raw.empty:
-        # Agrupar lluvia por estación
-        grp = df_raw.groupby('id_estacion')['valor'].agg(['mean', 'std']).reset_index()
-        grp.columns = ['id_estacion', 'p_media', 'std_lluvia']
-        
-        # Unir con metadatos
-        df_mapa_stats = pd.merge(df_mapa_stats, grp, on='id_estacion', how='left')
-        
-        # Calcular Balance Puntual (Turc) para el mapa
-        # T = 28 - 0.006*h
-        df_mapa_stats['temp'] = 28 - (0.006 * df_mapa_stats['altitud'])
-        # L = 300 + 25T + 0.05T^3
-        df_mapa_stats['L_turc'] = 300 + 25*df_mapa_stats['temp'] + 0.05*(df_mapa_stats['temp']**3)
-        
-        # ETR y Recarga
-        df_mapa_stats['etr_media'] = df_mapa_stats.apply(
-            lambda x: x['p_media'] / np.sqrt(0.9 + (x['p_media']/x['L_turc'])**2) if x['p_media']>0 and x['L_turc']>0 else 0, 
-            axis=1
-        )
-        
-        # Factores globales (definidos en el sidebar)
-        # Si por alguna razón no están definidos, usamos defaults
-        k_inf = ki_final if 'ki_final' in locals() else 0.3
-        k_geo = kg_factor if 'kg_factor' in locals() else 0.5
-        
-        df_mapa_stats['recarga_calc'] = (df_mapa_stats['p_media'] - df_mapa_stats['etr_media']) * k_inf * k_geo
-        df_mapa_stats['escorrentia_media'] = df_mapa_stats['p_media'] - df_mapa_stats['etr_media'] - df_mapa_stats['recarga_calc']
-
-
-# --------------------------------------------------------------------------
-    # TAB 2: MAPA DE CONTEXTO (FOLIUM AVANZADO)
-    # --------------------------------------------------------------------------
+    # --- TAB 2: MAPA DE CONTEXTO ---
     with tab2:
-        if st.button("🔄 Recargar Mapa Contexto"): st.rerun()
-        
-        # 1. Configuración del Mapa Base
-        try:
-            pad = 0.05
-            # Usamos df_puntos que ya tiene las coordenadas validadas en la Parte 1
-            min_lat, max_lat = df_puntos['latitud'].min(), df_puntos['latitud'].max()
-            min_lon, max_lon = df_puntos['longitud'].min(), df_puntos['longitud'].max()
-            
-            m = folium.Map(
-                location=[(min_lat + max_lat)/2, (min_lon + max_lon)/2], 
-                zoom_start=11, 
-                tiles="CartoDB positron"
-            )
-            # Ajustar vista a los puntos
-            m.fit_bounds([[min_lat - pad, min_lon - pad], [max_lat + pad, max_lon + pad]])
-        except:
-            m = folium.Map(location=[6.2, -75.5], zoom_start=8)
-
-        st.markdown("<style>.leaflet-tooltip {white-space: normal !important; max-width: 300px !important; font-size:11px;}</style>", unsafe_allow_html=True)
-
-        # 2. Carga de Capas Temáticas (Suelos, Hidro, etc.)
-        try:
-            bounds_list = [min_lon-pad, min_lat-pad, max_lon+pad, max_lat+pad]
-            # Intentamos cargar capas si el modulo existe
-            if hasattr(hydrogeo_utils, 'cargar_capas_gis_optimizadas'):
-                layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds_list)
-            else:
-                layers = {}
-        except Exception as e:
-            # st.warning(f"No se pudieron cargar capas de contexto: {e}")
-            layers = {}
-
-        # Función auxiliar para tooltips seguros
-        def tooltip_ok(gdf, dic):
-            if gdf is None or gdf.empty: return None
-            cols = [c.lower().strip() for c in gdf.columns]
-            f, a = [], []
-            for k, v in dic.items():
-                # Busca columna que contenga la clave (ej: 'potencial' en 'potencial_recarga')
-                match = next((c for c in cols if k.lower() in c), None)
-                if match:
-                    f.append(match)
-                    a.append(v)
-            return folium.GeoJsonTooltip(fields=f, aliases=a, localize=True) if f else None
-
-        # --- CAPA 1: COBERTURAS (RASTER) ---
-        # Si tienes la lógica de raster en land_cover
-        if land_cover and os.path.exists(RUTA_RASTER) and gdf_zona is not None:
-            try:
-                img_cob, bounds_cob = land_cover.obtener_imagen_folium_coberturas(gdf_zona, RUTA_RASTER)
-                if img_cob is not None:
-                    folium.raster_layers.ImageOverlay(
-                        image=img_cob,
-                        bounds=bounds_cob,
-                        opacity=0.5,
-                        name="Coberturas (Satélite)",
-                        zindex=1
-                    ).add_to(m)
-            except: pass
-
-        # --- CAPA 2: SUELOS ---
-        if 'suelos' in layers and not layers['suelos'].empty:
-            dic_suelos = {'ucs':'UCS:', 'litolo':'Litología:', 'paisaje':'Paisaje:', 'clima':'Clima:'}
-            folium.GeoJson(
-                layers['suelos'], 
-                name="Suelos", 
-                style_function=lambda x: {'color':'orange', 'weight':0.5, 'fillOpacity':0.1},
-                tooltip=tooltip_ok(layers['suelos'], dic_suelos)
-            ).add_to(m)
-
-        # --- CAPA 3: HIDROGEOLOGÍA ---
-        if 'hidro' in layers and not layers['hidro'].empty:
-            def get_color_hidro(feature):
-                props = feature.get('properties', {})
-                # Buscamos claves comunes de potencial
-                val = props.get('potencial_') or props.get('potencial') or ''
-                txt = str(val).lower().strip()
-                if 'muy alto' in txt: return '#006400'
-                if 'alto' in txt: return '#32CD32'
-                if 'medio' in txt: return '#F1C40F'
-                if 'muy bajo' in txt: return '#8B0000'
-                if 'bajo' in txt: return '#E67E22'
-                return '#85C1E9'
-
-            dic_hidro = {'potencial': 'Potencial:', 'unidad': 'Unidad:', 'sigla': 'Sigla:'}
-            folium.GeoJson(
-                layers['hidro'], 
-                name="Hidrogeología", 
-                style_function=lambda f: {'fillColor': get_color_hidro(f), 'color': '#2c3e50', 'weight': 0.5, 'fillOpacity': 0.5},
-                tooltip=tooltip_ok(layers['hidro'], dic_hidro)
-            ).add_to(m)
-
-        # --- CAPA 4: BOCATOMAS ---
-        if 'bocatomas' in layers and not layers['bocatomas'].empty:
-            dic_boca = {'nombre': 'Nombre:', 'caudal': 'Q (L/s):', 'tipo': 'Tipo:'}
-            folium.GeoJson(
-                layers['bocatomas'], 
-                name="Bocatomas", 
-                marker=folium.CircleMarker(radius=4, color='red', fill=True),
-                tooltip=tooltip_ok(layers['bocatomas'], dic_boca)
-            ).add_to(m)
-
-        # --- CAPA 5: ESTACIONES (MARCADORES RICOS) ---
-        fg_estaciones = folium.FeatureGroup(name="Estaciones (Click)", show=True)
-        
-        # Iteramos sobre df_mapa_stats que tiene los cálculos, pero aseguramos coordenadas
-        # Si df_mapa_stats perdió las coordenadas, las recuperamos de df_puntos
-        if not df_mapa_stats.empty:
-            # Hacemos un merge seguro por si acaso
-            if 'latitud' not in df_mapa_stats.columns:
-                df_mapa_stats = pd.merge(df_mapa_stats, df_puntos[['id_estacion', 'latitud', 'longitud']], on='id_estacion', how='left')
-
-            for _, r in df_mapa_stats.iterrows():
-                # Coordenadas seguras
-                lat = r.get('latitud')
-                lon = r.get('longitud')
-                
-                if pd.notnull(lat) and pd.notnull(lon):
-                    # Formateo de valores
-                    def fmt(v): return f"{v*12:,.0f} mm" if pd.notnull(v) else "N/D"
-                    
-                    html = f"""
-                    <div style='font-family:sans-serif; width:180px; font-size:12px;'>
-                        <b style="color:#2980b9;">{r.get('nombre', 'Estación')}</b><br>
-                        <span style="font-size:10px; color:gray;">ID: {r.get('id_estacion')}</span>
-                        <hr style="margin: 5px 0;">
-                        🌧️ Lluvia: <b>{fmt(r.get('p_media'))}</b><br>
-                        ☀️ ETR: {fmt(r.get('etr_media'))}<br>
-                        💧 <b>Recarga: {fmt(r.get('recarga_calc'))}</b><br>
-                    </div>
-                    """
-                    
-                    folium.Marker(
-                        [lat, lon],
-                        popup=folium.Popup(html, max_width=200),
-                        icon=folium.Icon(color='blue', icon='tint', prefix='fa'),
-                        tooltip=r.get('nombre')
-                    ).add_to(fg_estaciones)
-
-        fg_estaciones.add_to(m)
-
-        # Controles
-        folium.LayerControl().add_to(m)
-        plugins.Fullscreen().add_to(m)
-        
-        st_folium(m, width=1400, height=600, key=f"mapa_ctx_{nombre_zona}")
-
-
-# ==============================================================================
-    # PREPARACIÓN DE DATOS ESPACIALES (NECESARIO PARA TAB 2 Y 3)
-    # ==============================================================================
-    # Calculamos estadísticas puntuales por estación para los mapas
-    df_mapa_stats = df_puntos.copy()
-    if not df_raw.empty:
-        # 1. Agrupar lluvia por estación
-        grp = df_raw.groupby('id_estacion')['valor'].agg(['mean', 'std']).reset_index()
-        grp.columns = ['id_estacion', 'p_media', 'std_lluvia']
-        
-        # 2. Unir con metadatos
-        df_mapa_stats = pd.merge(df_mapa_stats, grp, on='id_estacion', how='left')
-        
-        # 3. Calcular Balance Puntual (Turc) para el mapa
-        # T = 28 - 0.006*h
-        df_mapa_stats['temp'] = 28 - (0.006 * df_mapa_stats['altitud'])
-        # L = 300 + 25T + 0.05T^3
-        df_mapa_stats['L_turc'] = 300 + 25*df_mapa_stats['temp'] + 0.05*(df_mapa_stats['temp']**3)
-        # ETR
-        df_mapa_stats['etr_media'] = df_mapa_stats.apply(
-            lambda x: x['p_media'] / np.sqrt(0.9 + (x['p_media']/x['L_turc'])**2) if x['p_media']>0 and x['L_turc']>0 else 0, 
-            axis=1
-        )
-        # Recarga = (P - ETR) * Coeficientes
-        # Usamos los factores globales definidos en el sidebar
-        factor_recarga = ki_final * kg_factor
-        df_mapa_stats['recarga_calc'] = (df_mapa_stats['p_media'] - df_mapa_stats['etr_media']) * factor_recarga
-        df_mapa_stats['escorrentia_media'] = df_mapa_stats['p_media'] - df_mapa_stats['etr_media'] - df_mapa_stats['recarga_calc']
-
-    # ==============================================================================
-    # 2. PESTAÑAS VISUALES
-    # ==============================================================================
-    tab2, tab3, tab4 = st.tabs(["🗺️ Mapa Contexto", "💧 Mapa Recarga", "📥 Descargas"])
-
-    # --- TAB 2: CONTEXTO (TOOLTIPS RICOS) ---
-    with tab2:
-        if st.button("🔄 Recargar Mapa Contexto"): st.rerun()
+        # CORRECCIÓN DE ERROR: Agregamos key='btn_ctx_uniq' para evitar ID duplicado
+        if st.button("🔄 Recargar Mapa Contexto", key="btn_ctx_uniq"): st.rerun()
         
         try:
             pad = 0.05
             min_lat, max_lat = df_puntos['latitud'].min(), df_puntos['latitud'].max()
             min_lon, max_lon = df_puntos['longitud'].min(), df_puntos['longitud'].max()
-            bounds = [min_lon-pad, min_lat-pad, max_lon+pad, max_lat+pad]
             
-            # Cargar capas GIS (si existe la función)
-            layers = {}
-            if hasattr(hydrogeo_utils, 'cargar_capas_gis_optimizadas'):
-                try: layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, bounds)
-                except: pass
-
             m = folium.Map(location=[(min_lat+max_lat)/2, (min_lon+max_lon)/2], zoom_start=11, tiles="CartoDB positron")
             m.fit_bounds([[min_lat-pad, min_lon-pad], [max_lat+pad, max_lon+pad]])
 
-            # Estilos CSS para Popups
-            st.markdown("<style>.leaflet-tooltip {white-space: normal !important; max-width: 300px !important; font-size:11px;}</style>", unsafe_allow_html=True)
+            st.markdown("<style>.leaflet-tooltip {white-space: normal !important; max-width: 300px;}</style>", unsafe_allow_html=True)
 
-            # --- CAPA DE COBERTURAS (RASTER) ---
+            # Cargar capas externas (si existen)
+            if hasattr(hydrogeo_utils, 'cargar_capas_gis_optimizadas'):
+                try: 
+                    layers = hydrogeo_utils.cargar_capas_gis_optimizadas(engine, [min_lon-pad, min_lat-pad, max_lon+pad, max_lat+pad])
+                    
+                    if 'hidro' in layers:
+                        folium.GeoJson(layers['hidro'], name="Hidrogeología", 
+                            style_function=lambda x: {'color': '#2c3e50', 'weight': 0.5, 'fillOpacity': 0.3}
+                        ).add_to(m)
+                except: pass
+
+            # Capa Raster (Coberturas)
             if land_cover and os.path.exists(RUTA_RASTER) and gdf_zona is not None:
                 try:
                     img_cob, bounds_cob = land_cover.obtener_imagen_folium_coberturas(gdf_zona, RUTA_RASTER)
                     if img_cob is not None:
-                        folium.raster_layers.ImageOverlay(
-                            image=img_cob, bounds=bounds_cob, opacity=0.6, name="Coberturas (Satélite)", zindex=1
-                        ).add_to(m)
+                        folium.raster_layers.ImageOverlay(img_cob, bounds_cob, opacity=0.6, name="Coberturas").add_to(m)
                 except: pass
 
-            # --- CAPAS VECTORIALES (Suelos, Hidro, etc) ---
-            def style_hidro(feature):
-                props = feature.get('properties', {})
-                val = str(props.get('potencial_', props.get('potencial', ''))).lower()
-                c = '#85C1E9'
-                if 'alto' in val: c = '#32CD32'
-                elif 'medio' in val: c = '#F1C40F'
-                elif 'bajo' in val: c = '#E67E22'
-                return {'fillColor': c, 'color': '#2c3e50', 'weight': 0.5, 'fillOpacity': 0.5}
-
-            if 'hidro' in layers:
-                folium.GeoJson(layers['hidro'], name="Hidrogeología", style_function=style_hidro).add_to(m)
-
-            if 'bocatomas' in layers:
-                folium.GeoJson(layers['bocatomas'], name="Bocatomas", marker=folium.CircleMarker(radius=4, color='red')).add_to(m)
-
-            # --- ESTACIONES (Popups Completos) ---
-            fg_estaciones = folium.FeatureGroup(name="Estaciones", show=True)
-
+            # Marcadores Estaciones
+            fg = folium.FeatureGroup(name="Estaciones", show=True)
             for _, r in df_mapa_stats.iterrows():
-                # Formateador
-                def fmt(val, mult=12): return f"{val*mult:,.0f} mm" if pd.notnull(val) else "N/D"
-                
-                html = f"""
-                <div style='font-family:sans-serif; width:200px; font-size:12px;'>
-                    <b style="font-size:13px; color:#2c3e50;">{r.get('nombre', 'Estación')}</b>
-                    <hr style='margin:4px 0; border-top: 1px solid #ccc;'>
-                    📍 <b>Mun:</b> {r.get('municipio', 'N/A')} <br>
-                    ⛰️ <b>Alt:</b> {r.get('altitud', 0):,.0f} m <br>
-                    <hr style='margin:4px 0; border-top: 1px dashed #ccc;'>
-                    🌧️ <b>Lluvia:</b> {fmt(r.get('p_media'))}<br>
-                    💧 <b>Recarga:</b> <b style='color:#0000AA;'>{fmt(r.get('recarga_calc'))}</b><br>
-                </div>"""
-                
-                folium.Marker(
-                    [r['latitud'], r['longitud']], 
-                    popup=folium.Popup(html, max_width=220), 
-                    icon=folium.Icon(color='black', icon='tint'),
-                    tooltip=r.get('nombre')
-                ).add_to(fg_estaciones)
-
-            fg_estaciones.add_to(m)
+                if pd.notnull(r.get('latitud')) and pd.notnull(r.get('longitud')):
+                    # Tooltip seguro
+                    p_val = r.get('p_media', 0) * 12
+                    r_val = r.get('recarga_calc', 0) * 12
+                    
+                    html = f"""
+                    <b>{r.get('nombre')}</b><br>
+                    ID: {r.get('id_estacion')}<br>
+                    🌧️ Lluvia: {p_val:,.0f} mm<br>
+                    💧 Recarga: {r_val:,.0f} mm
+                    """
+                    folium.Marker(
+                        [r['latitud'], r['longitud']], 
+                        popup=folium.Popup(html, max_width=200),
+                        icon=folium.Icon(color='blue', icon='tint')
+                    ).add_to(fg)
+            
+            fg.add_to(m)
             folium.LayerControl().add_to(m)
-            plugins.Fullscreen().add_to(m)
-            st_folium(m, width=1400, height=600, key=f"ctx_{nombre_zona}")
+            st_folium(m, width=1400, height=600, key=f"map_ctx_{nombre_zona}")
 
         except Exception as e:
-            st.error(f"Error cargando mapa de contexto: {e}")
+            st.error(f"Error renderizando mapa: {e}")
 
-    # --- TAB 3: RECARGA (INTERPOLACIÓN) ---
+    # --- TAB 3: MAPA DE RECARGA (INTERPOLACIÓN) ---
     with tab3:
         st.subheader("Distribución Espacial de la Recarga")
         df_valid = df_mapa_stats.dropna(subset=['recarga_calc'])
         
         if len(df_valid) < 4:
-            st.warning("⚠️ Se requieren al menos 4 estaciones con datos válidos para interpolar.")
+            st.warning("⚠️ Se requieren al menos 4 estaciones con datos para interpolar.")
         else:
             try:
-                # Interpolación
+                # Datos para interpolar
                 x = df_valid['longitud'].values
                 y = df_valid['latitud'].values
-                z = df_valid['recarga_calc'].values * 12 # Anualizar
+                z = df_valid['recarga_calc'].values * 12 # mm/año
                 
-                # Crear grid
+                # Grid
                 pad = 0.05
                 xi = np.linspace(x.min()-pad, x.max()+pad, 100)
                 yi = np.linspace(y.min()-pad, y.max()+pad, 100)
                 Xi, Yi = np.meshgrid(xi, yi)
                 
+                # Interpolación Linear
                 Zi = griddata((x, y), z, (Xi, Yi), method='linear')
                 
-                # Mapa Base
+                # Mapa
                 m_iso = folium.Map(location=[y.mean(), x.mean()], zoom_start=11, tiles="CartoDB positron")
                 m_iso.fit_bounds([[y.min(), x.min()], [y.max(), x.max()]])
                 
-                # Capa Raster (Colores)
+                # Renderizar Raster
                 if not np.isnan(Zi).all():
                     vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
-                    # Colormap simple
-                    try: cmap = plt.get_cmap('Blues')
-                    except: cmap = cm.Blues
-                    
+                    cmap = cm.get_cmap('Blues')
                     norm_z = (Zi - vmin) / (vmax - vmin)
                     rgba = cmap(norm_z)
-                    rgba[np.isnan(Zi), 3] = 0 # Transparencia para NaNs
+                    rgba[np.isnan(Zi), 3] = 0
                     
                     folium.raster_layers.ImageOverlay(
-                        image=rgba, 
-                        bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]], 
-                        opacity=0.7, 
-                        name="Recarga (Raster)"
+                        image=rgba, bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]], 
+                        opacity=0.7, name="Recarga (Raster)"
                     ).add_to(m_iso)
-
-                # Isolíneas (Aprox)
+                
                 folium.LayerControl().add_to(m_iso)
-                st_folium(m_iso, width=1400, height=600, key=f"iso_{nombre_zona}")
+                st_folium(m_iso, width=1400, height=600, key=f"map_iso_{nombre_zona}")
                 
             except Exception as e:
                 st.error(f"Error en interpolación: {e}")
 
-    # --- TAB 4: FICHA TÉCNICA Y DESCARGAS ---
+    # --- TAB 4: DESCARGAS ---
     with tab4:
-        # Ficha Técnica Restaurada
-        with st.expander("📘 Ficha Técnica: Modelo Hidrológico", expanded=True):
-            st.markdown("""
-            ### Metodología
-            * **Balance Hídrico:** Método de Turc Modificado para el trópico.
-            * **Componentes:** $R = P - ETR - Es$. Donde $R$ es Recarga, $P$ Precipitación, $ETR$ Evapotranspiración y $Es$ Escorrentía.
-            * **Estadística:** Ajuste Gumbel (Máximos) y Log-Normal (Mínimos) para proyecciones de retorno.
-            """)
-        
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            if not df_res.empty:
-                csv = df_res.to_csv(index=False).encode('utf-8')
-                st.download_button("⬇️ Descargar Serie Temporal (.csv)", csv, "balance_hidrico.csv", "text/csv")
-        with col_d2:
-            if not df_mapa_stats.empty:
-                csv_est = df_mapa_stats.to_csv(index=False).encode('utf-8')
-                st.download_button("⬇️ Descargar Datos Estaciones (.csv)", csv_est, "estaciones_calculadas.csv", "text/csv")
+        col1, col2 = st.columns(2)
+        if not df_res.empty:
+            col1.download_button("⬇️ Descargar Serie Temporal (.csv)", df_res.to_csv(index=False).encode('utf-8'), "balance.csv", "text/csv")
+        if not df_mapa_stats.empty:
+            col2.download_button("⬇️ Descargar Datos Estaciones (.csv)", df_mapa_stats.to_csv(index=False).encode('utf-8'), "estaciones_recarga.csv", "text/csv")
 
-
-# ==============================================================================
-    # SECCIÓN: REPORTE GLOBAL HIDROLÓGICO (GENERADOR MAESTRO)
+    # ==============================================================================
+    # 4. REPORTE GLOBAL (GENERADOR MAESTRO)
     # ==============================================================================
     st.markdown("---")
-    with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=False):
+    with st.expander("📑 Reporte Maestro de Cuencas (Generación Masiva)", expanded=False):
+        st.info("Herramienta administrativa para recalcular todas las cuencas.")
         
-        st.info("Genera tabla maestra con Modelo Aditivo (Escorrentía Directa + Caudal Base) y Estadísticas Extremas.")
-
-        # 1. VER REPORTE EXISTENTE
+        # Selección de columna de nombre
         try:
-            df_reporte_existente = pd.read_sql("SELECT * FROM reporte_cuencas", engine)
-            st.success(f"✅ Reporte disponible en BD ({len(df_reporte_existente)} registros).")
-            st.dataframe(df_reporte_existente, use_container_width=True)
-            csv_ex = df_reporte_existente.to_csv(index=False).encode('utf-8')
-            st.download_button("💾 Descargar Tabla (CSV)", csv_ex, "Reporte_Hidrologico_Global.csv", "text/csv")
-            st.markdown("---")
-        except:
-            st.warning("⚠️ Aún no has generado el reporte.")
-
-        # 2. CONFIGURACIÓN DE COLUMNAS
-        st.write("#### ⚙️ Configuración")
-        try:
-            # Buscamos columnas de texto para usarlas como nombre
             q_cols = text("SELECT column_name FROM information_schema.columns WHERE table_name = 'cuencas' AND data_type = 'text'")
             cols_bd = pd.read_sql(q_cols, engine)['column_name'].tolist()
-            # Intentamos adivinar la columna correcta
-            idx_def = next((i for i, c in enumerate(cols_bd) if c in ['n_nss3', 'subc_lbl', 'nombre', 'name']), 0)
-            col_nombre_reporte = st.selectbox("🏷️ Columna para Nombres:", cols_bd, index=idx_def, key="sel_col_rep_final")
-        except:
-            col_nombre_reporte = 'nombre_cuenca'
+            idx_def = next((i for i, c in enumerate(cols_bd) if c in ['n_nss3', 'subc_lbl', 'nombre']), 0)
+            col_nom_rep = st.selectbox("Columna de Nombre:", cols_bd, index=idx_def, key="col_rep_final")
+        except: col_nom_rep = 'nombre_cuenca'
 
-        # 3. BOTÓN DE CÁLCULO MASIVO
-        if st.button(f"🚀 Generar Reporte Completo (Puede tardar minutos)"):
+        if st.button("🚀 Generar Reporte Completo", key="btn_gen_rep"):
             try:
                 import rasterio
                 from rasterio.mask import mask
-            except ImportError:
-                st.error("Librería 'rasterio' no instalada. No se pueden procesar DEMs.")
-                st.stop()
-            
-            try:
-                # A. CARGAR DATOS (ACTUALIZADO A NUEVA BD)
-                with st.spinner("Cargando geometrías y normalizando datos..."):
-                    
-                    # 1. Cuencas (Polígonos)
-                    gdf_all = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry")
-                    # Asegurar CRS Magnas-Sirgas (EPSG:3116) para cálculos métricos correctos
-                    if gdf_all.crs and gdf_all.crs.to_string() != "EPSG:3116":
-                        gdf_all = gdf_all.to_crs("EPSG:3116")
-                    
-                    # 2. Estaciones (Puntos) - CORRECCIÓN VITAL
-                    # Construimos la geometría desde lat/long reparados para ser infalibles
-                    # Usamos CAST para asegurar que sean números
-                    q_est_geo = text("""
-                        SELECT id_estacion, ST_SetSRID(ST_MakePoint(CAST(longitud AS FLOAT), CAST(latitud AS FLOAT)), 4326) as geometry 
-                        FROM estaciones
-                        WHERE latitud IS NOT NULL AND longitud IS NOT NULL
-                    """)
-                    gdf_est = gpd.read_postgis(q_est_geo, engine, geom_col="geometry")
-                    
-                    if gdf_est.crs and gdf_est.crs.to_string() != "EPSG:3116":
-                        gdf_est = gdf_est.to_crs("EPSG:3116")
-                    gdf_est['id_estacion'] = gdf_est['id_estacion'].astype(str).str.strip()
-
-                    # 3. Lluvias (Datos)
-                    # Promedio Anual por Estación
-                    df_rain_anual = pd.read_sql("""
-                        SELECT id_estacion, AVG(valor)*12 as ppt_anual 
-                        FROM precipitacion 
-                        GROUP BY id_estacion
-                    """, engine)
-                    df_rain_anual['id_estacion'] = df_rain_anual['id_estacion'].astype(str).str.strip()
-
-                    # Serie Mensual Completa
-                    df_rain_mensual = pd.read_sql("SELECT id_estacion, fecha, valor FROM precipitacion", engine)
-                    df_rain_mensual['fecha'] = pd.to_datetime(df_rain_mensual['fecha'])
-                    df_rain_mensual['id_estacion'] = df_rain_mensual['id_estacion'].astype(str).str.strip()
-
-                # B. PREPARAR DEM
-                path_dem = "data/DemAntioquia_EPSG3116.tif"
-                src_dem = None
-                crs_dem_objetivo = None
                 
-                if os.path.exists(path_dem):
-                    src_dem = rasterio.open(path_dem)
-                    crs_dem_objetivo = src_dem.crs
-                    if not crs_dem_objetivo and src_dem.transform[2] > 4000000:
-                        crs_dem_objetivo = "EPSG:9377"
-
-                # C. BUCLE DE PROCESAMIENTO
-                progreso = st.progress(0)
-                status = st.empty()
-                lista_resultados = []
-                total = len(gdf_all)
-                
-                for i, row in gdf_all.iterrows():
-                    # Obtener nombre seguro
-                    nom = str(row.get(col_nombre_reporte, f"Cuenca {i}"))
-                    status.text(f"Procesando {i+1}/{total}: {nom}...")
+                with st.spinner("Procesando todas las cuencas (esto tomará unos minutos)..."):
+                    # 1. Cargar Geometrías
+                    gdf_all = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry").to_crs("EPSG:3116")
                     
-                    # Geometría Base
-                    geom_base = row.geometry
-                    area_km2 = geom_base.area / 1e6
-                    perim_km = geom_base.length / 1000
+                    # 2. Cargar Estaciones (Usando coordenadas reparadas)
+                    q_est = text("SELECT id_estacion, ST_SetSRID(ST_MakePoint(CAST(longitud AS FLOAT), CAST(latitud AS FLOAT)), 4326) as geometry FROM estaciones WHERE latitud IS NOT NULL")
+                    gdf_est = gpd.read_postgis(q_est, engine, geom_col="geometry").to_crs("EPSG:3116")
+                    gdf_est['id_estacion'] = gdf_est['id_estacion'].astype(str)
                     
-                    # --- 1. TOPOGRAFÍA ---
-                    alt_min, alt_max, alt_med, pend_med = 0, 0, 0, 0
-                    ec_hyp = "N/A"
+                    # 3. Lluvia Anual
+                    df_rain = pd.read_sql("SELECT id_estacion, AVG(valor)*12 as ppt FROM precipitacion GROUP BY id_estacion", engine)
+                    df_rain['id_estacion'] = df_rain['id_estacion'].astype(str)
                     
-                    if src_dem and crs_dem_objetivo:
-                        try:
-                            geom_para_dem = gpd.GeoSeries([geom_base], crs="EPSG:3116").to_crs(crs_dem_objetivo).iloc[0]
-                            out_image, _ = mask(src_dem, [geom_para_dem], crop=True, nodata=src_dem.nodata)
-                            data = out_image[0]
-                            validos = data[(data != src_dem.nodata) & (data > -500)]
-                            
-                            if validos.size > 0:
-                                alt_min, alt_max, alt_med = float(np.min(validos)), float(np.max(validos)), float(np.mean(validos))
-                                l_caract = np.sqrt(area_km2 * 1e6)
-                                if l_caract > 0: pend_med = ((alt_max - alt_min) / l_caract) * 100
-
-                                try:
-                                    hist, bins = np.histogram(validos, bins=50)
-                                    areas_acum = np.cumsum(hist[::-1]) / validos.size * 100
-                                    z = np.polyfit(areas_acum, bins[:-1][::-1], 3)
-                                    ec_hyp = f"H = {z[0]:.2e}A³ + {z[1]:.2e}A² + {z[2]:.2e}A + {z[3]:.0f}"
-                                except: pass
-                        except: pass
-
-                    # --- 2. HIDROLOGÍA Y BALANCE ---
-                    if alt_med == 0: alt_med = 1500
-                    temp = max(0, 28 - 0.006 * alt_med)
-                    L = 300 + 25*temp + 0.05*(temp**3)
-
-                    # Buffer y Lluvias
-                    buffer_geom = geom_base.buffer(20000) 
-                    est_in = gdf_est[gdf_est.geometry.within(buffer_geom)]
-                    n_est = len(est_in)
-                    
-                    ppt_cuenca = 0
-                    if n_est > 0:
-                        ids = est_in['id_estacion'].unique().tolist()
-                        ppt_vals = df_rain_anual[df_rain_anual['id_estacion'].isin(ids)]['ppt_anual']
-                        if not ppt_vals.empty: ppt_cuenca = ppt_vals.mean()
-                    else:
-                        ppt_cuenca = 2000 # Fallback regional
-
-                    # Balance Turc
-                    etr = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L>0 and ppt_cuenca>0) else 0
-                    etr = min(etr, ppt_cuenca)
-                    esc_total_anual = ppt_cuenca - etr 
-                    
-                    # Desglose Hidrogeológico (Factores regionales)
-                    inf = esc_total_anual * 0.30 
-                    recarga_mm = inf * 0.50 
-                    esc_directa_mm = esc_total_anual - inf 
-                    
-                    # Caudales
-                    q_base_m3s = (recarga_mm * area_km2 * 1000) / 31536000
-                    q_medio_total = ((esc_directa_mm * area_km2 * 1000)/31536000) + q_base_m3s
-                    
-                    c_directo = esc_directa_mm / ppt_cuenca if ppt_cuenca > 0 else 0.3
-
-                    # --- 3. ESTADÍSTICAS AVANZADAS ---
-                    ec_fdc = "N/A"
-                    stats_ext = {}
-                    
-                    # Verificamos si existe el módulo analysis
-                    has_analysis = 'analysis' in locals() or 'analysis' in globals()
-                    
-                    if n_est > 0 and ppt_cuenca > 0 and has_analysis:
-                        try:
-                            ids = est_in['id_estacion'].unique().tolist()
-                            s_mensual = df_rain_mensual[df_rain_mensual['id_estacion'].isin(ids)]
-                            
-                            if not s_mensual.empty:
-                                # Agrupar por fecha y promediar 'valor'
-                                s_sintetica = s_mensual.groupby('fecha')['valor'].mean()
-                                
-                                # Estadísticas
-                                if analysis:
-                                    stats_ext = analysis.calculate_hydrological_statistics(
-                                        s_sintetica, 
-                                        runoff_coeff=c_directo, 
-                                        area_km2=area_km2, 
-                                        q_base_m3s=q_base_m3s
-                                    )
-                                    
-                                    # Curva de Duración (FDC)
-                                    fdc = analysis.calculate_duration_curve(s_sintetica, runoff_coeff=c_directo, area_km2=area_km2, q_base_m3s=q_base_m3s)
-                                    if fdc: ec_fdc = fdc.get("equation", "N/A")
-                        except: pass
-
-                    # Índices
-                    im = ppt_cuenca / (temp + 10)
-                    ifow = (ppt_cuenca**2) / ppt_cuenca if ppt_cuenca > 0 else 0
-
-                    # --- 4. CONSTRUIR FILA ---
-                    fila = {
-                        "Cuenca": nom,
-                        "Área (km²)": round(area_km2, 2),
-                        "Perímetro (km)": round(perim_km, 2),
-                        "Altitud Media": round(alt_med, 0),
-                        "Altitud Máx": round(alt_max, 0),
-                        "Altitud Mín": round(alt_min, 0),
-                        "Pendiente (%)": round(pend_med, 2),
+                    # 4. Bucle
+                    res = []
+                    prog = st.progress(0)
+                    for i, row in gdf_all.iterrows():
+                        nom = str(row.get(col_nom_rep, f"Cuenca {i}"))
+                        area = row.geometry.area / 1e6
                         
-                        "Lluvia (mm)": round(ppt_cuenca, 0),
-                        "ETR (mm)": round(etr, 0),
-                        "Infiltración (mm)": round(inf, 0),
-                        "Recarga (mm)": round(recarga_mm, 0),
-                        "Escorrentía Directa (mm)": round(esc_directa_mm, 0),
+                        # Buffer y cruce
+                        buf = row.geometry.buffer(20000)
+                        est_in = gdf_est[gdf_est.geometry.within(buf)]
                         
-                        "Caudal Base (m³/s)": round(q_base_m3s, 3),
-                        "Caudal Medio Total (m³/s)": round(q_medio_total, 3),
-                        "Estaciones (20km)": n_est,
+                        ppt = 2000
+                        if not est_in.empty:
+                            ids = est_in['id_estacion'].tolist()
+                            vals = df_rain[df_rain['id_estacion'].isin(ids)]['ppt']
+                            if not vals.empty: ppt = vals.mean()
                         
-                        "I. Martonne": round(im, 2),
-                        "I. Fournier": round(ifow, 2),
-                        "Ec. Hipsométrica": ec_hyp,
-                        "Ec. FDC": ec_fdc,
-
-                        # Estadísticas
-                        "Desviación Std": round(stats_ext.get("Desviacion_Std", 0), 3),
-                        "Q Ecológico (Q95)": round(stats_ext.get("Q_Ecologico_Q95", 0), 3),
+                        # Balance simple para reporte
+                        temp = max(0, 28 - 0.006 * 1500) # Altitud media aprox 1500
+                        L = 300 + 25*temp + 0.05*(temp**3)
+                        etr = ppt / np.sqrt(0.9 + (ppt/L)**2) if L>0 else 0
+                        recarga = (ppt - etr) * 0.15 # Factor regional medio
                         
-                        # Máximos
-                        "Q Max 2.33a": round(stats_ext.get("Q_Max_2.33a", 0), 3),
-                        "Q Max 50a": round(stats_ext.get("Q_Max_50a", 0), 3),
-                        "Q Max 100a": round(stats_ext.get("Q_Max_100a", 0), 3),
-                        
-                        # Mínimos
-                        "Q Min 50a": round(stats_ext.get("Q_Min_50a", 0), 3),
-                    }
-
-                    lista_resultados.append(fila)
-                    progreso.progress((i+1)/total)
-
-                # GUARDAR EN BD
-                df_final = pd.DataFrame(lista_resultados)
-                df_final.to_sql("reporte_cuencas", engine, if_exists='replace', index=False)
-                
-                progreso.empty()
-                status.success(f"✅ ¡Reporte Generado Exitosamente! ({len(df_final)} Cuencas procesadas).")
-                st.rerun()
-
+                        res.append({
+                            "Cuenca": nom, "Area_km2": round(area,2), 
+                            "Lluvia_mm": round(ppt,0), "Recarga_mm": round(recarga,0),
+                            "Q_Medio_m3s": round((ppt-etr)*area*1000/31536000, 3)
+                        })
+                        prog.progress((i+1)/len(gdf_all))
+                    
+                    # Guardar
+                    pd.DataFrame(res).to_sql("reporte_cuencas", engine, if_exists='replace', index=False)
+                    st.success("Reporte generado correctamente.")
+                    st.dataframe(pd.DataFrame(res).head())
+                    
             except Exception as e:
-                st.error(f"Error crítico durante la generación del reporte: {e}")
+                st.error(f"Error en reporte: {e}")
