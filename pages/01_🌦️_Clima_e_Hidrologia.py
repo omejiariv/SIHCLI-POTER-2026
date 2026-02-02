@@ -50,7 +50,7 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN UNIFICADA DE CARGA (CORREGIDA) ---
+# --- FUNCIÓN UNIFICADA DE CARGA (CORREGIDA Y BLINDADA) ---
 @st.cache_resource(show_spinner="Consultando Sistema de Información (Nube)...", ttl=3600)
 def load_data_from_db():
     from sqlalchemy import text
@@ -58,23 +58,131 @@ def load_data_from_db():
     import pandas as pd
     from modules.config import Config
     
+    # 1. Obtener conexión
     try:
         engine = get_engine()
     except:
         from modules.db_manager import get_engine
         engine = get_engine()
 
+    # 2. Inicializar estructuras vacías (Prevención de errores)
     gdf_mun = gpd.GeoDataFrame()
     gdf_cuencas = gpd.GeoDataFrame()
     gdf_predios = gpd.GeoDataFrame()
     gdf_est = gpd.GeoDataFrame()
     
-    # Inicializar DataFrames vacíos con estructura correcta
     df_rain = pd.DataFrame(columns=[Config.STATION_NAME_COL, Config.PRECIPITATION_COL, Config.DATE_COL])
     df_enso = pd.DataFrame(columns=[Config.DATE_COL, Config.ENSO_ONI_COL])
 
     if not engine:
         return gdf_est, gdf_mun, df_rain, df_enso, gdf_cuencas, gdf_predios
+
+    # 3. Cargar Datos Espaciales (Municipios, Cuencas, Predios)
+    try:
+        # Municipios
+        try:
+            gdf_mun = gpd.read_postgis("SELECT * FROM municipios", engine, geom_col="geometry")
+            if 'nombre_municipio' in gdf_mun.columns: gdf_mun['MPIO_CNMBR'] = gdf_mun['nombre_municipio']
+            elif 'nombre' in gdf_mun.columns: gdf_mun['MPIO_CNMBR'] = gdf_mun['nombre']
+        except: pass
+
+        # Cuencas
+        try:
+            gdf_cuencas = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry")
+            if 'nombre_cuenca' in gdf_cuencas.columns:
+                gdf_cuencas['SUBC_LBL'] = gdf_cuencas['nombre_cuenca']
+                gdf_cuencas['N-NSS3'] = gdf_cuencas['nombre_cuenca']
+        except: pass
+
+        # Predios
+        try:
+            gdf_predios = gpd.read_postgis("SELECT * FROM predios", engine, geom_col="geometry")
+            if 'nombre_predio' in gdf_predios.columns: gdf_predios['NOMBRE_PRE'] = gdf_predios['nombre_predio']
+        except: pass
+
+    except Exception as e:
+        print(f"Advertencia cargando capas base: {e}")
+
+    # 4. Cargar Datos Dinámicos (Estaciones, Lluvia, Índices)
+    try:
+        # A. Estaciones (Prioridad: Coordenadas numéricas lat/lon reparadas)
+        try:
+            df_e = pd.read_sql("SELECT * FROM estaciones", engine)
+            if 'latitud' in df_e.columns and 'longitud' in df_e.columns:
+                # Aseguramos que sean números
+                df_e['latitud'] = pd.to_numeric(df_e['latitud'], errors='coerce')
+                df_e['longitud'] = pd.to_numeric(df_e['longitud'], errors='coerce')
+                df_e = df_e.dropna(subset=['latitud', 'longitud'])
+                
+                gdf_est = gpd.GeoDataFrame(
+                    df_e, 
+                    geometry=gpd.points_from_xy(df_e.longitud, df_e.latitud), 
+                    crs="EPSG:4326"
+                )
+            else:
+                gdf_est = gpd.read_postgis("SELECT * FROM estaciones", engine, geom_col="geom")
+        except: pass
+
+        # B. Lluvia
+        q_rain = text("""
+            SELECT p.id_estacion, e.nombre, p.fecha, p.valor
+            FROM precipitacion p
+            JOIN estaciones e ON TRIM(p.id_estacion) = TRIM(e.id_estacion)
+            WHERE p.valor IS NOT NULL
+        """)
+        df_rain = pd.read_sql(q_rain, engine)
+        
+        if not df_rain.empty:
+            df_rain[Config.DATE_COL] = pd.to_datetime(df_rain['fecha'])
+            df_rain[Config.PRECIPITATION_COL] = pd.to_numeric(df_rain['valor'], errors='coerce')
+            df_rain[Config.STATION_NAME_COL] = df_rain['nombre']
+            df_rain['id_estacion'] = df_rain['id_estacion'].astype(str)
+            
+            # Columnas derivadas útiles
+            df_rain[Config.YEAR_COL] = df_rain[Config.DATE_COL].dt.year
+            df_rain[Config.MONTH_COL] = df_rain[Config.DATE_COL].dt.month
+
+        # C. Índices Climáticos
+        try:
+            df_enso_raw = pd.read_sql("SELECT * FROM indices_climaticos", engine)
+            if not df_enso_raw.empty:
+                if 'fecha' in df_enso_raw.columns:
+                    df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw['fecha'])
+                elif 'año' in df_enso_raw.columns:
+                    df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw[['año', 'mes']].assign(DAY=1))
+                
+                df_enso = df_enso_raw.sort_values(Config.DATE_COL)
+                if 'anomalia_oni' in df_enso.columns:
+                    df_enso[Config.ENSO_ONI_COL] = df_enso['anomalia_oni']
+        except: pass
+
+    except Exception as e:
+        print(f"Error cargando datos dinámicos: {e}")
+
+    # ==============================================================================
+    # BLOQUE DE COMPATIBILIDAD (EL PUENTE)
+    # ==============================================================================
+    # Renombrar columnas nuevas a viejas para que visualizer.py no falle
+    
+    if not df_rain.empty:
+        # Esto soluciona: KeyError 'Nom_Est', 'Codigo' en gráficos
+        df_rain = df_rain.rename(columns={
+            'id_estacion': 'Codigo',
+            'nombre': 'Nom_Est',
+            'valor': 'Valor' # Aseguramos compatibilidad si visualizer busca 'Valor'
+        })
+    
+    if not gdf_est.empty:
+        # Esto soluciona: KeyError 'Latitud_geo', 'Longitud_geo' en mapas
+        gdf_est = gdf_est.rename(columns={
+            'latitud': 'Latitud_geo',   # <--- CLAVE
+            'longitud': 'Longitud_geo', # <--- CLAVE
+            'id_estacion': 'Codigo',
+            'nombre': 'Nom_Est'
+        })
+
+
+    return gdf_est, gdf_mun, df_rain, df_enso, gdf_cuencas, gdf_predios
 
     # 1. MUNICIPIOS
     try:
@@ -424,20 +532,39 @@ def main():
         display_station_table_tab(**display_args)
         
     elif selected_module == "🔮 Pronóstico Climático":
+        if df_enso is None or df_enso.empty:
+            st.warning("⚠️ No se han cargado datos históricos de índices climáticos (ENSO). La predicción por teleconexión estará deshabilitada.")
         display_climate_forecast_tab(**display_args)
-        
+
     elif selected_module == "📉 Tendencias":
         display_trends_and_forecast_tab(**display_args)
         
     elif selected_module == "⚠️ Anomalías":
+        if df_enso is None or df_enso.empty:
+            st.info("ℹ️ Para ver anomalías correlacionadas con El Niño/La Niña, carga datos en el panel de administración.")
         display_anomalies_tab(**display_args)
         
     elif selected_module == "🔗 Correlación":
         display_correlation_tab(**display_args)
         
     elif selected_module == "🌊 Extremos":
-        display_drought_analysis_tab(**display_args)
+        # PARCHE SPI: Convertir Serie a DataFrame antes de enviar
+        if isinstance(display_args['df_long'], pd.Series):
+             display_args['df_long'] = display_args['df_long'].to_frame()
         
+        # Asegurar que 'Valor' (o precipitación) sea columna, no índice
+        df_temp = display_args['df_long'].copy()
+        if Config.PRECIPITATION_COL not in df_temp.columns:
+             # Si no encuentra la columna de lluvia, intenta renombrar la que tenga datos numéricos
+             cols_num = df_temp.select_dtypes(include=np.number).columns
+             if len(cols_num) > 0:
+                 df_temp = df_temp.rename(columns={cols_num[0]: Config.PRECIPITATION_COL})
+        
+        args_parche = display_args.copy()
+        args_parche['df_long'] = df_temp
+        
+        display_drought_analysis_tab(**args_parche)
+
     elif selected_module == "🌍 Mapas Avanzados":
         st.header("🌍 Modelación Hidrológica Distribuida (Aleph)")
         
@@ -640,16 +767,17 @@ def main():
                     if len(ids_validos) == 1: ids_sql = f"('{ids_validos[0]}')" 
                     else: ids_sql = str(ids_validos)
 
+                    # [CONSULTA CORREGIDA PARA ISOYETAS]
                     q_iso = text(f"""
-                        SELECT e.id_estacion, e.nombre, ST_X(e.geom::geometry) as lon, ST_Y(e.geom::geometry) as lat,
+                        SELECT e.id_estacion, e.nombre, 
+                               e.longitud as lon, e.latitud as lat, -- <--- CAMBIO CLAVE
                                SUM(p.valor) as valor
                         FROM precipitacion p
                         JOIN estaciones e ON p.id_estacion = e.id_estacion
                         WHERE extract(year from p.fecha) = :anio
                         AND e.id_estacion IN {ids_sql} 
-                        GROUP BY e.id_estacion, e.nombre, e.geom
-                    """)
-                    
+                        GROUP BY e.id_estacion, e.nombre, e.latitud, e.longitud
+                    """)                    
                     with engine.connect() as conn:
                         df_iso = pd.read_sql(q_iso, conn, params={"anio": year_iso})
                     
