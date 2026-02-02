@@ -304,7 +304,7 @@ with tabs[0]:
                     df_new.columns = df_new.columns.str.lower().str.strip()
                     
                     # Mapeo y limpieza
-                    rename_map = {'id_estacio': 'id_estacion', 'nom_est': 'nombre', 'longitud_geo': 'longitud', 'latitud_geo': 'latitud', 'alt_est': 'altitud'}
+                    rename_map = {'id_estacio': 'id_estacion', 'id_nom':'nombre', 'id_longitud_geo':'longitud', 'id_latitud_geo':'latitud', 'id_alt_est':'altitud'}
                     df_new = df_new.rename(columns={k: v for k, v in rename_map.items() if k in df_new.columns})
                     
                     cols_validas = ['id_estacion', 'nombre', 'longitud', 'latitud', 'altitud', 'municipio', 'departamento', 'subregion', 'corriente']
@@ -724,7 +724,7 @@ with tabs[10]: # Índice 10 porque es la pestaña número 11 (0-10)
             "Formato": ".csv",
             "Tipo": "Metadatos Estaciones",
             "Descripción": "Coordenadas, nombres y alturas de las estaciones.",
-            "Campos Clave": "Id_estacio, Nom_Est, Latitud_geo, Longitud_geo, alt_est"
+            "Campos Clave": "id_estacion, nombre, latitud, longitud, altitud"
         },
         {
             "Archivo": "Indices_Globales.csv",
