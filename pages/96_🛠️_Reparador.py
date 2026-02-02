@@ -2,65 +2,85 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 from modules.db_manager import get_engine
-import io
 
-st.set_page_config(page_title="Reparador Definitivo", layout="wide")
-st.title("🛠️ Reparador Final (Calibrado)")
+st.set_page_config(page_title="Reparador Anti-BOM", layout="wide")
+st.title("🛠️ Reparador de Coordenadas (Limpieza de Caracteres Especiales)")
 
-st.markdown("### Sube el archivo `mapaCVENSO.csv` para inyectar coordenadas.")
+st.markdown("""
+### El problema detectado:
+Tu archivo tiene una firma oculta (`ï»¿`) en el nombre de la columna.
+Este script la elimina antes de procesar.
 
-uploaded_file = st.file_uploader("Sube el CSV aquí:", type=["csv", "txt", "xlsx"])
+### Instrucciones:
+1. Sube el archivo **mapaCVENSO.csv**.
+2. Verifica que los selectores se pongan verdes.
+3. Dale al botón rojo.
+""")
+
+uploaded_file = st.file_uploader("Sube el archivo CSV aquí:", type=["csv", "txt", "xlsx"])
 
 if uploaded_file:
     engine = get_engine()
     
-    # 1. LEER ARCHIVO (Forzamos punto y coma que es tu formato)
+    # 1. LEER ARCHIVO CON LIMPIEZA DE BOM (ï»¿)
     try:
         if uploaded_file.name.endswith('.xlsx'):
             df = pd.read_excel(uploaded_file)
         else:
-            # Forzamos sep=';' y encoding 'latin1' (típico de archivos de gobierno/arcgis)
-            df = pd.read_csv(uploaded_file, sep=';', encoding='latin1')
+            # INTENTO 1: UTF-8-SIG (Esto elimina el BOM automáticamente)
+            try:
+                df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8-sig')
+            except:
+                # Fallback: Latin1
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, sep=';', encoding='latin1')
             
-        # Normalizamos columnas: quitamos espacios y pasamos a minúsculas
-        df.columns = [c.strip().lower() for c in df.columns]
+            # Si falló la separación por punto y coma, intentamos coma
+            if len(df.columns) < 2:
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, sep=',', encoding='utf-8-sig')
+
+        # 2. LIMPIEZA QUIRÚRGICA DE COLUMNAS
+        # Eliminamos explícitamente los caracteres basura del nombre de la columna
+        new_cols = []
+        for c in df.columns:
+            clean_c = str(c).strip().lower()
+            clean_c = clean_c.replace('ï»¿', '') # Eliminar BOM visible
+            clean_c = clean_c.replace('\ufeff', '') # Eliminar BOM invisible
+            clean_c = clean_c.replace('"', '').replace("'", "") # Eliminar comillas
+            new_cols.append(clean_c)
+            
+        df.columns = new_cols
         
-        st.success(f"✅ Archivo leído correctamente. Filas: {len(df)}")
-        st.write("Columnas encontradas:", df.columns.tolist())
+        st.success(f"✅ Archivo leído y limpiado. Filas: {len(df)}")
+        st.write("Columnas LIMPIAS encontradas:", df.columns.tolist())
         
-        # 2. CONFIGURACIÓN AUTOMÁTICA (Con tus nombres exactos)
+        # 3. SELECTORES INTELIGENTES
         cols = df.columns.tolist()
         
-        # Función auxiliar para encontrar índice
-        def get_idx(candidates):
-            for i, col in enumerate(cols):
-                if col in candidates: return i
+        def get_index(options, candidates):
+            for i, opt in enumerate(options):
+                if opt in candidates: return i 
+                if any(c in opt for c in candidates): return i
             return 0
 
         st.divider()
         c1, c2, c3, c4 = st.columns(4)
         
         with c1:
-            # Tu columna es 'id_estacion'
-            idx = get_idx(['id_estacion', 'id_estacio'])
-            col_id = st.selectbox("ID:", cols, index=idx)
-            
+            idx = get_index(cols, ['id_estacion', 'id_estacio', 'codigo'])
+            col_id = st.selectbox("ID ESTACIÓN:", cols, index=idx)
         with c2:
-            # Tu columna es 'latitud'
-            idx = get_idx(['latitud', 'lat'])
-            col_lat = st.selectbox("LAT:", cols, index=idx)
-            
+            idx = get_index(cols, ['latitud', 'lat'])
+            col_lat = st.selectbox("LATITUD:", cols, index=idx)
         with c3:
-            # Tu columna es 'longitud'
-            idx = get_idx(['longitud', 'lon'])
-            col_lon = st.selectbox("LON:", cols, index=idx)
-            
+            idx = get_index(cols, ['longitud', 'lon'])
+            col_lon = st.selectbox("LONGITUD:", cols, index=idx)
         with c4:
-            # Tu columna es 'nom_est'
-            idx = get_idx(['nom_est', 'nombre', 'estacion'])
+            idx = get_index(cols, ['nom_est', 'nombre', 'estacion'])
             col_nom = st.selectbox("NOMBRE:", cols, index=idx)
 
-        # 3. BOTÓN DE FUEGO
+        # 4. EJECUCIÓN
         if st.button("🚀 EJECUTAR REPARACIÓN AHORA"):
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -77,11 +97,14 @@ if uploaded_file:
                             # DATOS
                             sid = str(row[col_id]).strip()
                             
-                            # Reemplazar comas por puntos si las hay (ej: 6,15 -> 6.15)
-                            lat = float(str(row[col_lat]).replace(',', '.'))
-                            lon = float(str(row[col_lon]).replace(',', '.'))
+                            # Manejo de decimales (coma por punto)
+                            raw_lat = str(row[col_lat]).replace(',', '.')
+                            raw_lon = str(row[col_lon]).replace(',', '.')
                             
-                            # Altitud (opcional, buscamos 'altitud' o 'ah')
+                            lat = float(raw_lat)
+                            lon = float(raw_lon)
+                            
+                            # Altitud
                             alt = 0.0
                             if 'altitud' in df.columns:
                                 try: alt = float(str(row['altitud']).replace(',', '.'))
@@ -90,7 +113,7 @@ if uploaded_file:
                                 try: alt = float(str(row['ah']).replace(',', '.'))
                                 except: pass
 
-                            # UPDATE (Actualizar coordenadas de estaciones existentes)
+                            # UPDATE
                             stmt_upd = text("""
                                 UPDATE estaciones 
                                 SET latitud = :lat, longitud = :lon, altitud = :alt
@@ -101,7 +124,7 @@ if uploaded_file:
                             if res.rowcount > 0:
                                 updated_count += 1
                             else:
-                                # INSERT (Crear si no existe)
+                                # INSERT
                                 nom = str(row[col_nom]).strip()
                                 stmt_ins = text("""
                                     INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud)
@@ -116,7 +139,7 @@ if uploaded_file:
                         
                         if i % 50 == 0:
                             progress_bar.progress(min(i/total, 1.0))
-                            status_text.text(f"Procesando {i}...")
+                            status_text.text(f"Procesando {i}/{total}...")
 
                     trans.commit()
                     progress_bar.progress(1.0)
@@ -124,12 +147,11 @@ if uploaded_file:
                     
                     st.success(f"""
                     🎉 **¡ÉXITO TOTAL!**
-                    - Estaciones actualizadas (coordenadas corregidas): **{updated_count}**
-                    - Estaciones nuevas creadas: **{inserted_count}**
-                    - Total procesado: **{total}**
+                    - Estaciones con coordenadas actualizadas: **{updated_count}**
+                    - Estaciones nuevas: **{inserted_count}**
                     """)
                     
-                    st.info("👉 Ve a 'Clima e Hidrología' y recarga la página. ¡El mapa DEBE salir!")
+                    st.info("👉 VE AHORA A 'CLIMA E HIDROLOGÍA'. EL MAPA DEBE FUNCIONAR.")
                     
                 except Exception as e:
                     trans.rollback()
