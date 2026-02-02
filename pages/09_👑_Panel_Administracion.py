@@ -240,12 +240,11 @@ with st.expander("Mostrar Controles de Reinicio de Base de Datos", expanded=True
 
 
 # ==============================================================================
-# TAB 1: ESTACIONES
+# TAB 0: GESTIÓN DE ESTACIONES (CORREGIDO)
 # ==============================================================================
 with tabs[0]: 
     st.header("📍 Gestión de Estaciones")
     
-    # Definimos las sub-pestañas correctamente
     subtab_ver, subtab_carga = st.tabs(["👁️ Editor de Catálogo", "📂 Carga Masiva (CSV)"])
     
     # --- SUB-PESTAÑA 1: VER Y EDITAR ---
@@ -257,10 +256,10 @@ with tabs[0]:
             st.rerun()
             
         try:
-            # Traemos todas las estaciones
+            # 1. Traemos todas las estaciones
             df_est_db = pd.read_sql("SELECT * FROM estaciones ORDER BY id_estacion", engine)
             
-            # EDITOR DE DATOS INTERACTIVO
+            # 2. EDITOR DE DATOS INTERACTIVO
             df_editado = st.data_editor(
                 df_est_db,
                 num_rows="dynamic",
@@ -275,16 +274,15 @@ with tabs[0]:
                 }
             )
             
-            # BOTÓN GUARDAR (LÓGICA BLINDADA CON UPSERT)
+            # 3. BOTÓN GUARDAR (LÓGICA BLINDADA CON UPSERT)
             if st.button("💾 Guardar Cambios en Catálogo"):
                 with st.spinner("Sincronizando cambios de forma segura..."):
                     try:
                         with engine.begin() as conn:
-                            # 1. Subimos los cambios a una tabla temporal (aquí sí podemos usar replace)
+                            # A. Subimos a tabla temporal
                             df_editado.to_sql('temp_est_edit', conn, if_exists='replace', index=False)
                             
-                            # 2. Ejecutamos el UPSERT (Actualizar o Insertar) usando SQL puro
-                            # Esto actualiza los nombres/coords sin tocar los IDs ni borrar la tabla
+                            # B. Ejecutamos UPSERT (Actualizar o Insertar)
                             conn.execute(text("""
                                 INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud, municipio, departamento, subregion, corriente)
                                 SELECT id_estacion, nombre, latitud, longitud, altitud, municipio, departamento, subregion, corriente
@@ -300,7 +298,7 @@ with tabs[0]:
                                     corriente = EXCLUDED.corriente;
                             """))
                             
-                            # 3. Limpieza
+                            # C. Limpieza
                             conn.execute(text("DROP TABLE IF EXISTS temp_est_edit"))
                             
                         st.success("✅ Catálogo actualizado correctamente (Sin romper vínculos).")
@@ -311,12 +309,15 @@ with tabs[0]:
                         st.error("❌ No se pudo guardar.")
                         st.warning(f"Detalle técnico: {e}")
 
+        # ⬇️ ESTE ES EL BLOQUE QUE TE FALTABA ⬇️
+        except Exception as e:
+            st.warning("No se pudo cargar el catálogo. ¿Quizás está vacío?")
+            st.error(f"Error de carga: {e}")
 
-    # --- SUB-PESTAÑA 2: CARGA MASIVA (CORREGIDO: AHORA CARGA ESTACIONES) ---
+    # --- SUB-PESTAÑA 2: CARGA MASIVA ---
     with subtab_carga:
         st.write("Sube `mapaCVENSO.csv` limpio.")
-        # OJO: Aquí cargamos ESTACIONES, no lluvia.
-        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv_corrected")
+        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv_corrected_final")
         
         if up_est:
             if st.button("🚀 Cargar Catálogo"):
@@ -324,8 +325,7 @@ with tabs[0]:
                     df_new = pd.read_csv(up_est, sep=';', decimal=',')
                     df_new.columns = df_new.columns.str.lower().str.strip()
                     
-                    # Mapeo y limpieza
-                    rename_map = {'id_estacio': 'id_estacion', 'nom':'nombre', 'longitud_geo':'longitud', 'latitud_geo':'latitud', 'alt_est':'altitud'}
+                    rename_map = {'id_estacio': 'id_estacion', 'nom_est': 'nombre', 'longitud_geo': 'longitud', 'latitud_geo': 'latitud', 'alt_est': 'altitud'}
                     df_new = df_new.rename(columns={k: v for k, v in rename_map.items() if k in df_new.columns})
                     
                     cols_validas = ['id_estacion', 'nombre', 'longitud', 'latitud', 'altitud', 'municipio', 'departamento', 'subregion', 'corriente']
@@ -335,12 +335,26 @@ with tabs[0]:
                         if c in df_final.columns:
                             df_final[c] = pd.to_numeric(df_final[c].astype(str).str.replace(',', '.'), errors='coerce')
 
-                    # Carga segura con APPEND (La tabla ya existe por el script de inicio)
-                    df_final.to_sql('estaciones', engine, if_exists='append', index=False)
+                    # UPSERT manual para carga masiva (seguridad extra)
+                    df_final.to_sql('temp_est_load', engine, if_exists='replace', index=False)
+                    with engine.begin() as conn:
+                        conn.execute(text("""
+                            INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud, municipio, departamento, subregion, corriente)
+                            SELECT id_estacion, nombre, latitud, longitud, altitud, municipio, departamento, subregion, corriente
+                            FROM temp_est_load
+                            ON CONFLICT (id_estacion) DO UPDATE SET
+                                nombre = EXCLUDED.nombre,
+                                latitud = EXCLUDED.latitud,
+                                longitud = EXCLUDED.longitud,
+                                altitud = EXCLUDED.altitud;
+                        """))
+                        conn.execute(text("DROP TABLE IF EXISTS temp_est_load"))
+
                     st.success(f"✅ Catálogo cargado: {len(df_final)} estaciones.")
                     st.balloons()
                 except Exception as ex:
                     st.error(f"Error cargando estaciones: {ex}")
+
 
 # ==============================================================================
 # TAB 2: ÍNDICES (FORZANDO PUNTO Y COMA)
