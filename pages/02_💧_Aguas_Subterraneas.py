@@ -9,6 +9,16 @@ import geopandas as gpd
 import os
 import sys
 
+
+import folium
+from folium.features import DivIcon
+from folium import plugins
+from streamlit_folium import st_folium
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+from scipy.interpolate import griddata
+# ----------------------------------------
+
 # --- IMPORTACIÓN DE MÓDULOS (BLINDADA) ---
 try:
     from modules import db_manager, hydrogeo_utils, selectors

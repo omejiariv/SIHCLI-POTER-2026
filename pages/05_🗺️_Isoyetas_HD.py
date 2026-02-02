@@ -254,7 +254,12 @@ if gdf_meta.empty:
 # Continúa con la detección de columnas...
 col_id = detectar_columna(gdf_meta, ['id_estacion', 'codigo']) or 'id_estacion'
 col_nom = detectar_columna(gdf_meta, ['nombre', 'nom-est']) or 'nombre'
-
+col_region = detectar_columna(gdf_meta, ['region', 'subregion', 'depto_region'])
+col_muni = detectar_columna(gdf_meta, ['municipio', 'mpio'])
+col_alt = detectar_columna(gdf_meta, ['altitud' , 'alt_est'])
+# Buscamos si existe la columna de cuenca calculada en el paso anterior
+col_cuenca = 'CUENCA_GIS' if 'CUENCA_GIS' in gdf_meta.columns else None
+# ------------------------------------------------------
 
 # --- CONTINUACIÓN PARTE 2: LÓGICA DE FILTRADO Y MAPEO ---
 
