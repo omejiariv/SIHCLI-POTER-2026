@@ -224,8 +224,8 @@ def generar_analisis_texto_corregido(df_stats, tipo_analisis):
     diff = max_val - min_val
     
     # Identificar estaciones extremas
-    est_max = df_stats.loc[df_stats['valor'].idxmax()]['nom_est']
-    est_min = df_stats.loc[df_stats['valor'].idxmin()]['nom_est']
+    est_max = df_stats.loc[df_stats['valor'].idxmax()]['nombre']
+    est_min = df_stats.loc[df_stats['valor'].idxmin()]['nombre']
     
     # Lógica de interpretación CORREGIDA (Basada en Rango Absoluto)
     if diff < 600:
@@ -271,10 +271,10 @@ with st.sidebar.expander("🛠️ Diagnóstico de Archivos GIS"):
     st.write(f"Cuencas cargado: {'✅' if geo_cuenca is not None else '❌'}")
 
 col_id = detectar_columna(gdf_meta, ['id_estacion', 'codigo']) or 'id_estacion'
-col_nom = detectar_columna(gdf_meta, ['nom_est', 'nombre']) or 'nom_est'
+col_nom = detectar_columna(gdf_meta, ['nombre', 'nom-est']) or 'nomb_est'
 col_region = detectar_columna(gdf_meta, ['region', 'subregion', 'depto_region'])
 col_muni = detectar_columna(gdf_meta, ['municipio', 'mpio'])
-col_alt = detectar_columna(gdf_meta, ['alt_est', 'altitud'])
+col_alt = detectar_columna(gdf_meta, ['altitud' , 'alt_est'])
 col_cuenca = 'CUENCA_GIS' if 'CUENCA_GIS' in gdf_meta.columns else None
 
 df_filtered_meta = gdf_meta.copy()

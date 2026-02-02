@@ -304,7 +304,7 @@ with tabs[0]:
                     df_new.columns = df_new.columns.str.lower().str.strip()
                     
                     # Mapeo y limpieza
-                    rename_map = {'id_estacio': 'id_estacion', 'id_nom':'nombre', 'id_longitud_geo':'longitud', 'id_latitud_geo':'latitud', 'id_alt_est':'altitud'}
+                    rename_map = {'id_estacio': 'id_estacion', 'nom':'nombre', 'longitud_geo':'longitud', 'latitud_geo':'latitud', 'alt_est':'altitud'}
                     df_new = df_new.rename(columns={k: v for k, v in rename_map.items() if k in df_new.columns})
                     
                     cols_validas = ['id_estacion', 'nombre', 'longitud', 'latitud', 'altitud', 'municipio', 'departamento', 'subregion', 'corriente']

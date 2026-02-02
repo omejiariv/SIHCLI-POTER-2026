@@ -401,50 +401,63 @@ if gdf_zona is not None:
                         df_est_detalle = df_puntos.copy()
                         df_est_detalle['Lluvia Media'] = 0 # Valor default
                     
-                    # Manejo de nombres de columnas (Normalización)
-                    # Buscamos las columnas que el usuario quiere ver: Nombre y Municipio
-                    col_nombre = next((c for c in ['nombre', 'estacion'] if c in df_est_detalle.columns), 'Nombre')
-                    col_mun = next((c for c in ['municipio', 'mun', 'ciudad'] if c in df_est_detalle.columns), 'Municipio')
-                    col_alt = next((c for c in ['altitud', 'altitud', 'elevacion'] if c in df_est_detalle.columns), 'Altitud')
+                    # --- CORRECCIÓN DE COLUMNAS (Prioridad: Base de Datos Nueva) ---
+                    # Buscamos 'nombre' (Nuevo) o 'nom_est' (Viejo)
+                    col_nombre = next((c for c in ['nombre', 'nom_est', 'estacion', 'Nombre'] if c in df_est_detalle.columns), 'Nombre')
+                    col_mun = next((c for c in ['municipio', 'mun', 'ciudad', 'Municipio'] if c in df_est_detalle.columns), 'Municipio')
+                    col_alt = next((c for c in ['altitud', 'alt_est', 'elevacion', 'Altitud'] if c in df_est_detalle.columns), 'Altitud')
                     
                     # Cálculos Hidrológicos (Estimación simple para la tabla)
+                    # Usamos la columna detectada o 1000m por defecto
                     altitud_safe = pd.to_numeric(df_est_detalle.get(col_alt, 1000), errors='coerce').fillna(1000)
-                    lluvia_safe = df_est_detalle.get('Lluvia Media', 0).fillna(0)
+                    lluvia_safe = pd.to_numeric(df_est_detalle.get('Lluvia Media', 0), errors='coerce').fillna(0)
                     
+                    # Fórmulas (Turc / Balance)
                     temp_est = np.maximum(5, 30 - (0.0065 * altitud_safe))
                     it_est = 300 + 25*temp_est + 0.05*(temp_est**3)
+                    
+                    # OJO: denom_est es una variable matemática, NO cambiar nombre.
                     denom_est = np.sqrt(0.9 + (lluvia_safe / (np.maximum(it_est, 0.1)/12))**2)
                     
                     etr_est = np.where(denom_est > 0, lluvia_safe / denom_est, 0)
                     etr_real = np.minimum(etr_est * kc_ponderado, lluvia_safe)
                     recarga_est = (lluvia_safe - etr_real).clip(lower=0) * ki_final * kg_factor
 
-                    # Construir DataFrame Final
+                    # Construir DataFrame Final para mostrar
+                    # Verificar si las columnas existen antes de crear el DF para evitar KeyErrors
+                    series_nombre = df_est_detalle[col_nombre] if col_nombre in df_est_detalle.columns else "Sin Nombre"
+                    series_mun = df_est_detalle[col_mun] if col_mun in df_est_detalle.columns else "N/A"
+
                     df_show = pd.DataFrame({
-                        'Estación': df_est_detalle[col_nombre],
-                        'Municipio': df_est_detalle[col_mun],
+                        'Estación': series_nombre,
+                        'Municipio': series_mun,
                         'Altitud': altitud_safe,
                         'Lluvia (mm/mes)': lluvia_safe,
                         'Recarga (mm/mes)': recarga_est
                     })
                     
-                    # Configuración Visual
+                    # Configuración Visual (Barra de progreso segura)
+                    # Calculamos el máximo seguro para que la barra no falle si los datos son 0
+                    max_val_lluvia = df_show['Lluvia (mm/mes)'].max()
+                    max_bar = float(max_val_lluvia) if pd.notnull(max_val_lluvia) and max_val_lluvia > 0 else 100.0
+
                     cfg_est = {
                         "Estación": st.column_config.TextColumn("Estación", width="large"),
                         "Municipio": st.column_config.TextColumn("Municipio", width="medium"),
                         "Altitud": st.column_config.NumberColumn(format="%.0f m"),
-                        "Lluvia (mm/mes)": st.column_config.ProgressColumn(format="%.0f", max_value=max(100, df_show['Lluvia (mm/mes)'].max())),
-                        "Recarga (mm/mes)": st.column_config.ProgressColumn(format="%.0f", max_value=max(100, df_show['Lluvia (mm/mes)'].max()))
+                        "Lluvia (mm/mes)": st.column_config.ProgressColumn(format="%.0f", max_value=max_bar),
+                        "Recarga (mm/mes)": st.column_config.ProgressColumn(format="%.0f", max_value=max_bar)
                     }
                     
-                    st.dataframe(df_show.sort_values('Municipio'), column_config=cfg_est, hide_index=True, use_container_width=True)
+                    # Ordenar si existe la columna Municipio
+                    if 'Municipio' in df_show.columns:
+                        df_show = df_show.sort_values('Municipio')
+                        
+                    st.dataframe(df_show, column_config=cfg_est, hide_index=True, use_container_width=True)
                 
                 else:
                     st.warning(f"⚠️ No se encontró columna de ID en los datos de lluvia. Columnas disponibles: {list(df_raw.columns)}")
                     st.dataframe(df_puntos, hide_index=True, use_container_width=True)
-            else:
-                st.info("No hay información de estaciones para mostrar.")
-
 
     # --- TAB 2: CONTEXTO (TOOLTIPS RICOS) ---
     with tab2:

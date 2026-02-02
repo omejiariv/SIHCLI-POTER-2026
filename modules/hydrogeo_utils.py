@@ -219,7 +219,7 @@ def obtener_estadisticas_estaciones(_engine, df_puntos_snapshot):
 
     # Cálculos Vectoriales
     p_anual = df_res['p_men'] * 12
-    t_media = np.maximum(5, 30 - 0.0065 * df_res['alt_est'].fillna(1500))
+    t_media = np.maximum(5, 30 - 0.0065 * df_res['altitud'].fillna(1500))
     l_t = 300 + 25*t_media + 0.05*(t_media**3)
     denom = np.sqrt(0.9 + (p_anual/l_t)**2)
     
