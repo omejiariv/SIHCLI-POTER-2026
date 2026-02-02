@@ -4,70 +4,64 @@ from sqlalchemy import text
 from modules.db_manager import get_engine
 import io
 
-st.set_page_config(page_title="Reparador Final", layout="wide")
-st.title("🛠️ Reparador de Coordenadas (Versión Definitiva)")
+st.set_page_config(page_title="Reparador Definitivo", layout="wide")
+st.title("🛠️ Reparador Final (Calibrado)")
 
-st.markdown("""
-### Instrucciones:
-1. Sube el archivo **mapaCVENSO.csv** (el que tiene separador `;` y minúsculas).
-2. Verifica que los selectores coincidan automáticamente.
-3. Dale al botón rojo.
-""")
+st.markdown("### Sube el archivo `mapaCVENSO.csv` para inyectar coordenadas.")
 
-uploaded_file = st.file_uploader("Sube el archivo CSV aquí:", type=["csv", "txt", "xlsx"])
+uploaded_file = st.file_uploader("Sube el CSV aquí:", type=["csv", "txt", "xlsx"])
 
 if uploaded_file:
     engine = get_engine()
     
-    # 1. LEER ARCHIVO (Prioridad: Punto y coma ';')
+    # 1. LEER ARCHIVO (Forzamos punto y coma que es tu formato)
     try:
         if uploaded_file.name.endswith('.xlsx'):
             df = pd.read_excel(uploaded_file)
         else:
-            # Intentamos primero con punto y coma (Tu formato)
-            try:
-                df = pd.read_csv(uploaded_file, sep=';', encoding='latin1')
-                if len(df.columns) < 2: # Si falló, probamos coma
-                    uploaded_file.seek(0)
-                    df = pd.read_csv(uploaded_file, sep=',', encoding='latin1')
-            except:
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8')
+            # Forzamos sep=';' y encoding 'latin1' (típico de archivos de gobierno/arcgis)
+            df = pd.read_csv(uploaded_file, sep=';', encoding='latin1')
             
-        st.success(f"✅ Archivo cargado. Filas: {len(df)}")
-        st.write("Vista previa:", df.head(3))
-        
-        # Normalizar nombres de columnas del DF (todo a minúsculas y sin espacios)
+        # Normalizamos columnas: quitamos espacios y pasamos a minúsculas
         df.columns = [c.strip().lower() for c in df.columns]
+        
+        st.success(f"✅ Archivo leído correctamente. Filas: {len(df)}")
+        st.write("Columnas encontradas:", df.columns.tolist())
+        
+        # 2. CONFIGURACIÓN AUTOMÁTICA (Con tus nombres exactos)
         cols = df.columns.tolist()
         
-        # 2. SELECTORES INTELIGENTES (Ajustados a tus nombres)
-        st.divider()
-        st.subheader("🔗 Mapeo de Columnas")
-        
-        def get_index(options, candidates):
-            for i, opt in enumerate(options):
-                if opt in candidates: return i # Coincidencia exacta
-                if any(c in opt for c in candidates): return i # Coincidencia parcial
+        # Función auxiliar para encontrar índice
+        def get_idx(candidates):
+            for i, col in enumerate(cols):
+                if col in candidates: return i
             return 0
 
+        st.divider()
         c1, c2, c3, c4 = st.columns(4)
         
         with c1:
-            # Buscamos 'id_estacion' o 'id_estacio'
-            col_id = st.selectbox("ID ESTACIÓN:", cols, index=get_index(cols, ['id_estacion', 'id_estacio']))
+            # Tu columna es 'id_estacion'
+            idx = get_idx(['id_estacion', 'id_estacio'])
+            col_id = st.selectbox("ID:", cols, index=idx)
+            
         with c2:
-            # Buscamos 'latitud'
-            col_lat = st.selectbox("LATITUD:", cols, index=get_index(cols, ['latitud']))
+            # Tu columna es 'latitud'
+            idx = get_idx(['latitud', 'lat'])
+            col_lat = st.selectbox("LAT:", cols, index=idx)
+            
         with c3:
-            # Buscamos 'longitud'
-            col_lon = st.selectbox("LONGITUD:", cols, index=get_index(cols, ['longitud']))
+            # Tu columna es 'longitud'
+            idx = get_idx(['longitud', 'lon'])
+            col_lon = st.selectbox("LON:", cols, index=idx)
+            
         with c4:
-            # Buscamos 'nom_est' o 'nombre'
-            col_nom = st.selectbox("NOMBRE:", ["(Ninguna)"] + cols, index=get_index(["(Ninguna)"] + cols, ['nom_est', 'nombre']) )
+            # Tu columna es 'nom_est'
+            idx = get_idx(['nom_est', 'nombre', 'estacion'])
+            col_nom = st.selectbox("NOMBRE:", cols, index=idx)
 
-        # 3. EJECUCIÓN
-        if st.button("🚀 REPARAR BASE DE DATOS AHORA"):
+        # 3. BOTÓN DE FUEGO
+        if st.button("🚀 EJECUTAR REPARACIÓN AHORA"):
             progress_bar = st.progress(0)
             status_text = st.empty()
             updated_count = 0
@@ -80,16 +74,14 @@ if uploaded_file:
                     total = len(df)
                     for i, row in df.iterrows():
                         try:
-                            # Datos Crudos
+                            # DATOS
                             sid = str(row[col_id]).strip()
-                            raw_lat = str(row[col_lat]).replace(',', '.')
-                            raw_lon = str(row[col_lon]).replace(',', '.')
                             
-                            # Conversión
-                            lat = float(raw_lat)
-                            lon = float(raw_lon)
+                            # Reemplazar comas por puntos si las hay (ej: 6,15 -> 6.15)
+                            lat = float(str(row[col_lat]).replace(',', '.'))
+                            lon = float(str(row[col_lon]).replace(',', '.'))
                             
-                            # Corrección de Altitud si existe
+                            # Altitud (opcional, buscamos 'altitud' o 'ah')
                             alt = 0.0
                             if 'altitud' in df.columns:
                                 try: alt = float(str(row['altitud']).replace(',', '.'))
@@ -98,7 +90,7 @@ if uploaded_file:
                                 try: alt = float(str(row['ah']).replace(',', '.'))
                                 except: pass
 
-                            # UPDATE
+                            # UPDATE (Actualizar coordenadas de estaciones existentes)
                             stmt_upd = text("""
                                 UPDATE estaciones 
                                 SET latitud = :lat, longitud = :lon, altitud = :alt
@@ -109,43 +101,39 @@ if uploaded_file:
                             if res.rowcount > 0:
                                 updated_count += 1
                             else:
-                                # INSERT (Si no existe)
-                                nom = f"Estación {sid}"
-                                if col_nom != "(Ninguna)":
-                                    nom = str(row[col_nom]).strip()
-                                
+                                # INSERT (Crear si no existe)
+                                nom = str(row[col_nom]).strip()
                                 stmt_ins = text("""
                                     INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud)
                                     VALUES (:id, :nom, :lat, :lon, :alt)
-                                    ON CONFLICT (id_estacion) DO UPDATE 
-                                    SET latitud=EXCLUDED.latitud, longitud=EXCLUDED.longitud
+                                    ON CONFLICT (id_estacion) DO NOTHING
                                 """)
                                 conn.execute(stmt_ins, {"id": sid, "nom": nom, "lat": lat, "lon": lon, "alt": alt})
                                 inserted_count += 1
                             
                         except Exception:
                             errors += 1
-                            
+                        
                         if i % 50 == 0:
-                            progress_bar.progress(min(i / total, 1.0))
-                            status_text.text(f"Procesando {i}/{total}...")
-                    
+                            progress_bar.progress(min(i/total, 1.0))
+                            status_text.text(f"Procesando {i}...")
+
                     trans.commit()
                     progress_bar.progress(1.0)
                     st.balloons()
                     
                     st.success(f"""
-                    🎉 **PROCESO FINALIZADO**
-                    - Filas en archivo: {total}
-                    - Actualizadas en BD: {updated_count}
-                    - Insertadas nuevas: {inserted_count}
+                    🎉 **¡ÉXITO TOTAL!**
+                    - Estaciones actualizadas (coordenadas corregidas): **{updated_count}**
+                    - Estaciones nuevas creadas: **{inserted_count}**
+                    - Total procesado: **{total}**
                     """)
                     
-                    st.info("👉 VE AHORA A 'CLIMA E HIDROLOGÍA'.")
+                    st.info("👉 Ve a 'Clima e Hidrología' y recarga la página. ¡El mapa DEBE salir!")
                     
                 except Exception as e:
                     trans.rollback()
-                    st.error(f"Error crítico: {e}")
+                    st.error(f"Error SQL: {e}")
 
     except Exception as e:
-        st.error(f"Error leyendo el archivo: {e}")
+        st.error(f"Error leyendo archivo: {e}")
