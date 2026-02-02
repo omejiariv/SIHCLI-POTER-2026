@@ -111,7 +111,7 @@ def load_data_from_db():
 
         # B. Lluvia
         q_rain = text("""
-            SELECT p.id_estacion_fk, e.nombre, p.fecha, p.precipitation 
+            SELECT p.id_estacion_fk, e.nombre, p.fecha, p.valor 
             FROM precipitacion_mensual p 
             JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
         """)
@@ -620,9 +620,9 @@ def main():
 
                     q_iso = text(f"""
                         SELECT e.id_estacion, e.nombre, ST_X(e.geom::geometry) as lon, ST_Y(e.geom::geometry) as lat,
-                               SUM(p.precipitation) as valor
-                        FROM precipitacion_mensual p
-                        JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+                               SUM(p.valor) as valor
+                        FROM precipitacion p
+                        JOIN estaciones e ON p.id_estacion = e.id_estacion
                         WHERE extract(year from p.fecha) = :anio
                         AND e.id_estacion IN {ids_sql} 
                         GROUP BY e.id_estacion, e.nombre, e.geom

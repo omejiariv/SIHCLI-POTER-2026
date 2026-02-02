@@ -337,8 +337,8 @@ if len(df_filtered_meta) > 0:
             df_agg = pd.DataFrame()
             
             q_raw = text(f"""
-                SELECT p.id_estacion_fk, p.fecha_mes_año, p.precipitation
-                FROM precipitacion_mensual p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+                SELECT p.id_estacion, p.fecha, p.valor
+                FROM precipitacion p JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
                 WHERE ST_X(e.geom::geometry) BETWEEN :mx AND :Mx AND ST_Y(e.geom::geometry) BETWEEN :my AND :My
             """)
             df_raw = pd.read_sql(q_raw, engine, params={"mx":q_minx, "my":q_miny, "Mx":q_maxx, "My":q_maxy})
