@@ -774,7 +774,7 @@ if gdf_zona is not None:
                     fill_color='white',
                     fill_opacity=1.0,
                     weight=1,
-                    tooltip=f"{r['nombret']}: {r['recarga_calc']*12:,.0f} mm",
+                    tooltip=f"{r['nombre']}: {r['recarga_calc']*12:,.0f} mm",
                     name="Estaciones"
                 ).add_to(m_iso)
 
