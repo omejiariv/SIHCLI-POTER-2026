@@ -9,14 +9,13 @@ from modules.config import Config
 
 def render_selector_espacial():
     """
-    Selector espacial UNIFICADO, BLINDADO y con AUTO-CORRECCIÓN de Coordenadas.
-    Retorna: ids_estaciones, nombre_zona, altitud_ref, gdf_zona_seleccionada
+    Selector espacial con opción manual de columna de nombres.
     """
     engine = db_manager.get_engine()
     
     st.sidebar.header("📍 Filtros Geográficos")
     
-    # --- 1. MODO DE AGREGACIÓN ---
+    # 1. MODO DE AGREGACIÓN
     modo = st.sidebar.radio(
         "Nivel de Agregación:",
         ["Por Cuenca", "Por Municipio", "Departamento (Antioquia)"],
@@ -31,12 +30,15 @@ def render_selector_espacial():
         # --- A. POR CUENCA ---
         if modo == "Por Cuenca":
             try:
-                # Leemos la geometría
                 gdf_cuencas = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry")
                 
-                # Detectar columna de nombre (priorizamos tus nombres comunes)
-                posibles_nombres = ['subc_lbl', 'nombre', 'nombre_cuenca', 'cuenca']
-                col_nom = next((c for c in gdf_cuencas.columns if c in posibles_nombres), None)
+                # --- RECUPERADO: Selector de Columna de Nombres ---
+                cols_texto = [c for c in gdf_cuencas.columns if c not in ['geometry', 'gid', 'objectid']]
+                default_idx = 0
+                if 'subc_lbl' in cols_texto: default_idx = cols_texto.index('subc_lbl')
+                elif 'nombre' in cols_texto: default_idx = cols_texto.index('nombre')
+                
+                col_nom = st.sidebar.selectbox("📂 Columna de Nombres:", cols_texto, index=default_idx)
                 
                 if col_nom:
                     lista = sorted(gdf_cuencas[col_nom].astype(str).unique().tolist())
@@ -44,8 +46,6 @@ def render_selector_espacial():
                     if sel:
                         nombre_zona = sel
                         gdf_zona = gdf_cuencas[gdf_cuencas[col_nom] == sel]
-                else:
-                    st.sidebar.error(f"No encontré columna de nombre en cuencas. Columnas: {gdf_cuencas.columns.tolist()}")
 
             except Exception as e:
                 st.sidebar.warning(f"Error cargando cuencas: {e}")
@@ -56,59 +56,46 @@ def render_selector_espacial():
             try:
                 gdf_mun = gpd.read_postgis("SELECT * FROM municipios", engine, geom_col="geometry")
                 
-                posibles_nombres = ['mpio_cnmbr', 'nombre', 'municipio', 'nombre_municipio']
-                col_nom = next((c for c in gdf_mun.columns if c in posibles_nombres), None)
+                cols_texto = [c for c in gdf_mun.columns if c not in ['geometry', 'gid']]
+                default_idx = 0
+                if 'mpio_cnmbr' in cols_texto: default_idx = cols_texto.index('mpio_cnmbr')
+                
+                col_nom = st.sidebar.selectbox("📂 Columna de Nombres:", cols_texto, index=default_idx)
                 
                 if col_nom:
                     lista = sorted(gdf_mun[col_nom].astype(str).unique().tolist())
                     sel = st.sidebar.selectbox("Seleccione Municipio:", lista)
                     if sel:
                         nombre_zona = sel
+                        gdf_mun = gdf_mun.to_crs("EPSG:4326")
                         gdf_zona = gdf_mun[gdf_mun[col_nom] == sel]
             except:
-                st.sidebar.warning("Tabla 'municipios' no disponible o con error.")
+                st.sidebar.warning("Error en tabla municipios.")
 
         # --- C. DEPARTAMENTO ---
         else:
             from shapely.geometry import box
-            # Caja aproximada de Antioquia en Lat/Lon
             gdf_zona = gpd.GeoDataFrame(
                 {'nombre': ['Antioquia']}, 
                 geometry=[box(-77.5, 5.0, -73.5, 9.0)], 
                 crs="EPSG:4326"
             )
 
-        # --- 2. FILTRAR ESTACIONES (EL CEREBRO DEL MAPA) ---
+        # --- 2. FILTRAR ESTACIONES ---
         ids_estaciones = []
         if gdf_zona is not None and not gdf_zona.empty:
             
-            # --- AUTO-CORRECCIÓN DE COORDENADAS (CRÍTICO) ---
-            # Si las coordenadas son gigantes (ej: 800,000), es Magna Sirgas. Hay que pasar a Lat/Lon.
-            bounds = gdf_zona.total_bounds
-            if abs(bounds[0]) > 180: 
-                # st.sidebar.info("🔄 Detecté coordenadas planas. Convirtiendo a GPS (Lat/Lon)...")
-                try:
-                    # Asumimos Magna Sirgas origen Nacional (EPSG:3116) o Bogotá (EPSG:21818)
-                    # EPSG:3116 es el estándar moderno para Colombia.
-                    gdf_zona = gdf_zona.set_crs("EPSG:3116", allow_override=True)
-                    gdf_zona = gdf_zona.to_crs("EPSG:4326")
-                except Exception as e:
-                    st.sidebar.error(f"Error reproyectando: {e}")
-            else:
-                # Si ya son pequeñas, aseguramos que sepa que es 4326
-                if not gdf_zona.crs:
-                    gdf_zona = gdf_zona.set_crs("EPSG:4326")
-
-            # Slider de Buffer (Radio de Búsqueda)
+            # Auto-corrección de CRS (Metros a Grados)
+            if gdf_zona.crs and gdf_zona.crs.to_string() != "EPSG:4326":
+                 gdf_zona = gdf_zona.to_crs("EPSG:4326")
+            
+            # Slider de Buffer
             buff_km = st.sidebar.slider("Radio Buffer (km):", 0, 50, 5)
-            # Convertimos km a grados aprox (1 grado ~ 111km)
             buff_deg = buff_km / 111.0 
             
-            # Recalcular limites con el buffer
             minx, miny, maxx, maxy = gdf_zona.total_bounds
             
-            # CONSULTA SQL GEOGRÁFICA
-            # Buscamos estaciones dentro del cuadro delimitador + buffer
+            # Consulta SQL optimizada
             q_est = text(f"""
                 SELECT id_estacion, nombre, latitud, longitud, altitud 
                 FROM estaciones 
@@ -119,28 +106,27 @@ def render_selector_espacial():
             df_est = pd.read_sql(q_est, engine)
             
             if not df_est.empty:
-                # Filtro Fino: Usamos geometría exacta (Punto dentro de Polígono)
                 gdf_ptos = gpd.GeoDataFrame(
                     df_est, 
                     geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud), 
                     crs="EPSG:4326"
                 )
                 
-                # Aplicamos buffer a la geometría de la zona para el filtro exacto
-                zona_buffered = gdf_zona.to_crs("EPSG:3116").buffer(buff_km * 1000).to_crs("EPSG:4326").unary_union
+                # Spatial Join
+                zona_buffered = gdf_zona.copy()
+                if buff_deg > 0:
+                    zona_buffered['geometry'] = zona_buffered.geometry.buffer(buff_deg)
                 
-                est_in = gdf_ptos[gdf_ptos.geometry.within(zona_buffered)]
+                est_in = gdf_ptos[gdf_ptos.geometry.within(zona_buffered.unary_union)]
                 
                 if not est_in.empty:
                     ids_estaciones = est_in['id_estacion'].astype(str).str.strip().tolist()
                     altitud_ref = est_in['altitud'].mean()
                     st.sidebar.success(f"📍 Estaciones encontradas: {len(ids_estaciones)}")
                 else:
-                    st.sidebar.warning("Estaciones cercanas, pero fuera del polígono exacto.")
+                    st.sidebar.warning("0 estaciones en el área exacta.")
             else:
-                st.sidebar.warning(f"No hay estaciones en esta zona.")
-                # Debug (Opcional): Mostrar qué buscó
-                # st.sidebar.code(f"Buscando Lon: {minx:.2f} a {maxx:.2f}")
+                st.sidebar.warning("0 estaciones en el cuadrante.")
 
     except Exception as e:
         st.sidebar.error(f"Error selector: {e}")
