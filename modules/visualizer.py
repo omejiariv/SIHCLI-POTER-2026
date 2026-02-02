@@ -96,12 +96,23 @@ except ImportError:
         return None
 
 def get_safe_cols(df):
-    """Detecta lat/lon/nombre en el dataframe."""
-    c_lat = next((c for c in ['latitud', Config.LATITUDE_COL, 'Latitud_geo', 'lat'] if c in df.columns), None)
-    c_lon = next((c for c in ['longitud', Config.LONGITUDE_COL, 'Longitud_geo', 'lon'] if c in df.columns), None)
-    c_nom = next((c for c in ['nombre', Config.STATION_NAME_COL, 'nom_est'] if c in df.columns), None)
+    """
+    Función PARCHE para compatibilidad. 
+    Detecta si el DF usa nombres nuevos (latitud, nombre) o viejos (Latitud_geo, Nom_Est).
+    """
+    if df is None or df.empty: return None, None, None
+    
+    # 1. Detectar Latitud
+    c_lat = next((c for c in ['latitud', 'Latitud', 'Latitud_geo', 'lat', 'LATITUD'] if c in df.columns), None)
+    
+    # 2. Detectar Longitud
+    c_lon = next((c for c in ['longitud', 'Longitud', 'Longitud_geo', 'lon', 'LONGITUD'] if c in df.columns), None)
+    
+    # 3. Detectar Nombre
+    c_nom = next((c for c in ['nombre', 'Nombre', 'Nom_Est', 'station_name', 'ESTACION'] if c in df.columns), None)
+    
     return c_lat, c_lon, c_nom
-
+# ------------------------------------------------
 
 # PESTAÑA DE BIENVENIDA (PÁGINA DE INICIO RENOVADA)
 # ==============================================================================
@@ -4459,122 +4470,142 @@ def display_life_zones_tab(
                     except Exception as e:
                         st.error(f"Error visualizando: {e}")
 
-    # --- PESTAÑA 2: PUNTOS (TU CÓDIGO ORIGINAL) ---
+    # --- PESTAÑA 2: PUNTOS (ESTACIONES) ---
     with tab_puntos:
         df_anual = kwargs.get("df_anual_melted")
-        if df_anual is None or gdf_stations is None:
-            st.warning("Datos insuficientes para el análisis de estaciones.")
+        
+        # Validación inicial
+        if df_anual is None or gdf_stations is None or gdf_stations.empty:
+            st.warning("⚠️ Datos insuficientes para el análisis de estaciones.")
         else:
             try:
-                # Usamos las funciones del backend para consistencia
+                # 1. PREPARACIÓN DE COORDENADAS (PARCHE DE COMPATIBILIDAD)
+                # Plotly prefiere 'latitude'/'longitude'. La BD nueva trae 'latitud'/'longitud'.
+                # Aseguramos que existan las columnas en inglés para el merge y el mapa.
+                gdf_plot = gdf_stations.copy()
+                
+                # Mapeo Latitud
+                if 'latitude' not in gdf_plot.columns:
+                    if 'latitud' in gdf_plot.columns: gdf_plot['latitude'] = gdf_plot['latitud']
+                    elif 'geometry' in gdf_plot.columns: gdf_plot['latitude'] = gdf_plot.geometry.y
+                
+                # Mapeo Longitud
+                if 'longitude' not in gdf_plot.columns:
+                    if 'longitud' in gdf_plot.columns: gdf_plot['longitude'] = gdf_plot['longitud']
+                    elif 'geometry' in gdf_plot.columns: gdf_plot['longitude'] = gdf_plot.geometry.x
+
+                # 2. CÁLCULO DE PRECIPITACIÓN MEDIA
+                # Agrupamos por estación para obtener el promedio histórico
                 ppt_media = (
                     df_anual.groupby(Config.STATION_NAME_COL)[Config.PRECIPITATION_COL]
                     .mean()
                     .reset_index()
                 )
-                if Config.STATION_NAME_COL not in ppt_media.columns:
-                    ppt_media = ppt_media.reset_index()
 
+                # 3. UNIÓN DE DATOS (MERGE)
+                # Unimos la lluvia media con los metadatos (altura y coordenadas)
+                cols_to_merge = [Config.STATION_NAME_COL, Config.ALTITUDE_COL, "latitude", "longitude"]
+                # Filtramos solo las columnas que realmente existen para evitar KeyError
+                cols_available = [c for c in cols_to_merge if c in gdf_plot.columns]
+                
                 merged = pd.merge(
                     ppt_media,
-                    gdf_stations[
-                        [
-                            Config.STATION_NAME_COL,
-                            Config.ALTITUDE_COL,
-                            "latitude",
-                            "longitude",
-                        ]
-                    ],
+                    gdf_plot[cols_available],
                     on=Config.STATION_NAME_COL,
+                    how='inner'
                 )
 
+                # 4. CLASIFICACIÓN HOLDRIDGE PUNTUAL
                 def get_zone_data(row):
-                    z_id = lz.classify_life_zone_alt_ppt(
-                        row[Config.ALTITUDE_COL], row[Config.PRECIPITATION_COL]
-                    )
-                    return pd.Series(
-                        [
-                            lz.holdridge_int_to_name_simplified.get(
-                                z_id, "Desconocido"
-                            ),
-                            lz.holdridge_colors.get(z_id, "#808080"),
-                        ]
-                    )
+                    # Usamos .get() para evitar errores si falta la columna
+                    alt = row.get(Config.ALTITUDE_COL, 0)
+                    ppt = row.get(Config.PRECIPITATION_COL, 0)
+                    
+                    # Clasificar
+                    z_id = lz.classify_life_zone_alt_ppt(alt, ppt)
+                    
+                    return pd.Series([
+                        lz.holdridge_int_to_name_simplified.get(z_id, "Desconocido"),
+                        lz.holdridge_colors.get(z_id, "#808080")
+                    ])
 
-                merged[["Zona de Vida", "Color"]] = merged.apply(get_zone_data, axis=1)
+                if not merged.empty:
+                    merged[["Zona de Vida", "Color"]] = merged.apply(get_zone_data, axis=1)
 
-                fig_map = px.scatter_mapbox(
-                    merged,
-                    lat="latitude",
-                    lon="longitude",
-                    color="Zona de Vida",
-                    size=Config.PRECIPITATION_COL,
-                    hover_name=Config.STATION_NAME_COL,
-                    zoom=8,
-                    mapbox_style="carto-positron",
-                    title="Clasificación en Estaciones",
-                )
-                if user_loc:
-                    fig_map.add_trace(
-                        go.Scattermapbox(
+                    # 5. MAPA INTERACTIVO
+                    fig_map = px.scatter_mapbox(
+                        merged,
+                        lat="latitude",
+                        lon="longitude",
+                        color="Zona de Vida",
+                        size=Config.PRECIPITATION_COL,
+                        hover_name=Config.STATION_NAME_COL,
+                        hover_data={Config.ALTITUDE_COL: True, Config.PRECIPITATION_COL: ':.1f'},
+                        zoom=8,
+                        mapbox_style="carto-positron",
+                        title="Clasificación Bioclimática por Estación",
+                        color_discrete_map={v: k for k, v in lz.holdridge_colors.items()} # Intento de mapeo inverso si es necesario, sino Plotly asigna auto
+                    )
+                    
+                    # Añadir ubicación del usuario si existe
+                    if user_loc:
+                        fig_map.add_trace(go.Scattermapbox(
                             lat=[user_loc[0]],
                             lon=[user_loc[1]],
                             mode="markers+text",
-                            marker=go.scattermapbox.Marker(
-                                size=12, color="black", symbol="star"
-                            ),
+                            marker=go.scattermapbox.Marker(size=12, color="black", symbol="star"),
                             text=["📍 TÚ"],
                             textposition="top center",
-                        )
-                    )
+                            name="Tu Ubicación"
+                        ))
 
-                st.plotly_chart(fig_map, use_container_width=True)
-                st.dataframe(
-                    merged[
-                        [
-                            Config.STATION_NAME_COL,
-                            "Zona de Vida",
-                            Config.PRECIPITATION_COL,
-                            Config.ALTITUDE_COL,
-                        ]
-                    ],
-                )
+                    st.plotly_chart(fig_map, use_container_width=True)
+
+                    # Tabla de Resumen
+                    cols_table = [Config.STATION_NAME_COL, "Zona de Vida", Config.PRECIPITATION_COL, Config.ALTITUDE_COL]
+                    st.dataframe(merged[[c for c in cols_table if c in merged.columns]])
+                
+                else:
+                    st.warning("No se pudieron cruzar los datos de lluvia con las coordenadas de las estaciones.")
+
             except Exception as e:
-                st.error(f"Error en puntos: {e}")
+                st.error(f"Error generando análisis de puntos: {e}")
 
-    # --- PESTAÑA 3: VECTORIAL (NUEVA FUNCIONALIDAD) ---
+    # --- PESTAÑA 3: VECTORIAL (TU CÓDIGO ORIGINAL - FUNCIONAL) ---
     with tab_vector:
-        st.info(
-            "🛠️ Herramienta para convertir el mapa raster generado a polígonos (GeoJSON) para uso en SIG."
-        )
+        st.info("🛠️ Herramienta para convertir el mapa raster generado a polígonos (GeoJSON) para uso en SIG.")
 
-        if st.session_state.lz_raster_result is None:
+        # Verificamos si el raster existe en session_state (generado en Pestaña 1)
+        if "lz_raster_result" not in st.session_state or st.session_state.lz_raster_result is None:
             st.warning("⚠️ Primero debes generar el mapa en la pestaña 'Mapa Raster'.")
         else:
             if st.button("Generar Polígonos (Vectorizar)"):
                 with st.spinner("Convirtiendo píxeles a vectores..."):
-                    gdf_vec = lz.vectorize_raster_to_gdf(
-                        st.session_state.lz_raster_result,
-                        st.session_state.lz_profile["transform"],
-                        st.session_state.lz_profile["crs"],
-                    )
-
-                    if not gdf_vec.empty:
-                        st.success(
-                            f"Vectorización completada: {len(gdf_vec)} polígonos."
+                    try:
+                        gdf_vec = lz.vectorize_raster_to_gdf(
+                            st.session_state.lz_raster_result,
+                            st.session_state.lz_profile["transform"],
+                            st.session_state.lz_profile["crs"],
                         )
-                        st.dataframe(gdf_vec.drop(columns="geometry").head())
 
-                        geojson_data = gdf_vec.to_json()
-                        st.download_button(
-                            label="📥 Descargar GeoJSON",
-                            data=geojson_data,
-                            file_name="zonas_vida_vectorial.geojson",
-                            mime="application/json",
-                        )
-                    else:
-                        st.error("No se generaron polígonos válidos.")
+                        if not gdf_vec.empty:
+                            st.success(f"✅ Vectorización completada: {len(gdf_vec)} polígonos.")
+                            
+                            # Mostrar previa
+                            st.dataframe(gdf_vec.drop(columns="geometry").head())
 
+                            # Botón de Descarga
+                            geojson_data = gdf_vec.to_json()
+                            st.download_button(
+                                label="📥 Descargar GeoJSON",
+                                data=geojson_data,
+                                file_name="zonas_vida_vectorial.geojson",
+                                mime="application/json",
+                            )
+                        else:
+                            st.error("El proceso no generó polígonos válidos.")
+                    except Exception as e:
+                        st.error(f"Error en vectorización: {e}")
 
 def display_drought_analysis_tab(df_long, gdf_stations, **kwargs):
     """

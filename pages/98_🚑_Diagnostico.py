@@ -82,3 +82,44 @@ try:
 
 except Exception as e:
     st.error(f"Error técnico en el cruce: {e}")
+
+
+import streamlit as st
+import pandas as pd
+from sqlalchemy import text
+from modules.db_manager import get_engine
+
+st.set_page_config(page_title="Diagnóstico Coordenadas", layout="wide")
+st.title("🕵️‍♂️ Diagnóstico de Coordenadas")
+
+engine = get_engine()
+
+st.subheader("🔎 Revisión de Latitud y Longitud")
+try:
+    # Traemos una muestra de coordenadas
+    q = "SELECT id_estacion, nombre, latitud, longitud FROM estaciones LIMIT 10"
+    df = pd.read_sql(q, engine)
+    
+    st.dataframe(df)
+    
+    if not df.empty:
+        lat_val = df.iloc[0]['latitud']
+        lon_val = df.iloc[0]['longitud']
+        
+        c1, c2, c3 = st.columns(3)
+        c1.info(f"Tipo Latitud: {type(lat_val)}")
+        c2.info(f"Valor Lat: {lat_val}")
+        c3.info(f"Valor Lon: {lon_val}")
+        
+        # Análisis
+        if isinstance(lat_val, str):
+            st.error("🚨 ¡ERROR CRÍTICO! Las coordenadas son TEXTO. Deben ser NÚMEROS.")
+            if "," in str(lat_val):
+                st.warning("💡 Pista: Tienen comas (,) en vez de puntos (.).")
+        elif lat_val > 1000:
+            st.warning("⚠️ Parece que son Coordenadas Planas (Magna-Sirgas). El mapa web espera Geográficas (Lat ~6.0, Lon ~-75.0).")
+        else:
+            st.success("✅ Parecen coordenadas Geográficas numéricas válidas.")
+            
+except Exception as e:
+    st.error(f"Error: {e}")
