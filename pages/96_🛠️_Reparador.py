@@ -1,5 +1,3 @@
-# pages/96_🛠️_Reparador.py
-
 import streamlit as st
 import geopandas as gpd
 import pandas as pd
@@ -8,97 +6,123 @@ from modules.db_manager import get_engine
 import tempfile
 import os
 
-st.set_page_config(page_title="Reparador de Coordenadas", layout="wide")
-st.title("🛠️ Reparador de Coordenadas Maestro")
+st.set_page_config(page_title="Reparador Blindado", layout="wide")
+st.title("🛠️ Reparador de Coordenadas (Modo Seguro)")
 
-st.markdown("""
-Esta herramienta tomará el archivo **mapaCVENSO.zip** (Shapefile), extraerá las coordenadas 
-y actualizará la Base de Datos PostgreSQL para que los mapas funcionen.
-""")
-
-uploaded_file = st.file_uploader("Sube el archivo mapaCVENSO.zip aquí:", type=["zip"])
+uploaded_file = st.file_uploader("Sube el archivo mapaCVENSO.zip nuevamente:", type=["zip"])
 
 if uploaded_file:
     with tempfile.TemporaryDirectory() as tmp_dir:
-        # 1. Guardar y descomprimir el ZIP
+        # 1. Guardar ZIP
         zip_path = os.path.join(tmp_dir, "archivo.zip")
         with open(zip_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         
-        # 2. Leer con GeoPandas
         try:
+            # 2. Leer archivo
             gdf = gpd.read_file(zip_path)
-            st.success(f"✅ Archivo leído correctamente. Se encontraron {len(gdf)} estaciones.")
-            st.write("Vista previa de los datos del archivo:", gdf.head())
             
-            # 3. Preparar datos para la BD
-            # Mapeamos los nombres del Shapefile a los de la BD
-            # Shapefile: Id_estacio, Latitud, Longitud, Nom_Est, Altitud (o AH)
-            # BD: id_estacion, latitud, longitud, nombre, altitud
+            # --- CORRECCIÓN DE SISTEMA DE COORDENADAS ---
+            # Si el mapa viene en coordenadas planas (metros), lo pasamos a Geográficas (Lat/Lon)
+            if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
+                st.info(f"🔄 Convirtiendo de {gdf.crs} a EPSG:4326 (Lat/Lon)...")
+                gdf = gdf.to_crs("EPSG:4326")
             
+            st.success(f"✅ Archivo leído. Filas encontradas: {len(gdf)}")
+            st.write("Columnas detectadas:", gdf.columns.tolist())
+            
+            # 3. Detectar ID y Nombre
+            cols = gdf.columns
+            # Buscamos ID
+            c_id = next((c for c in ['Id_estacio', 'ID_ESTACIO', 'id_estacion', 'CODIGO'] if c in cols), None)
+            # Buscamos Nombre
+            c_nom = next((c for c in ['Nom_Est', 'NOM_EST', 'nombre', 'NOMBRE'] if c in cols), None)
+            # Buscamos Altitud (opcional)
+            c_alt = next((c for c in ['Altitud', 'AH', 'altitud', 'ELEV'] if c in cols), None)
+
+            if not c_id:
+                st.error("❌ No encuentro la columna del ID de la estación (Id_estacio).")
+                st.stop()
+                
+            st.info(f"📝 Usando columna ID: '{c_id}' | Nombre: '{c_nom}'")
+
+            # 4. Inyección a BD
             engine = get_engine()
             progress_bar = st.progress(0)
             status_text = st.empty()
-            
             updated_count = 0
+            errores = 0
             
-            # Detectar nombres de columnas en el Shapefile (a veces cambian mayúsculas/minúsculas)
-            cols = gdf.columns
-            c_id = next((c for c in ['Id_estacio', 'ID_ESTACIO', 'id_estacion'] if c in cols), None)
-            c_lat = next((c for c in ['Latitud', 'LATITUD', 'latitud'] if c in cols), None)
-            c_lon = next((c for c in ['Longitud', 'LONGITUD', 'longitud'] if c in cols), None)
-            c_nom = next((c for c in ['Nom_Est', 'NOM_EST', 'nombre'] if c in cols), None)
-            c_alt = next((c for c in ['Altitud', 'AH', 'altitud'] if c in cols), None) # A veces es AH (Altura)
-
-            if not c_id or not c_lat or not c_lon:
-                st.error("❌ No se encontraron las columnas clave (Id, Lat, Lon) en el Shapefile.")
-                st.stop()
-
-            # 4. Inyección a la Base de Datos
             with engine.connect() as conn:
                 trans = conn.begin()
                 try:
                     total = len(gdf)
                     for i, row in gdf.iterrows():
-                        est_id = str(row[c_id]).strip()
-                        lat = float(row[c_lat])
-                        lon = float(row[c_lon])
-                        nom = str(row[c_nom]).strip() if c_nom else None
-                        alt = float(row[c_alt]) if c_alt else 0.0
-                        
-                        # SQL de actualización (Upsert)
-                        # Si existe, actualiza coords. Si no, crea la estación.
-                        stmt = text("""
-                            INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud)
-                            VALUES (:id, :nom, :lat, :lon, :alt)
-                            ON CONFLICT (id_estacion) 
-                            DO UPDATE SET 
-                                latitud = EXCLUDED.latitud,
-                                longitud = EXCLUDED.longitud,
-                                nombre = COALESCE(EXCLUDED.nombre, estaciones.nombre),
-                                altitud = COALESCE(EXCLUDED.altitud, estaciones.altitud);
-                        """)
-                        
-                        conn.execute(stmt, {
-                            "id": est_id, "nom": nom, "lat": lat, "lon": lon, "alt": alt
-                        })
-                        
-                        updated_count += 1
-                        if i % 10 == 0:
-                            progress = min(i / total, 1.0)
-                            progress_bar.progress(progress)
-                            status_text.text(f"Procesando estación {est_id}...")
+                        try:
+                            # --- EXTRACCIÓN SEGURA DE DATOS ---
+                            
+                            # 1. ID (Limpieza agresiva)
+                            est_id = str(row[c_id]).strip()
+                            
+                            # 2. COORDENADAS (Desde la geometría, NO desde columnas de texto)
+                            # Esto evita el error de texto en columnas numéricas
+                            if row.geometry:
+                                centroid = row.geometry.centroid
+                                lat = centroid.y
+                                lon = centroid.x
+                            else:
+                                continue # Si no tiene geometría, saltamos
+                            
+                            # 3. NOMBRE
+                            nom = str(row[c_nom]).strip() if c_nom else "Estacion_" + est_id
+                            
+                            # 4. ALTITUD (Con manejo de error "Caribe")
+                            alt = 0.0
+                            if c_alt:
+                                try:
+                                    val = row[c_alt]
+                                    # Solo convertimos si es numérico
+                                    alt = float(val)
+                                except:
+                                    alt = 0.0 # Si falla (ej: es texto), ponemos 0
+                            
+                            # --- INSERT / UPDATE ---
+                            stmt = text("""
+                                INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud)
+                                VALUES (:id, :nom, :lat, :lon, :alt)
+                                ON CONFLICT (id_estacion) 
+                                DO UPDATE SET 
+                                    latitud = EXCLUDED.latitud,
+                                    longitud = EXCLUDED.longitud,
+                                    altitud = CASE WHEN estaciones.altitud = 0 THEN EXCLUDED.altitud ELSE estaciones.altitud END;
+                            """)
+                            
+                            conn.execute(stmt, {
+                                "id": est_id, "nom": nom, "lat": lat, "lon": lon, "alt": alt
+                            })
+                            updated_count += 1
+                            
+                        except Exception as e_row:
+                            errores += 1
+                            # print(f"Error en fila {i}: {e_row}")
+                            continue
+
+                        if i % 50 == 0:
+                            progress_bar.progress(min(i / total, 1.0))
+                            status_text.text(f"Procesando: {est_id}")
                     
                     trans.commit()
                     progress_bar.progress(1.0)
                     st.balloons()
-                    st.success(f"🎉 ¡ÉXITO! Se han actualizado/creado {updated_count} estaciones con coordenadas.")
+                    st.success(f"🎉 PROCESO TERMINADO: {updated_count} estaciones actualizadas.")
+                    if errores > 0:
+                        st.warning(f"⚠️ Hubo {errores} filas que no se pudieron leer (probablemente datos vacíos), pero la mayoría cargó.")
                     
-                    st.info("👉 Ahora ve a la página 'Clima e Hidrología' y recarga. ¡El mapa debería funcionar!")
-                    
+                    st.info("👉 Vuelve a la página 'Clima e Hidrología' y recarga. ¡Debería funcionar!")
+
                 except Exception as e:
                     trans.rollback()
-                    st.error(f"Error en la actualización: {e}")
-                    
+                    st.error(f"Error crítico en base de datos: {e}")
+
         except Exception as e:
-            st.error(f"Error leyendo el Shapefile: {e}")
+            st.error(f"Error abriendo el ZIP: {e}")
