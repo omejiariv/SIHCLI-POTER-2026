@@ -72,6 +72,7 @@ try:
                                   classify_holdridge_point,
                                   estimate_temperature,
                                   generate_life_zone_raster)
+
 except ImportError:
     # Dummies para evitar crash visual si falta backend
     def calculate_morphometry(g):
@@ -93,6 +94,13 @@ except ImportError:
 
     def calculate_hypsometric_curve(g):
         return None
+
+def get_safe_cols(df):
+    """Detecta lat/lon/nombre en el dataframe."""
+    c_lat = next((c for c in ['latitud', Config.LATITUDE_COL, 'Latitud_geo', 'lat'] if c in df.columns), None)
+    c_lon = next((c for c in ['longitud', Config.LONGITUDE_COL, 'Longitud_geo', 'lon'] if c in df.columns), None)
+    c_nom = next((c for c in ['nombre', Config.STATION_NAME_COL, 'nom_est'] if c in df.columns), None)
+    return c_lat, c_lon, c_nom
 
 
 # PESTAÑA DE BIENVENIDA (PÁGINA DE INICIO RENOVADA)
