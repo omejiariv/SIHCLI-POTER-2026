@@ -29,54 +29,11 @@ def complete_series(df):
         df[Config.PRECIPITATION_COL] = df[Config.PRECIPITATION_COL].interpolate(method="linear", limit_direction="both")
     return df
 
-# --- FUNCIONES SQL OPTIMIZADAS ---
-
-def get_lista_estaciones_simple():
-    """Trae lista para el selector usando la TABLA NUEVA 'estaciones'."""
-    engine = get_engine()
-    if not engine: return []
-    try:
-        with engine.connect() as conn:
-            # CAMBIO: Usamos 'nombre' en lugar de 'nom_est'
-            query = text("SELECT id_estacion, nombre, municipio FROM estaciones ORDER BY nombre ASC")
-            df = pd.read_sql(query, conn)
-            # Etiqueta para el selector
-            df['label'] = df.apply(lambda x: f"{x['nombre']} [{x['id_estacion']}]", axis=1)
-            return df['label'].tolist()
-    except Exception as e:
-        st.error(f"Error cargando lista: {e}")
-        return []
-
-def get_datos_estacion_individual(station_id):
-    """Trae datos de lluvia de la TABLA NUEVA (Blindado contra espacios)."""
-    engine = get_engine()
-    if not engine: return pd.DataFrame()
-
-    try:
-        with engine.connect() as conn:
-            # USAMOS TRIM PARA IGNORAR ESPACIOS INVISIBLES
-            query = text("""
-                SELECT fecha, valor 
-                FROM precipitacion 
-                WHERE TRIM(id_estacion) = TRIM(:id) 
-                ORDER BY fecha ASC
-            """)
-            # Aseguramos que el ID sea string limpio
-            st_id_clean = str(station_id).strip()
-            df = pd.read_sql(query, conn, params={"id": st_id_clean})
-            
-            # Estandarizar nombres
-            df = df.rename(columns={"fecha": Config.DATE_COL, "valor": Config.PRECIPITATION_COL})
-            df[Config.DATE_COL] = pd.to_datetime(df[Config.DATE_COL])
-            return df
-    except Exception as e:
-        st.error(f"Error cargando datos de estación {station_id}: {e}")
-        return pd.DataFrame()
-
+# --- CARGA INTELIGENTE (EL PUENTE DE COMPATIBILIDAD) ---
 
 @st.cache_data(show_spinner="Cargando ecosistema espacial...", ttl=600)
 def load_spatial_data():
-    """Carga geometrías usando nombres NUEVOS."""
+    """Carga geometrías creando un PUENTE DE COMPATIBILIDAD (Nombres Nuevos + Viejos)."""
     engine = get_engine()
     gdf_stations = gpd.GeoDataFrame()
     gdf_municipios = gpd.GeoDataFrame()
@@ -86,36 +43,84 @@ def load_spatial_data():
     if not engine: return None, None, None, None
 
     try:
-        # 1. ESTACIONES
-        # CAMBIO: Nombres de columnas actualizados (nombre, altitud, departamento)
+        # 1. ESTACIONES (CARGA BLINDADA)
+        # Traemos datos nuevos
         sql_est = text("SELECT id_estacion, nombre, altitud, municipio, departamento, latitud, longitud FROM estaciones")
         df_est = pd.read_sql(sql_est, engine)
         
         if not df_est.empty:
+            # A. CAPA DE COMPATIBILIDAD (Renombramos/Duplicamos para que TODO funcione)
+            # Esto arregla el error: Usecols do not match columns: ['Latitud_geo', 'Nom_Est'...]
+            df_est['Id_estacio'] = df_est['id_estacion']  # Viejo = Nuevo
+            df_est['Nom_Est'] = df_est['nombre']
+            df_est['alt_est'] = df_est['altitud']
+            df_est['Latitud_geo'] = df_est['latitud']
+            df_est['Longitud_geo'] = df_est['longitud']
+            
+            # B. Limpieza de IDs
+            df_est['id_estacion'] = df_est['id_estacion'].astype(str).str.strip()
+            
+            # C. Crear Geometría
             gdf_stations = gpd.GeoDataFrame(
                 df_est, 
                 geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud), 
                 crs="EPSG:4326"
             )
-            # Renombrar según Config para asegurar compatibilidad
-            gdf_stations = gdf_stations.rename(columns={
-                "nombre": Config.STATION_NAME_COL,
-                "altitud": Config.ALTITUDE_COL,
-                "municipio": Config.MUNICIPALITY_COL,
-                "departamento": Config.REGION_COL,
-                "latitud": Config.LATITUDE_COL,
-                "longitud": Config.LONGITUDE_COL
-            })
 
         # 2. OTRAS GEOMETRÍAS (Fallback robusto)
         try:
             gdf_municipios = gpd.read_postgis("SELECT * FROM municipios", engine, geom_col="geometry")
             gdf_subcuencas = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry")
+            # Capa compatibilidad cuencas
+            if not gdf_subcuencas.empty:
+                 if 'nombre' in gdf_subcuencas.columns: gdf_subcuencas['subc_lbl'] = gdf_subcuencas['nombre']
+            
             gdf_predios = gpd.read_postgis("SELECT * FROM predios", engine, geom_col="geometry")
         except: pass
 
         return gdf_stations, gdf_municipios, gdf_subcuencas, gdf_predios
 
     except Exception as e:
-        # st.warning(f"Alerta GIS: {e}") # Descomentar para debug
+        print(f"Alerta GIS: {e}")
         return gdf_stations, gdf_municipios, gdf_subcuencas, gdf_predios
+
+# --- FUNCIONES SQL PUNTUALES ---
+
+def get_lista_estaciones_simple():
+    """Trae lista para el selector."""
+    engine = get_engine()
+    if not engine: return []
+    try:
+        with engine.connect() as conn:
+            query = text("SELECT id_estacion, nombre, municipio FROM estaciones ORDER BY nombre ASC")
+            df = pd.read_sql(query, conn)
+            # Compatibilidad
+            df['id_estacion'] = df['id_estacion'].astype(str).str.strip()
+            df['label'] = df.apply(lambda x: f"{x['nombre']} [{x['id_estacion']}]", axis=1)
+            return df['label'].tolist()
+    except Exception as e:
+        return []
+
+def get_datos_estacion_individual(station_id):
+    """Trae datos de lluvia BLINDADOS contra espacios."""
+    engine = get_engine()
+    if not engine: return pd.DataFrame()
+    try:
+        with engine.connect() as conn:
+            # TRIM es la clave para que aparezcan los registros
+            query = text("""
+                SELECT fecha, valor 
+                FROM precipitacion 
+                WHERE TRIM(id_estacion) = TRIM(:id) 
+                ORDER BY fecha ASC
+            """)
+            st_id_clean = str(station_id).strip().split(" ")[0] # Limpieza extra
+            df = pd.read_sql(query, conn, params={"id": st_id_clean})
+            
+            # Estandarizar nombres
+            df = df.rename(columns={"fecha": Config.DATE_COL, "valor": Config.PRECIPITATION_COL})
+            df[Config.DATE_COL] = pd.to_datetime(df[Config.DATE_COL])
+            return df
+    except Exception as e:
+        st.error(f"Error cargando datos: {e}")
+        return pd.DataFrame()
