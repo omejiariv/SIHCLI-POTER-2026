@@ -50,7 +50,7 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN UNIFICADA DE CARGA (INTACTA) ---
+# --- FUNCIÓN UNIFICADA DE CARGA (CORREGIDA) ---
 @st.cache_resource(show_spinner="Consultando Sistema de Información (Nube)...", ttl=3600)
 def load_data_from_db():
     from sqlalchemy import text
@@ -68,6 +68,8 @@ def load_data_from_db():
     gdf_cuencas = gpd.GeoDataFrame()
     gdf_predios = gpd.GeoDataFrame()
     gdf_est = gpd.GeoDataFrame()
+    
+    # Inicializar DataFrames vacíos con estructura correcta
     df_rain = pd.DataFrame(columns=[Config.STATION_NAME_COL, Config.PRECIPITATION_COL, Config.DATE_COL])
     df_enso = pd.DataFrame(columns=[Config.DATE_COL, Config.ENSO_ONI_COL])
 
@@ -76,12 +78,15 @@ def load_data_from_db():
 
     # 1. MUNICIPIOS
     try:
+        # Intentamos geom o geometry
         gdf_mun = gpd.read_postgis("SELECT * FROM municipios", engine, geom_col="geometry")
         if 'nombre_municipio' in gdf_mun.columns:
             gdf_mun['MPIO_CNMBR'] = gdf_mun['nombre_municipio']
         elif 'nombre' in gdf_mun.columns:
             gdf_mun['MPIO_CNMBR'] = gdf_mun['nombre']
-    except Exception as e: print(f"⚠️ Error Municipios BD: {e}")
+    except Exception as e: 
+        # Fallback silencioso si la tabla no es espacial
+        pass
 
     # 2. CUENCAS
     try:
@@ -90,7 +95,7 @@ def load_data_from_db():
             gdf_cuencas['SUBC_LBL'] = gdf_cuencas['nombre_cuenca']
             gdf_cuencas['N-NSS3'] = gdf_cuencas['nombre_cuenca']
             gdf_cuencas['nom_cuenca'] = gdf_cuencas['nombre_cuenca']
-    except Exception as e: print(f"⚠️ Error Cuencas BD: {e}")
+    except Exception: pass
 
     # 3. PREDIOS
     try:
@@ -101,52 +106,69 @@ def load_data_from_db():
 
     # 4. DATOS DINÁMICOS
     try:
-        # A. Estaciones
+        # A. Estaciones (Priorizamos construcción Lat/Lon por seguridad)
         try:
-            gdf_est = gpd.read_postgis("SELECT * FROM estaciones", engine, geom_col="geom")
-        except:
+            # Leemos tabla completa
             df_e = pd.read_sql("SELECT * FROM estaciones", engine)
+            
+            # Construimos geometría si hay lat/lon (Más robusto que depender de columna geom)
             if 'latitud' in df_e.columns and 'longitud' in df_e.columns:
-                gdf_est = gpd.GeoDataFrame(df_e, geometry=gpd.points_from_xy(df_e.longitud, df_e.latitud), crs="EPSG:4326")
+                gdf_est = gpd.GeoDataFrame(
+                    df_e, 
+                    geometry=gpd.points_from_xy(df_e.longitud, df_e.latitud), 
+                    crs="EPSG:4326"
+                )
+            else:
+                # Intento legacy por si acaso
+                gdf_est = gpd.read_postgis("SELECT * FROM estaciones", engine, geom_col="geom")
+        except: 
+            pass
 
-        # B. Lluvia
+        # B. Lluvia (CORREGIDO)
         q_rain = text("""
             SELECT p.id_estacion, e.nombre, p.fecha, p.valor
             FROM precipitacion p
-            OIN estaciones e ON p.id_estacion = e.id_estacion
+            JOIN estaciones e ON TRIM(p.id_estacion) = TRIM(e.id_estacion)
+            WHERE p.valor IS NOT NULL
         """)
         df_rain = pd.read_sql(q_rain, engine)
         
         if not df_rain.empty:
-            col_fecha = 'fecha'
-            col_valor = 'precipitation'
-            col_nombre = 'nombre'
+            # Mapeo directo usando nombres que devuelve SQL
+            # SQL: fecha -> Config: fecha
+            df_rain[Config.DATE_COL] = pd.to_datetime(df_rain['fecha'])
             
-            df_rain[Config.DATE_COL] = pd.to_datetime(df_rain[col_fecha])
-            df_rain[Config.PRECIPITATION_COL] = pd.to_numeric(df_rain[col_valor], errors='coerce')
-            df_rain[Config.STATION_NAME_COL] = df_rain[col_nombre]
-            # Mapeo de ID para cruces
-            df_rain['id_estacion'] = df_rain['id_estacion_fk'].astype(str)
+            # SQL: valor -> Config: valor (antes precipitation)
+            df_rain[Config.PRECIPITATION_COL] = pd.to_numeric(df_rain['valor'], errors='coerce')
             
+            # SQL: nombre -> Config: nombre
+            df_rain[Config.STATION_NAME_COL] = df_rain['nombre']
+            
+            # SQL: id_estacion -> id_estacion (Sin fk)
+            df_rain['id_estacion'] = df_rain['id_estacion'].astype(str)
+            
+            # Columnas derivadas
             df_rain[Config.YEAR_COL] = df_rain[Config.DATE_COL].dt.year
             df_rain[Config.MONTH_COL] = df_rain[Config.DATE_COL].dt.month
 
         # C. Índices
-        df_enso_raw = pd.read_sql("SELECT * FROM indices_climaticos", engine)
-        if not df_enso_raw.empty:
-            if 'fecha' in df_enso_raw.columns:
-                df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw['fecha'])
-            elif 'año' in df_enso_raw.columns and 'mes' in df_enso_raw.columns:
-                df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw[['año', 'mes']].assign(DAY=1))
-            
-            df_enso = df_enso_raw.sort_values(Config.DATE_COL)
-            if 'anomalia_oni' in df_enso.columns:
-                df_enso[Config.ENSO_ONI_COL] = df_enso['anomalia_oni']
+        try:
+            df_enso_raw = pd.read_sql("SELECT * FROM indices_climaticos", engine)
+            if not df_enso_raw.empty:
+                if 'fecha' in df_enso_raw.columns:
+                    df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw['fecha'])
+                elif 'año' in df_enso_raw.columns and 'mes' in df_enso_raw.columns:
+                    df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw[['año', 'mes']].assign(DAY=1))
+                
+                df_enso = df_enso_raw.sort_values(Config.DATE_COL)
+                if 'anomalia_oni' in df_enso.columns:
+                    df_enso[Config.ENSO_ONI_COL] = df_enso['anomalia_oni']
+        except: pass
 
-    except Exception as e: print(f"⚠️ Error en datos dinámicos: {e}")
+    except Exception as e: 
+        print(f"⚠️ Error en datos dinámicos: {e}")
 
     return gdf_est, gdf_mun, df_rain, df_enso, gdf_cuencas, gdf_predios
-
 
 # --- FUNCIONES VISUALES AUXILIARES ---
 def get_name_from_row_v2(row, type_layer):
