@@ -24,18 +24,27 @@ def calcular_balance_turc(df_lluvia, altitud, ki, kg=0.8, kc=1.0):
     kc: Factor de Cultivo (Ajuste de ETR).
     """
     df = df_lluvia.copy()
-    col_fecha = next((c for c in ['fecha', 'fecha_mes_año', 'ds'] if c in df.columns), None)
+    
+    # Detección inteligente de columnas (Prioridad: Nombres Nuevos)
+    col_fecha = next((c for c in ['fecha', 'ds', 'fecha_mes_año'] if c in df.columns), None)
     col_p = next((c for c in ['valor', 'precipitation', 'p_mes', 'lluvia'] if c in df.columns), None)
+    
     if not col_fecha or not col_p: return df 
 
     df['ds'] = pd.to_datetime(df[col_fecha])
+    
+    # Resampleo mensual
     df_monthly = df.set_index('ds').resample('MS')[col_p].mean().reset_index()
     df_monthly.columns = ['fecha', 'p_mes']
 
     # 1. ETR (Turc Modificado por Cobertura)
-    temp = np.maximum(5, 30 - (0.0065 * float(altitud)))
+    # Aseguramos que altitud sea float
+    alt_val = float(altitud) if pd.notnull(altitud) else 1000.0
+    
+    temp = np.maximum(5, 30 - (0.0065 * alt_val))
     I_t = 300 + 25*temp + 0.05*(temp**3)
     if I_t == 0: I_t = 0.001
+    
     denom = np.sqrt(0.9 + (df_monthly['p_mes'] / (I_t/12))**2)
     
     etr_clim = np.where(denom > 0, df_monthly['p_mes'] / denom, np.nan)
@@ -44,7 +53,7 @@ def calcular_balance_turc(df_lluvia, altitud, ki, kg=0.8, kc=1.0):
     # 2. Excedente (Agua disponible para escurrir o infiltrar)
     df_monthly['excedente'] = (df_monthly['p_mes'] - df_monthly['etr_mm']).clip(lower=0)
     
-    # 3. Separación de Flujos (El corazón del modelo)
+    # 3. Separación de Flujos
     # A. Infiltración (Lo que entra al suelo)
     df_monthly['infiltracion_mm'] = df_monthly['excedente'] * ki
     
@@ -66,15 +75,15 @@ def calcular_balance_turc(df_lluvia, altitud, ki, kg=0.8, kc=1.0):
 def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0, kg=0.8, kc=1.0):
     try:
         df_work = df_hist.copy()
-        # ... (Normalización y Prophet igual que antes) ...
-        col_fecha = next((c for c in ['fecha', 'fecha_mes_año', 'ds'] if c in df_work.columns), None)
+        
+        col_fecha = next((c for c in ['fecha', 'ds', 'fecha_mes_año'] if c in df_work.columns), None)
         col_p = next((c for c in ['valor', 'precipitation', 'p_mes'] if c in df_work.columns), None)
         
-        # AGREGAMOS 'infiltracion_mm' a las columnas de retorno
         cols_retorno = ['tipo', 'p_final', 'recarga_mm', 'etr_mm', 'escorrentia_mm', 'infiltracion_mm', 'fecha', 'yhat_lower', 'yhat_upper']
         df_vacio = pd.DataFrame(columns=cols_retorno)
         
         if not col_fecha or not col_p: return df_vacio
+        
         df_prophet = df_work.rename(columns={col_fecha: 'ds', col_p: 'y'})[['ds', 'y']].dropna()
         if len(df_prophet) < 6: return df_vacio
 
@@ -92,9 +101,8 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0, 
 
         temp_df = pd.DataFrame({'fecha': df_final['ds'], 'valor': df_final['p_final']})
         
-        # --- LLAMADA ACTUALIZADA ---
+        # --- LLAMADA AL BALANCE ---
         df_balance = calcular_balance_turc(temp_df, altitud, ki, kg=kg, kc=kc)
-        # ---------------------------
 
         df_result = pd.merge(df_final, df_balance, left_on='ds', right_on='fecha')
         last_date_real = df_prophet['ds'].max()
@@ -107,7 +115,7 @@ def ejecutar_pronostico_prophet(df_hist, meses_futuros, altitud, ki, ruido=0.0, 
 
 
 # ==============================================================================
-# 2. CARGA GIS "FULL DATA" (Arregla Tooltips vacíos)
+# 2. CARGA GIS "FULL DATA"
 # ==============================================================================
 @st.cache_data(show_spinner=False, ttl=60)
 def cargar_capas_gis_optimizadas(_engine, bounds=None):
@@ -123,14 +131,12 @@ def cargar_capas_gis_optimizadas(_engine, bounds=None):
             try:
                 if not _engine.dialect.has_table(conn, tabla): continue
                 
-                # 1. Obtener TODAS las columnas
                 q_cols = text(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{tabla}'")
                 cols_reales = pd.read_sql(q_cols, conn)['column_name'].tolist()
                 
                 col_geom = 'geometry' if 'geometry' in cols_reales else ('geom' if 'geom' in cols_reales else None)
                 if not col_geom: continue
 
-                # 2. Seleccionar TODO excepto la geometría binaria pesada
                 cols_select = [c for c in cols_reales if c != col_geom]
                 cols_sql = ", ".join([f'"{c}"' for c in cols_select])
                 
@@ -151,24 +157,26 @@ def cargar_capas_gis_optimizadas(_engine, bounds=None):
                     if 'gj' in df.columns: df = df.drop(columns=['gj'])
                     
                     layers[key] = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
-                    # Normalizar columnas a minúsculas
                     layers[key].columns = [c.lower() for c in layers[key].columns]
             except Exception as e:
                 print(f"Error capa {key}: {e}")
     return layers
 
 # ==============================================================================
-# 3. CÁLCULO ESTADÍSTICO (Arregla Popups N/D y Mapa Recarga)
+# 3. CÁLCULO ESTADÍSTICO (OPTIMIZADO Y BLINDADO)
 # ==============================================================================
 @st.cache_data(show_spinner=False, ttl=600)
 def obtener_estadisticas_estaciones(_engine, df_puntos_snapshot):
-    """Calcula estadísticas intentando varias tablas. Respeta NaNs."""
+    """Calcula estadísticas intentando varias tablas. Incluye TRIM para evitar errores de espacios."""
     if df_puntos_snapshot.empty: return df_puntos_snapshot
     
     df_res = df_puntos_snapshot.copy()
-    ids = tuple(df_res['id_estacion'].astype(str).tolist())
     
-    # Inicializar con NaN
+    # Normalización: Asegurar que los IDs son strings limpios para el cruce final
+    df_res['id_estacion'] = df_res['id_estacion'].astype(str).str.strip()
+    ids = tuple(df_res['id_estacion'].tolist())
+    
+    # Inicializar columnas con NaN
     for col in ['p_media', 'etr_media', 'recarga_calc', 'escorrentia_media', 'std_lluvia']:
         df_res[col] = np.nan
 
@@ -177,49 +185,54 @@ def obtener_estadisticas_estaciones(_engine, df_puntos_snapshot):
     # --- ESTRATEGIA: Intentar tablas hasta encontrar datos ---
     df_stats = pd.DataFrame()
     
-    # Lista de intentos: (Tabla, Columna Valor)
+    # Lista de intentos: (Tabla, Columna Valor, Columna ID)
     intentos = [
-        ('precipitacion', 'valor'),                # 1. Tabla Nueva
-        ('precipitacion_mensual', 'precipitation'), # 2. Tabla Vieja
-        ('precipitation', 'precipitation')          # 3. Variante inglés
+        ('precipitacion', 'valor', 'id_estacion'),         # 1. Tabla Nueva (Prioridad)
+        ('precipitacion_mensual', 'precipitation', 'id_estacion_fk'), # 2. Tabla Vieja
     ]
 
     with _engine.connect() as conn:
-        for tabla, col_val in intentos:
+        for tabla, col_val, col_id_tabla in intentos:
             try:
-                if not _engine.dialect.has_table(conn, tabla): continue
+                # Verificar si existe la tabla
+                q_check = text(f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '{tabla}')")
+                if not conn.execute(q_check).scalar(): continue
                 
-                # Query Agregada
+                # Query Agregada con TRIM (CRÍTICO PARA ARREGLAR "NO HAY REGISTROS")
                 q_text = f"""
-                    SELECT id_estacion_fk::text as id_estacion, AVG({col_val}) as p_men, STDDEV({col_val}) as p_std 
+                    SELECT TRIM({col_id_tabla}::text) as id_estacion, 
+                           AVG({col_val}) as p_men, 
+                           STDDEV({col_val}) as p_std 
                     FROM {tabla} 
-                    WHERE id_estacion_fk::text IN :ids 
-                    GROUP BY id_estacion_fk
+                    WHERE TRIM({col_id_tabla}::text) IN :ids 
+                    GROUP BY 1
                 """
-                # Ajuste si la columna ID se llama diferente en la tabla nueva
-                if tabla == 'precipitacion':
-                     q_text = q_text.replace('id_estacion_fk', 'id_estacion')
-
+                
                 if len(ids) == 1:
-                     q_single = text(q_text.replace("IN :ids", f" = '{ids[0]}'"))
-                     df_temp = pd.read_sql(q_single, conn)
+                    # Caso de una sola estación (tupla de 1 elemento a veces falla en IN)
+                    q_single = text(q_text.replace("IN :ids", f" = '{ids[0]}'"))
+                    df_temp = pd.read_sql(q_single, conn)
                 else:
-                     df_temp = pd.read_sql(text(q_text), conn, params={'ids': ids})
+                    df_temp = pd.read_sql(text(q_text), conn, params={'ids': ids})
                 
                 if not df_temp.empty:
                     df_stats = df_temp
                     break # ¡Encontramos datos! Salimos del loop
-            except Exception:
+            except Exception as e:
+                # print(f"Intento fallido en {tabla}: {e}") # Debug
                 continue
 
-    if df_stats.empty: return df_res # Retorna todo NaN si falló todo
+    if df_stats.empty: return df_res 
 
-    # Merge
-    df_res = pd.merge(df_res, df_stats, left_on='id_estacion', right_on='id_estacion', how='left')
+    # Merge seguro (ambos lados ya tienen IDs limpios)
+    df_res = pd.merge(df_res, df_stats, on='id_estacion', how='left')
 
-    # Cálculos Vectoriales
+    # Cálculos Vectoriales (Usando 'altitud')
+    # Validar que altitud sea numérica
+    df_res['altitud'] = pd.to_numeric(df_res['altitud'], errors='coerce').fillna(1000)
+    
     p_anual = df_res['p_men'] * 12
-    t_media = np.maximum(5, 30 - 0.0065 * df_res['altitud'].fillna(1500))
+    t_media = np.maximum(5, 30 - 0.0065 * df_res['altitud'])
     l_t = 300 + 25*t_media + 0.05*(t_media**3)
     denom = np.sqrt(0.9 + (p_anual/l_t)**2)
     
