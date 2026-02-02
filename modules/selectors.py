@@ -5,10 +5,11 @@ import geopandas as gpd
 import pandas as pd
 from sqlalchemy import text
 from modules import db_manager
+from modules.config import Config
 
 def render_selector_espacial():
     """
-    Renderiza un selector espacial UNIFICADO y conectado a Base de Datos.
+    Selector espacial UNIFICADO y conectado a Base de Datos.
     Retorna: ids_estaciones, nombre_zona, altitud_ref, gdf_zona_seleccionada
     """
     engine = db_manager.get_engine()
@@ -26,91 +27,97 @@ def render_selector_espacial():
     nombre_zona = "Antioquia"
     altitud_ref = 1500
     
-    # --- A. POR CUENCA (CON SELECTOR DE COLUMNA) ---
-    if modo == "Por Cuenca":
-        try:
-            # 1. Consultar columnas disponibles en 'cuencas'
-            # Esto es clave: permite ver qué diablos hay realmente en la tabla
-            cols_query = "SELECT column_name FROM information_schema.columns WHERE table_name = 'cuencas' AND column_name != 'geometry'"
-            df_cols = pd.read_sql(cols_query, engine)
-            lista_cols = df_cols['column_name'].tolist()
-            
-            # Prioridad de selección automática
-            default_idx = 0
-            for candidata in ['n_nss3', 'subc_lbl', 'nombre_cuenca', 'nombre']:
-                if candidata in lista_cols:
-                    default_idx = lista_cols.index(candidata)
-                    break
-            
-            # 2. SELECTOR DE CAMPO (La solución a tu duda)
-            col_nombre = st.sidebar.selectbox(
-                "🗂️ Columna de Nombres:", 
-                lista_cols, 
-                index=default_idx,
-                help="Elige qué columna de la BD usar para listar las cuencas (ej: n_nss3 para tramos)."
-            )
-            
-            # 3. Cargar lista de cuencas usando esa columna
-            q_cuencas = f"SELECT {col_nombre}, geometry FROM cuencas ORDER BY {col_nombre}"
-            gdf_cuencas = gpd.read_postgis(q_cuencas, engine, geom_col="geometry")
-            
-            # Limpieza básica
-            gdf_cuencas = gdf_cuencas.dropna(subset=[col_nombre])
-            lista_nombres = gdf_cuencas[col_nombre].astype(str).unique().tolist()
-            lista_nombres.sort()
-            
-            # 4. Selector de Cuenca
-            seleccion = st.sidebar.selectbox("Seleccione Cuenca:", lista_nombres)
-            
-            if seleccion:
-                nombre_zona = seleccion
-                gdf_zona = gdf_cuencas[gdf_cuencas[col_nombre].astype(str) == seleccion].head(1)
-                
-                # Intentar calcular altitud media del polígono seleccionado (si es posible rápido)
-                # Si no, dejamos 1500 por defecto
-                pass
-                
-        except Exception as e:
-            st.sidebar.error(f"Error cargando cuencas: {e}")
+    try:
+        # --- A. POR CUENCA ---
+        if modo == "Por Cuenca":
+            # Intentar leer geom o geometry
+            try:
+                gdf_cuencas = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry")
+            except:
+                st.sidebar.warning("Tabla 'cuencas' no tiene columna geométrica estándar.")
+                return [], "", 0, None
 
-    # --- B. POR MUNICIPIO ---
-    elif modo == "Por Municipio":
-        try:
-            # Lógica simplificada para municipios
-            q_mun = "SELECT nombre_municipio, geometry FROM municipios ORDER BY nombre_municipio"
-            gdf_mun = gpd.read_postgis(q_mun, engine, geom_col="geometry")
+            # Detectar columna de nombre
+            col_nom = next((c for c in gdf_cuencas.columns if c in ['nombre', 'nombre_cuenca', 'subc_lbl']), None)
             
-            # Fallback si nombre_municipio no existe
-            col_nom_mun = 'nombre_municipio' if 'nombre_municipio' in gdf_mun.columns else gdf_mun.columns[0]
-            
-            lista_mun = gdf_mun[col_nom_mun].unique().tolist()
-            seleccion_mun = st.sidebar.selectbox("Seleccione Municipio:", lista_mun)
-            
-            if seleccion_mun:
-                nombre_zona = seleccion_mun
-                gdf_zona = gdf_mun[gdf_mun[col_nom_mun] == seleccion_mun].head(1)
-                
-        except Exception as e:
-            st.sidebar.error(f"Error cargando municipios: {e}")
+            if col_nom:
+                lista = sorted(gdf_cuencas[col_nom].astype(str).unique().tolist())
+                sel = st.sidebar.selectbox("Seleccione Cuenca:", lista)
+                if sel:
+                    nombre_zona = sel
+                    gdf_zona = gdf_cuencas[gdf_cuencas[col_nom] == sel]
+            else:
+                st.sidebar.error("No se encontró columna de nombre en cuencas.")
 
-    # --- C. DEPARTAMENTO ---
-    else:
-        st.sidebar.info("Análisis Regional Completo")
-        # gdf_zona sigue siendo None o cargamos el contorno de Antioquia si existe
-        
-    # --- BUFFER GLOBAL (Opcional pero útil) ---
-    buffer_km = st.sidebar.slider("Radio Buffer (km):", 0, 50, 0, help="Expandir zona de búsqueda de estaciones")
-    
-    # Retorno seguro
-    ids_estaciones = [] # El cálculo de estaciones se hace fuera o aquí si quisieras moverlo
-    
-    # Procesar Buffer si existe zona
-    if gdf_zona is not None and buffer_km > 0:
-        if gdf_zona.crs.to_string() != "EPSG:3116":
-            gdf_zona_m = gdf_zona.to_crs("EPSG:3116")
-            gdf_buffer = gdf_zona_m.buffer(buffer_km * 1000)
-            gdf_zona = gdf_buffer.to_crs("EPSG:4326")
+        # --- B. POR MUNICIPIO ---
+        elif modo == "Por Municipio":
+            try:
+                gdf_mun = gpd.read_postgis("SELECT * FROM municipios", engine, geom_col="geometry")
+            except:
+                st.sidebar.warning("Tabla 'municipios' con problemas.")
+                return [], "", 0, None
+
+            col_nom = next((c for c in gdf_mun.columns if c in ['nombre', 'nombre_municipio', 'mpio_cnmbr']), None)
+            
+            if col_nom:
+                lista = sorted(gdf_mun[col_nom].astype(str).unique().tolist())
+                sel = st.sidebar.selectbox("Seleccione Municipio:", lista)
+                if sel:
+                    nombre_zona = sel
+                    gdf_zona = gdf_mun[gdf_mun[col_nom] == sel]
+
+        # --- C. DEPARTAMENTO ---
         else:
-            gdf_zona = gdf_zona.buffer(buffer_km * 1000)
+            # Crear un cuadro delimitador para Antioquia si no hay shape
+            from shapely.geometry import box
+            gdf_zona = gpd.GeoDataFrame(
+                {'nombre': ['Antioquia']}, 
+                geometry=[box(-77.5, 5.0, -73.5, 9.0)], 
+                crs="EPSG:4326"
+            )
+
+        # --- 2. FILTRAR ESTACIONES (CRÍTICO: NOMBRES NUEVOS) ---
+        ids_estaciones = []
+        if gdf_zona is not None and not gdf_zona.empty:
+            # Asegurar CRS
+            if gdf_zona.crs and gdf_zona.crs.to_string() != "EPSG:4326":
+                gdf_zona = gdf_zona.to_crs("EPSG:4326")
             
+            minx, miny, maxx, maxy = gdf_zona.total_bounds
+            
+            # Margen de seguridad (buffer visual)
+            buff = 0.05 
+            
+            # CONSULTA BLINDADA (Usa latitud/longitud de la BD nueva)
+            q_est = text(f"""
+                SELECT id_estacion, nombre, latitud, longitud, altitud 
+                FROM estaciones 
+                WHERE longitud BETWEEN {minx - buff} AND {maxx + buff} 
+                AND latitud BETWEEN {miny - buff} AND {maxy + buff}
+            """)
+            
+            df_est = pd.read_sql(q_est, engine)
+            
+            if not df_est.empty:
+                # Convertir a GeoDataFrame
+                gdf_ptos = gpd.GeoDataFrame(
+                    df_est, 
+                    geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud), 
+                    crs="EPSG:4326"
+                )
+                
+                # Spatial Join: Quedarse solo con las que están DENTRO del polígono
+                est_in = gdf_ptos[gdf_ptos.geometry.within(gdf_zona.unary_union)]
+                
+                if not est_in.empty:
+                    ids_estaciones = est_in['id_estacion'].astype(str).str.strip().tolist()
+                    altitud_ref = est_in['altitud'].mean()
+                
+                st.sidebar.success(f"📍 Estaciones en zona: {len(ids_estaciones)}")
+            else:
+                st.sidebar.warning("No hay estaciones en este recuadro geográfico.")
+                
+    except Exception as e:
+        st.sidebar.error(f"Error en selector: {e}")
+        
     return ids_estaciones, nombre_zona, altitud_ref, gdf_zona
