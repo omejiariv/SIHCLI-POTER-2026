@@ -4,39 +4,30 @@ import streamlit as st
 class Config:
     """
     Configuración centralizada para SIHCLI-POTER.
-    Ajustada a la NUEVA estructura de Base de Datos (PostgreSQL).
+    Ajustada a la NUEVA estructura de Base de Datos PostgreSQL.
     """
 
     APP_TITLE = "SIHCLI-POTER"
 
-    # --- MAPEO EXACTO CON BASE DE DATOS (NUEVO) ---
-    # Antes: "fecha_mes_año" -> Ahora: "fecha"
-    DATE_COL = "fecha"
-    
-    # Antes: "precipitation" -> Ahora: "valor"
-    PRECIPITATION_COL = "valor"
+    # --- MAPEO EXACTO CON BASE DE DATOS NUEVA ---
+    DATE_COL = "fecha"              # Antes: fecha_mes_año
+    PRECIPITATION_COL = "valor"     # Antes: precipitation
 
     # Metadatos de Estaciones
-    # Antes: "nom_est" -> Ahora: "nombre"
-    STATION_NAME_COL = "nombre"
-    
-    # Antes: "alt_est" -> Ahora: "altitud"
-    ALTITUDE_COL = "altitud"
-    
+    STATION_NAME_COL = "nombre"     # Antes: nom_est
+    ALTITUDE_COL = "altitud"        # Antes: alt_est
     MUNICIPALITY_COL = "municipio"
-    
-    # Antes: "depto_region" -> Ahora: "departamento"
-    REGION_COL = "departamento"
+    REGION_COL = "departamento"     # Antes: depto_region
 
-    # Columnas geográficas (En la BD se llaman latitud/longitud)
+    # Columnas geográficas
     LATITUDE_COL = "latitud"
     LONGITUDE_COL = "longitud"
     
-    # Columnas generadas internamente (para análisis temporal)
+    # Columnas generadas internamente
     YEAR_COL = "año"
     MONTH_COL = "mes"
 
-    # Índices Climáticos (Estos se mantienen igual si el CSV no cambió headers)
+    # Índices Climáticos
     ENSO_ONI_COL = "anomalia_oni"
     SOI_COL = "soi"
     IOD_COL = "iod"
@@ -48,11 +39,9 @@ class Config:
     ASSETS_DIR = os.path.join(_PROJECT_ROOT, "assets")
     DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
 
-    # Archivos de Imagen
+    # Archivos de Imagen y Raster
     LOGO_PATH = os.path.join(ASSETS_DIR, "CuencaVerde_Logo.jpg")
     CHAAC_IMAGE_PATH = os.path.join(ASSETS_DIR, "chaac.png")
-
-    # Archivos Raster
     LAND_COVER_RASTER_PATH = os.path.join(DATA_DIR, "Cob25m_WGS84.tif")
     DEM_FILE_PATH = os.path.join(DATA_DIR, "DemAntioquia_EPSG3116.tif")
     PRECIP_RASTER_PATH = os.path.join(DATA_DIR, "PPAMAnt.tif")
