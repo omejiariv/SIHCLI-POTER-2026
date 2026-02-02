@@ -244,25 +244,23 @@ if gdf_zona is not None:
                 except: pass
 
             # --- C. VISUALIZACIÓN DE MÉTRICAS (10 COLUMNAS) ---
-            st.markdown("##### 💧 Balance Hídrico y Oferta Subterránea")
+            st.markdown("##### 💧 Balance Hídrico y Oferta Subterránea (Promedios Multianuales)")
             cols = st.columns(10)
             
             def fmt(v, u=""): return f"{v:,.0f} {u}"
             
             cols[0].metric("📏 Área", f"{area_km2:,.1f} km²")
-            cols[1].metric("🌧️ Lluvia", fmt(p_med, "mm"))
-            cols[2].metric("☀️ ETR", fmt(etr_med, "mm"))
-            cols[3].metric("🌱 Infiltración", fmt(inf_med, "mm"))
-            cols[4].metric("💧 Recarga", fmt(rec_med, "mm"), help="Entrada al acuífero")
-            cols[5].metric("🌊 Escorrentía", fmt(esc_med, "mm"))
+            cols[1].metric("🌧️ Lluvia", fmt(p_med, "mm/año"))
+            cols[2].metric("☀️ ETR", fmt(etr_med, "mm/año"))
+            cols[3].metric("🌱 Infiltración", fmt(inf_med, "mm/año"))
+            cols[4].metric("💧 Recarga", fmt(rec_med, "mm/año"), help="Oferta hídrica subterránea")
+            cols[5].metric("🌊 Escorrentía", fmt(esc_med, "mm/año"))
             cols[6].metric("⚖️ Q. Medio", f"{q_medio_m3s:.2f} m³/s")
-            cols[7].metric("📉 Q. Min 50a", f"{q_min_50a:.3f}", delta_color="inverse")
-            cols[8].metric("🐟 Q. Ecológico", f"{q_eco:.3f}")
+            cols[7].metric("📉 Q. Min 50a", f"{q_min_50a:.3f} m³/s", delta_color="inverse", help="Caudal mínimo probable (Tr=50 años)")
+            cols[8].metric("🐟 Q. Ecológico", f"{q_eco:.3f} m³/s", help="Caudal ambiental (Q95)")
             cols[9].metric("📡 Estaciones", len(df_puntos))
 
     st.divider()
-
-# [ESTE CÓDIGO VA DESPUÉS DE st.divider()]
 
     # ==============================================================================
     # 2. PREPARACIÓN DE DATOS ESPACIALES (CRÍTICO: Define df_mapa_stats)
@@ -310,15 +308,47 @@ if gdf_zona is not None:
     # ==============================================================================
     tab1, tab2, tab3, tab4 = st.tabs(["📈 Serie Completa", "🗺️ Mapa Contexto", "💧 Mapa Recarga", "📥 Descargas"])
 
-    # --- GUÍA TÉCNICA ---
-    with st.expander("📘 Guía Técnica: Balance Hídrico y Recarga", expanded=False):
-        st.markdown(r"""
-        **Ecuación:** $R = P - ETR - E_s$
-        * $P$: Precipitación. $ETR$: Evapotranspiración (Turc). $E_s$: Escorrentía. $R$: Recarga.
-        * **Modelo Estocástico:** Gumbel (Máximos) y Log-Normal (Mínimos) para proyecciones de retorno.
-        """)
+    # --- GUÍA TÉCNICA ENRIQUECIDA ---
+    with st.expander("📘 Guía Técnica: Metodología, Ecuaciones e Interpretación", expanded=False):
+        t1, t2, t3 = st.tabs(["🧮 Ecuaciones", "⚙️ Modelo Estocástico", "📖 Interpretación"])
+        
+        with t1:
+            st.markdown(r"""
+            #### 1. Balance Hídrico de Largo Plazo
+            Se utiliza el método de **Turc Modificado** para estimar la oferta hídrica en cuencas tropicales.
+            
+            **Ecuación Fundamental:**
+            $$P = ETR + E_s + R + \Delta S$$
+            
+            Donde:
+            * **$P$ (Precipitación):** Entrada total de agua al sistema (mm/año).
+            * **$ETR$ (Evapotranspiración Real):** Agua que retorna a la atmósfera por evaporación del suelo y transpiración de plantas. Se calcula en función de la Temperatura ($T$) y la Lluvia ($P$):
+                $$ETR = \frac{P}{\sqrt{0.9 + (\frac{P}{L})^2}} \quad \text{donde} \quad L = 300 + 25T + 0.05T^3$$
+            * **$R$ (Recarga Potencial):** Fracción del agua que se infiltra profundamente y alimenta el acuífero.
+            * **$E_s$ (Escorrentía):** Flujo superficial rápido hacia los cauces.
+            """)
+            
+        with t2:
+            st.markdown(r"""
+            #### 2. Análisis de Extremos (Caudales)
+            Para la gestión del riesgo y concesiones, no basta con el promedio. Analizamos los extremos usando distribuciones de probabilidad:
+            
+            * **📉 Caudales Mínimos (Sequías):** Se ajustan a una distribución **Log-Normal de 2 Parámetros**.
+                * **$Q_{Min}^{50a}$:** El caudal mínimo esperado una vez cada 50 años (crítico para abastecimiento).
+                * **$Q_{95}$ (Ecológico):** El caudal que es superado el 95% del tiempo (garantía de sostenibilidad biótica).
+            
+            * **📈 Caudales Máximos (Crecientes):** Se ajustan a una distribución de **Gumbel (Valores Extremos Tipo I)**.
+                * Permite estimar cotas de inundación para periodos de retorno de 2.33, 5, 10, 50 y 100 años.
+            """)
+            
+        with t3:
+            st.info("""
+            **Interpretación de Resultados:**
+            * **Rendimiento Hídrico ($m^3/ha-año$):** Indica cuánta agua produce cada hectárea de la cuenca. Zonas boscosas suelen tener mayor rendimiento de regulación (Recarga).
+            * **Recarga vs. Escorrentía:** Una cuenca sana busca maximizar la Recarga (línea azul oscura en la gráfica) y moderar la Escorrentía superficial, reduciendo el riesgo de erosión e inundaciones.
+            """)
 
-    # --- TAB 1: SERIE TEMPORAL ---
+    # --- TAB 1: SERIE TEMPORAL DETALLADA ---
     with tab1:
         if not df_res.empty:
             # 1. Agrupar promedio regional (Mes a Mes)
@@ -328,8 +358,9 @@ if gdf_zona is not None:
             ]].mean().reset_index().sort_values('fecha')
 
             # 2. Cálculo de Rendimiento Hídrico (m³/ha)
-            # Rendimiento = (Escorrentía + Recarga) * 10
-            df_avg['rendimiento_m3ha'] = (df_avg['escorrentia_mm'] + df_avg['recarga_mm']) * 10
+            # Factor 10: 1 mm = 10 m3/ha
+            # .clip(lower=0) asegura que no haya rendimientos negativos (físicamente imposibles)
+            df_avg['rendimiento_m3ha'] = ((df_avg['escorrentia_mm'] + df_avg['recarga_mm']) * 10).clip(lower=0)
 
             # 3. Gráfica Multivariable
             fig = go.Figure()
@@ -337,7 +368,7 @@ if gdf_zona is not None:
             df_fut = df_avg[df_avg['tipo'] == 'Proyección']
             
             # --- Variables de Entrada/Salida ---
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='🌧️ Lluvia', line=dict(color='#95a5a6', width=1), visible='legendonly'))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='🌧️ Lluvia Histórica', line=dict(color='#95a5a6', width=1), visible='legendonly'))
             fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['etr_mm'], name='☀️ ETR', line=dict(color='#e67e22', width=1, dash='dot')))
             
             # --- Variables del Suelo ---
@@ -348,9 +379,14 @@ if gdf_zona is not None:
             # Recarga Real (Histórica)
             fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='💧 Recarga Real', line=dict(color='#2980b9', width=3), fill='tozeroy'))
             
-            # Recarga Proyectada (Futuro)
+            # PROYECCIONES (Futuro)
             if not df_fut.empty:
+                # Lluvia Proyectada (Nueva)
+                fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['p_final'], name='🌧️ Lluvia Proyectada', line=dict(color='#bdc3c7', width=1, dash='dot')))
+                
+                # Recarga Proyectada
                 fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='🔮 Recarga Proy.', line=dict(color='#00d2d3', width=2, dash='dot')))
+                
                 # Incertidumbre
                 fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_upper'], showlegend=False, line=dict(width=0), hoverinfo='skip'))
                 fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(0,210,211,0.1)', hoverinfo='skip'))
