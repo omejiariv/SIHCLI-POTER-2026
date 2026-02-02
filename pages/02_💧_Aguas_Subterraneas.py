@@ -321,29 +321,64 @@ if gdf_zona is not None:
     # --- TAB 1: SERIE TEMPORAL ---
     with tab1:
         if not df_res.empty:
-            # Agrupar promedio regional
+            # 1. Agrupar promedio regional (Mes a Mes)
             df_avg = df_res.groupby(['fecha', 'tipo'])[[
-                'p_final', 'etr_mm', 'infiltracion_mm', 'recarga_mm', 'escorrentia_mm', 'yhat_upper', 'yhat_lower'
+                'p_final', 'etr_mm', 'infiltracion_mm', 'recarga_mm', 
+                'escorrentia_mm', 'yhat_upper', 'yhat_lower'
             ]].mean().reset_index().sort_values('fecha')
 
-            # Gráfica
+            # 2. Cálculo de Rendimiento Hídrico (m³/ha)
+            # Rendimiento = (Escorrentía + Recarga) * 10
+            df_avg['rendimiento_m3ha'] = (df_avg['escorrentia_mm'] + df_avg['recarga_mm']) * 10
+
+            # 3. Gráfica Multivariable
             fig = go.Figure()
             df_hist = df_avg[df_avg['tipo'] == 'Histórico']
             df_fut = df_avg[df_avg['tipo'] == 'Proyección']
             
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='Lluvia', line=dict(color='#95a5a6', width=1)))
-            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='Recarga', line=dict(color='#2980b9', width=2.5), fill='tozeroy'))
+            # --- Variables de Entrada/Salida ---
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['p_final'], name='🌧️ Lluvia', line=dict(color='#95a5a6', width=1), visible='legendonly'))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['etr_mm'], name='☀️ ETR', line=dict(color='#e67e22', width=1, dash='dot')))
             
+            # --- Variables del Suelo ---
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['infiltracion_mm'], name='🌱 Infiltración Pot.', line=dict(color='#2ecc71', width=1.5)))
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['escorrentia_mm'], name='🌊 Escorrentía', line=dict(color='#27ae60', width=1.5)))
+            
+            # --- Variables Objetivo (Recarga) ---
+            # Recarga Real (Histórica)
+            fig.add_trace(go.Scatter(x=df_hist['fecha'], y=df_hist['recarga_mm'], name='💧 Recarga Real', line=dict(color='#2980b9', width=3), fill='tozeroy'))
+            
+            # Recarga Proyectada (Futuro)
             if not df_fut.empty:
-                fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='Proyección', line=dict(color='#00d2d3', width=2, dash='dot')))
-            
-            fig.update_layout(title=f"Balance Regional: {nombre_zona}", height=450, hovermode="x unified")
+                fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['recarga_mm'], name='🔮 Recarga Proy.', line=dict(color='#00d2d3', width=2, dash='dot')))
+                # Incertidumbre
+                fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_upper'], showlegend=False, line=dict(width=0), hoverinfo='skip'))
+                fig.add_trace(go.Scatter(x=df_fut['fecha'], y=df_fut['yhat_lower'], name='Incertidumbre', fill='tonexty', line=dict(width=0), fillcolor='rgba(0,210,211,0.1)', hoverinfo='skip'))
+
+            # --- Eje Secundario: Rendimiento Hídrico ---
+            fig.add_trace(go.Scatter(
+                x=df_hist['fecha'], y=df_hist['rendimiento_m3ha'], 
+                name='🚜 Rendimiento (m³/ha)', 
+                line=dict(color='#8e44ad', width=1),
+                yaxis='y2', opacity=0.3
+            ))
+
+            # Layout con doble eje
+            fig.update_layout(
+                title=f"Dinámica Hidrológica Completa: {nombre_zona}",
+                height=550, 
+                hovermode="x unified",
+                legend=dict(orientation="h", y=1.1),
+                yaxis=dict(title="Lámina de Agua (mm/mes)"),
+                yaxis2=dict(title="Rendimiento (m³/ha)", overlaying='y', side='right', showgrid=False)
+            )
             st.plotly_chart(fig, use_container_width=True)
             
-            with st.expander("📅 Ver Tabla de Datos"):
+            with st.expander("📅 Ver Tabla de Datos Completa"):
                 st.dataframe(df_avg, use_container_width=True)
         else:
             st.info("Sin datos suficientes para el balance.")
+
 
     # --- TAB 2: MAPA DE CONTEXTO ---
     with tab2:
