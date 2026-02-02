@@ -328,6 +328,42 @@ if gdf_zona is not None:
         else:
             st.info("Seleccione una zona con estaciones para ver el balance.")
 
+
+# 1. Asegurar que df_mapa_stats exista
+if 'df_mapa_stats' not in locals():
+    # Inicializamos con los puntos básicos
+    df_mapa_stats = df_puntos.copy()
+    
+    # Si hay datos de lluvia (df_raw), calculamos promedios
+    if 'df_raw' in locals() and not df_raw.empty:
+        # Agrupar lluvia por estación
+        grp = df_raw.groupby('id_estacion')['valor'].agg(['mean', 'std']).reset_index()
+        grp.columns = ['id_estacion', 'p_media', 'std_lluvia']
+        
+        # Unir con metadatos
+        df_mapa_stats = pd.merge(df_mapa_stats, grp, on='id_estacion', how='left')
+        
+        # Calcular Balance Puntual (Turc) para el mapa
+        # T = 28 - 0.006*h
+        df_mapa_stats['temp'] = 28 - (0.006 * df_mapa_stats['altitud'])
+        # L = 300 + 25T + 0.05T^3
+        df_mapa_stats['L_turc'] = 300 + 25*df_mapa_stats['temp'] + 0.05*(df_mapa_stats['temp']**3)
+        
+        # ETR y Recarga
+        df_mapa_stats['etr_media'] = df_mapa_stats.apply(
+            lambda x: x['p_media'] / np.sqrt(0.9 + (x['p_media']/x['L_turc'])**2) if x['p_media']>0 and x['L_turc']>0 else 0, 
+            axis=1
+        )
+        
+        # Factores globales (definidos en el sidebar)
+        # Si por alguna razón no están definidos, usamos defaults
+        k_inf = ki_final if 'ki_final' in locals() else 0.3
+        k_geo = kg_factor if 'kg_factor' in locals() else 0.5
+        
+        df_mapa_stats['recarga_calc'] = (df_mapa_stats['p_media'] - df_mapa_stats['etr_media']) * k_inf * k_geo
+        df_mapa_stats['escorrentia_media'] = df_mapa_stats['p_media'] - df_mapa_stats['etr_media'] - df_mapa_stats['recarga_calc']
+
+
     # --------------------------------------------------------------------------
     # TAB 2: MAPA DE CONTEXTO
     # --------------------------------------------------------------------------
