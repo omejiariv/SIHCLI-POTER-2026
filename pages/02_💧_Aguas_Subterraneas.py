@@ -108,7 +108,7 @@ if gdf_zona is not None:
         minx, miny, maxx, maxy = gdf_zona.total_bounds
         buff = 0.05
         q_geo = text(f"""
-            SELECT id_estacion, nom_est, latitud, longitud, alt_est, municipio 
+            SELECT id_estacion, nombre, latitud, longitud, altitud, municipio 
             FROM estaciones 
             WHERE longitud BETWEEN {minx-buff} AND {maxx+buff} 
             AND latitud BETWEEN {miny-buff} AND {maxy+buff}
@@ -131,10 +131,10 @@ if gdf_zona is not None:
             ids_estaciones = df_puntos['id_estacion'].tolist()
     else:
         if len(ids_estaciones) == 1:
-            q = text(f"SELECT id_estacion, nom_est, latitud, longitud, alt_est, municipio FROM estaciones WHERE id_estacion = '{ids_estaciones[0]}'")
+            q = text(f"SELECT id_estacion, nombre, latitud, longitud, altitud, municipio FROM estaciones WHERE id_estacion = '{ids_estaciones[0]}'")
             df_puntos = pd.read_sql(q, engine)
         else:
-            q = text("SELECT id_estacion, nom_est, latitud, longitud, alt_est, municipio FROM estaciones WHERE id_estacion IN :ids")
+            q = text("SELECT id_estacion, nombre, latitud, longitud, altitud, municipio FROM estaciones WHERE id_estacion IN :ids")
             df_puntos = pd.read_sql(q, engine, params={'ids': tuple(ids_estaciones)})
 
     if df_puntos.empty:
@@ -148,7 +148,7 @@ if gdf_zona is not None:
         df_raw = pd.DataFrame()
         intentos = [
             ('precipitacion', 'id_estacion', 'fecha', 'valor'), 
-            ('precipitacion_mensual', 'id_estacion_fk', 'fecha_mes_año', 'precipitation')
+            ('precipitacion_mensual', 'id_estacion_fk', 'fecha', 'precipitation')
         ]
         
         for tbl, col_id, col_f, col_v in intentos:
@@ -172,7 +172,7 @@ if gdf_zona is not None:
 
     df_res = pd.DataFrame()
     if not df_raw.empty:
-        alt_calc = altitud_ref if altitud_ref else df_puntos['alt_est'].mean()
+        alt_calc = altitud_ref if altitud_ref else df_puntos['altitud'].mean()
         df_res = hydrogeo_utils.ejecutar_pronostico_prophet(df_raw, meses_futuros, alt_calc, ki_final, ruido, kg=kg_factor, kc=kc_ponderado)
 
     st.markdown(f"### {nombre_zona}")
@@ -403,9 +403,9 @@ if gdf_zona is not None:
                     
                     # Manejo de nombres de columnas (Normalización)
                     # Buscamos las columnas que el usuario quiere ver: Nombre y Municipio
-                    col_nombre = next((c for c in ['nombre', 'nom_est', 'estacion'] if c in df_est_detalle.columns), 'Nombre')
+                    col_nombre = next((c for c in ['nombre', 'estacion'] if c in df_est_detalle.columns), 'Nombre')
                     col_mun = next((c for c in ['municipio', 'mun', 'ciudad'] if c in df_est_detalle.columns), 'Municipio')
-                    col_alt = next((c for c in ['altitud', 'alt_est', 'elevacion'] if c in df_est_detalle.columns), 'Altitud')
+                    col_alt = next((c for c in ['altitud', 'altitud', 'elevacion'] if c in df_est_detalle.columns), 'Altitud')
                     
                     # Cálculos Hidrológicos (Estimación simple para la tabla)
                     altitud_safe = pd.to_numeric(df_est_detalle.get(col_alt, 1000), errors='coerce').fillna(1000)
@@ -583,12 +583,12 @@ if gdf_zona is not None:
                 return f"{val*mult:,.0f} mm"
 
             mun = r.get('municipio', 'N/D')
-            alt = r.get('alt_est', 0)
+            alt = r.get('altitud', 0)
             std_val = r.get('std_lluvia', 0)
             
             html = f"""
             <div style='font-family:sans-serif; width:200px; font-size:12px;'>
-                <b style="font-size:13px; color:#2c3e50;">{r['nom_est']}</b>
+                <b style="font-size:13px; color:#2c3e50;">{r['nombre']}</b>
                 <hr style='margin:4px 0; border-top: 1px solid #ccc;'>
                 📍 <b>Mun:</b> {mun} <br>
                 ⛰️ <b>Alt:</b> {alt:,.0f} m <br>
@@ -606,7 +606,7 @@ if gdf_zona is not None:
                 [r['latitud'], r['longitud']], 
                 popup=folium.Popup(html, max_width=220), 
                 icon=folium.Icon(color='black', icon='tint'),
-                tooltip=r['nom_est']
+                tooltip=r['nombre']
             ).add_to(fg_estaciones) # <-- Agregamos al GRUPO, no al mapa directo
 
         # 2. Agregar el grupo completo al mapa
@@ -761,7 +761,7 @@ if gdf_zona is not None:
                     fill_color='white',
                     fill_opacity=1.0,
                     weight=1,
-                    tooltip=f"{r['nom_est']}: {r['recarga_calc']*12:,.0f} mm",
+                    tooltip=f"{r['nombret']}: {r['recarga_calc']*12:,.0f} mm",
                     name="Estaciones"
                 ).add_to(m_iso)
 
@@ -904,8 +904,8 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 df_rain_anual = pd.read_sql("SELECT id_estacion_fk, AVG(precipitation)*12 as ppt_anual FROM precipitacion_mensual GROUP BY id_estacion_fk", engine)
                 df_rain_anual['id_estacion_fk'] = df_rain_anual['id_estacion_fk'].astype(str)
 
-                df_rain_mensual = pd.read_sql("SELECT id_estacion_fk, fecha_mes_año, precipitation FROM precipitacion_mensual", engine)
-                df_rain_mensual['fecha'] = pd.to_datetime(df_rain_mensual['fecha_mes_año'])
+                df_rain_mensual = pd.read_sql("SELECT id_estacion_fk, fecha, precipitation FROM precipitacion_mensual", engine)
+                df_rain_mensual['fecha'] = pd.to_datetime(df_rain_mensual['fecha'])
                 df_rain_mensual['id_estacion_fk'] = df_rain_mensual['id_estacion_fk'].astype(str)
 
             # B. PREPARAR DEM

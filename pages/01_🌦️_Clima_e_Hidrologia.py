@@ -111,16 +111,16 @@ def load_data_from_db():
 
         # B. Lluvia
         q_rain = text("""
-            SELECT p.id_estacion_fk, e.nom_est, p.fecha_mes_año, p.precipitation 
+            SELECT p.id_estacion_fk, e.nombre, p.fecha, p.precipitation 
             FROM precipitacion_mensual p 
             JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
         """)
         df_rain = pd.read_sql(q_rain, engine)
         
         if not df_rain.empty:
-            col_fecha = 'fecha_mes_año'
+            col_fecha = 'fecha'
             col_valor = 'precipitation'
-            col_nombre = 'nom_est'
+            col_nombre = 'nombre'
             
             df_rain[Config.DATE_COL] = pd.to_datetime(df_rain[col_fecha])
             df_rain[Config.PRECIPITATION_COL] = pd.to_numeric(df_rain[col_valor], errors='coerce')
@@ -134,8 +134,8 @@ def load_data_from_db():
         # C. Índices
         df_enso_raw = pd.read_sql("SELECT * FROM indices_climaticos", engine)
         if not df_enso_raw.empty:
-            if 'fecha_mes_año' in df_enso_raw.columns:
-                df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw['fecha_mes_año'])
+            if 'fecha' in df_enso_raw.columns:
+                df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw['fecha'])
             elif 'año' in df_enso_raw.columns and 'mes' in df_enso_raw.columns:
                 df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw[['año', 'mes']].assign(DAY=1))
             
@@ -619,13 +619,13 @@ def main():
                     else: ids_sql = str(ids_validos)
 
                     q_iso = text(f"""
-                        SELECT e.id_estacion, e.nom_est, ST_X(e.geom::geometry) as lon, ST_Y(e.geom::geometry) as lat,
+                        SELECT e.id_estacion, e.nombre, ST_X(e.geom::geometry) as lon, ST_Y(e.geom::geometry) as lat,
                                SUM(p.precipitation) as valor
                         FROM precipitacion_mensual p
                         JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
-                        WHERE extract(year from p.fecha_mes_año) = :anio
+                        WHERE extract(year from p.fecha) = :anio
                         AND e.id_estacion IN {ids_sql} 
-                        GROUP BY e.id_estacion, e.nom_est, e.geom
+                        GROUP BY e.id_estacion, e.nombre, e.geom
                     """)
                     
                     with engine.connect() as conn:
@@ -653,7 +653,7 @@ def main():
                             fig_m.add_trace(go.Scatter(
                                 x=df_iso['lon'], y=df_iso['lat'], mode='markers',
                                 marker=dict(size=6, color='black', line=dict(width=1, color='white')),
-                                text=df_iso['nom_est'] + ': ' + df_iso['valor'].round(0).astype(str) + ' mm',
+                                text=df_iso['nombre'] + ': ' + df_iso['valor'].round(0).astype(str) + ' mm',
                                 hoverinfo='text'
                             ))
                             fig_m.update_layout(title=f"Isoyetas Año {year_iso}", height=700, margin=dict(l=0,r=0,t=40,b=0))
