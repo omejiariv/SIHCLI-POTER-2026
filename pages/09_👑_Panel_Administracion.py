@@ -275,21 +275,42 @@ with tabs[0]:
                 }
             )
             
+            # BOTÓN GUARDAR (LÓGICA BLINDADA CON UPSERT)
             if st.button("💾 Guardar Cambios en Catálogo"):
-                with st.spinner("Actualizando base de datos..."):
-                    # Usamos 'replace' aquí porque estamos editando la tabla completa existente
-                    # (Nota: Si hay datos en 'precipitacion', 'replace' podría fallar por FK. 
-                    # Lo ideal es update, pero 'replace' funciona si no cambias IDs)
+                with st.spinner("Sincronizando cambios de forma segura..."):
                     try:
-                        df_editado.to_sql('estaciones', engine, if_exists='replace', index=False)
-                        st.success("✅ Catálogo actualizado correctamente.")
+                        with engine.begin() as conn:
+                            # 1. Subimos los cambios a una tabla temporal (aquí sí podemos usar replace)
+                            df_editado.to_sql('temp_est_edit', conn, if_exists='replace', index=False)
+                            
+                            # 2. Ejecutamos el UPSERT (Actualizar o Insertar) usando SQL puro
+                            # Esto actualiza los nombres/coords sin tocar los IDs ni borrar la tabla
+                            conn.execute(text("""
+                                INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud, municipio, departamento, subregion, corriente)
+                                SELECT id_estacion, nombre, latitud, longitud, altitud, municipio, departamento, subregion, corriente
+                                FROM temp_est_edit
+                                ON CONFLICT (id_estacion) DO UPDATE SET
+                                    nombre = EXCLUDED.nombre,
+                                    latitud = EXCLUDED.latitud,
+                                    longitud = EXCLUDED.longitud,
+                                    altitud = EXCLUDED.altitud,
+                                    municipio = EXCLUDED.municipio,
+                                    departamento = EXCLUDED.departamento,
+                                    subregion = EXCLUDED.subregion,
+                                    corriente = EXCLUDED.corriente;
+                            """))
+                            
+                            # 3. Limpieza
+                            conn.execute(text("DROP TABLE IF EXISTS temp_est_edit"))
+                            
+                        st.success("✅ Catálogo actualizado correctamente (Sin romper vínculos).")
                         time.sleep(1)
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"No se pudo guardar: {e}")
                         
-        except Exception as e:
-            st.warning("No se pudo cargar el catálogo. ¿Quizás está vacío?")
+                    except Exception as e:
+                        st.error("❌ No se pudo guardar.")
+                        st.warning(f"Detalle técnico: {e}")
+
 
     # --- SUB-PESTAÑA 2: CARGA MASIVA (CORREGIDO: AHORA CARGA ESTACIONES) ---
     with subtab_carga:
