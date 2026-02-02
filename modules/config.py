@@ -9,15 +9,24 @@ class Config:
 
     APP_TITLE = "SIHCLI-POTER"
 
-    # --- MAPEO EXACTO CON BASE DE DATOS NUEVA ---
-    DATE_COL = "fecha"              # Antes: fecha_mes_año
-    PRECIPITATION_COL = "valor"     # Antes: precipitation
+    # --- MAPEO EXACTO CON BASE DE DATOS NUEVA (CORREGIDO) ---
+    # Antes: "fecha_mes_año" -> Ahora: "fecha"
+    DATE_COL = "fecha"
+    
+    # Antes: "precipitation" -> Ahora: "valor"
+    PRECIPITATION_COL = "valor"
 
     # Metadatos de Estaciones
-    STATION_NAME_COL = "nombre"     # Antes: nom_est
-    ALTITUDE_COL = "altitud"        # Antes: alt_est
+    # Antes: "nom_est" -> Ahora: "nombre"
+    STATION_NAME_COL = "nombre"
+    
+    # Antes: "alt_est" -> Ahora: "altitud"
+    ALTITUDE_COL = "altitud"
+    
     MUNICIPALITY_COL = "municipio"
-    REGION_COL = "departamento"     # Antes: depto_region
+    
+    # Antes: "depto_region" -> Ahora: "departamento"
+    REGION_COL = "departamento"
 
     # Columnas geográficas
     LATITUDE_COL = "latitud"
@@ -39,7 +48,7 @@ class Config:
     ASSETS_DIR = os.path.join(_PROJECT_ROOT, "assets")
     DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
 
-    # Archivos de Imagen y Raster
+    # Archivos
     LOGO_PATH = os.path.join(ASSETS_DIR, "CuencaVerde_Logo.jpg")
     CHAAC_IMAGE_PATH = os.path.join(ASSETS_DIR, "chaac.png")
     LAND_COVER_RASTER_PATH = os.path.join(DATA_DIR, "Cob25m_WGS84.tif")

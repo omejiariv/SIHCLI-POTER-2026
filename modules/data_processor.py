@@ -32,14 +32,15 @@ def complete_series(df):
 # --- FUNCIONES SQL OPTIMIZADAS ---
 
 def get_lista_estaciones_simple():
-    """Trae lista para el selector usando la TABLA NUEVA."""
+    """Trae lista para el selector usando la TABLA NUEVA 'estaciones'."""
     engine = get_engine()
     if not engine: return []
     try:
         with engine.connect() as conn:
-            # CAMBIO: nom_est -> nombre
+            # CAMBIO: Usamos 'nombre' en lugar de 'nom_est'
             query = text("SELECT id_estacion, nombre, municipio FROM estaciones ORDER BY nombre ASC")
             df = pd.read_sql(query, conn)
+            # Etiqueta para el selector
             df['label'] = df.apply(lambda x: f"{x['nombre']} [{x['id_estacion']}]", axis=1)
             return df['label'].tolist()
     except Exception as e:
@@ -47,13 +48,12 @@ def get_lista_estaciones_simple():
         return []
 
 def get_datos_estacion_individual(station_id):
-    """Trae datos de lluvia de la TABLA NUEVA."""
+    """Trae datos de lluvia de la TABLA NUEVA 'precipitacion'."""
     engine = get_engine()
     if not engine: return pd.DataFrame()
     try:
         with engine.connect() as conn:
-            # CAMBIO: precipitacion_mensual -> precipitacion
-            # CAMBIO: fecha_mes_año -> fecha, precipitation -> valor
+            # CAMBIO: Tabla 'precipitacion', columna 'valor'
             query = text("""
                 SELECT fecha, valor 
                 FROM precipitacion 
@@ -62,7 +62,7 @@ def get_datos_estacion_individual(station_id):
             """)
             df = pd.read_sql(query, conn, params={"id": station_id})
             
-            # Renombrar para coincidir con Config
+            # Renombrar para coincidir con Config (aunque ya deberían coincidir)
             df = df.rename(columns={"fecha": Config.DATE_COL, "valor": Config.PRECIPITATION_COL})
             df[Config.DATE_COL] = pd.to_datetime(df[Config.DATE_COL])
             return df
@@ -83,7 +83,7 @@ def load_spatial_data():
 
     try:
         # 1. ESTACIONES
-        # CAMBIO: Nombres de columnas actualizados
+        # CAMBIO: Nombres de columnas actualizados (nombre, altitud, departamento)
         sql_est = text("SELECT id_estacion, nombre, altitud, municipio, departamento, latitud, longitud FROM estaciones")
         df_est = pd.read_sql(sql_est, engine)
         
@@ -93,7 +93,7 @@ def load_spatial_data():
                 geometry=gpd.points_from_xy(df_est.longitud, df_est.latitud), 
                 crs="EPSG:4326"
             )
-            # Renombrar según Config
+            # Renombrar según Config para asegurar compatibilidad
             gdf_stations = gdf_stations.rename(columns={
                 "nombre": Config.STATION_NAME_COL,
                 "altitud": Config.ALTITUDE_COL,
@@ -103,7 +103,7 @@ def load_spatial_data():
                 "longitud": Config.LONGITUDE_COL
             })
 
-        # 2. OTRAS GEOMETRÍAS (Asumiendo que estas tablas no cambiaron o son PostGIS directo)
+        # 2. OTRAS GEOMETRÍAS (Fallback robusto)
         try:
             gdf_municipios = gpd.read_postgis("SELECT * FROM municipios", engine, geom_col="geometry")
             gdf_subcuencas = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry")
@@ -113,5 +113,5 @@ def load_spatial_data():
         return gdf_stations, gdf_municipios, gdf_subcuencas, gdf_predios
 
     except Exception as e:
-        st.warning(f"Alerta GIS: {e}")
+        # st.warning(f"Alerta GIS: {e}") # Descomentar para debug
         return gdf_stations, gdf_municipios, gdf_subcuencas, gdf_predios

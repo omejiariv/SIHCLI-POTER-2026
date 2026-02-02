@@ -860,10 +860,28 @@ with tabs[11]:
                 
                 if sel_est:
                     cod_est = sel_est.split(" - ")[0]
-                    # Selector de Año (Orden descendente)
-                    anio_sel = st.selectbox("Selecciona Año:", range(2026, 1969, -1))
                     
-                    # Consulta segura
+                    # --- MEJORA: Consultar años disponibles primero ---
+                    q_years = text(f"""
+                        SELECT DISTINCT EXTRACT(YEAR FROM fecha)::int as anio 
+                        FROM precipitacion 
+                        WHERE id_estacion = '{cod_est}' 
+                        ORDER BY anio DESC
+                    """)
+                    df_years = pd.read_sql(q_years, engine)
+                    
+                    if df_years.empty:
+                        st.error("⚠️ Esta estación NO tiene datos de lluvia cargados en la base de datos.")
+                        # Opción para añadir datos manualmente desde cero
+                        anios_disp = range(2026, 1969, -1)
+                    else:
+                        st.success(f"✅ Datos disponibles: {len(df_years)} años registrados ({df_years['anio'].min()} - {df_years['anio'].max()})")
+                        anios_disp = df_years['anio'].tolist()
+
+                    # Selector de Año Inteligente
+                    anio_sel = st.selectbox("Selecciona Año:", anios_disp)
+                    
+                    # Consulta de datos (usando nombres nuevos)
                     query_data = text(f"""
                         SELECT fecha, valor, origen 
                         FROM precipitacion 
@@ -872,6 +890,7 @@ with tabs[11]:
                         ORDER BY fecha ASC
                     """)
                     df_lluvia_est = pd.read_sql(query_data, engine)
+                    
                     
                     col_edit, col_chart = st.columns([1, 2])
                     
