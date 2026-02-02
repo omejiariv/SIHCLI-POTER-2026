@@ -111,9 +111,9 @@ def load_data_from_db():
 
         # B. Lluvia
         q_rain = text("""
-            SELECT p.id_estacion_fk, e.nombre, p.fecha, p.valor 
-            FROM precipitacion_mensual p 
-            JOIN estaciones e ON p.id_estacion_fk = e.id_estacion
+            SELECT p.id_estacion, e.nombre, p.fecha, p.valor
+            FROM precipitacion p
+            OIN estaciones e ON p.id_estacion = e.id_estacion
         """)
         df_rain = pd.read_sql(q_rain, engine)
         
