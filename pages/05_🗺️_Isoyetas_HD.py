@@ -322,7 +322,7 @@ if complete_series: do_interp_temp = st.sidebar.checkbox("🔄 Interpolación Te
 
 suavidad = st.sidebar.slider("🖌️ Suavizado (RBF):", 0.0, 2.0, 0.0, key='slider_smooth')
 
-# --- 5. LÓGICA ESPACIAL ---
+# --- 5. LÓGICA ESPACIAL (CORREGIDA) ---
 if len(df_filtered_meta) > 0:
     gdf_target = df_filtered_meta
     minx, miny, maxx, maxy = gdf_target.total_bounds
@@ -333,59 +333,82 @@ if len(df_filtered_meta) > 0:
     
     with tab_mapa:
         try:
+            # Usamos get_engine() si lo tienes importado, si no, mantén create_engine
+            # engine = get_engine() 
             engine = create_engine(st.secrets["DATABASE_URL"])
             df_agg = pd.DataFrame()
             
+            # --- CONSULTA SQL ACTUALIZADA ---
+            # 1. Usamos 'p.id_estacion' para el JOIN (no fk)
+            # 2. Usamos 'e.longitud' y 'e.latitud' en vez de geom (más robusto)
             q_raw = text(f"""
                 SELECT p.id_estacion, p.fecha, p.valor
                 FROM precipitacion p 
                 JOIN estaciones e ON p.id_estacion = e.id_estacion
-                WHERE ST_X(e.geom::geometry) BETWEEN :mx AND :Mx 
-                AND ST_Y(e.geom::geometry) BETWEEN :my AND :My
+                WHERE e.longitud BETWEEN :mx AND :Mx 
+                AND e.latitud BETWEEN :my AND :My
             """)
-
             df_raw = pd.read_sql(q_raw, engine, params={"mx":q_minx, "my":q_miny, "Mx":q_maxx, "My":q_maxy})
             
             if not df_raw.empty:
-                df_proc = df_raw.rename(columns={'id_estacion_fk': 'id_estacion', 'precipitation': 'precipitation'})
-                df_proc['fecha_mes_año'] = pd.to_datetime(df_proc['fecha_mes_año'])
-                df_proc = df_proc.groupby(['id_estacion', 'fecha_mes_año'])['precipitation'].mean().reset_index()
+                # --- PROCESAMIENTO PANDAS (NOMBRES NUEVOS) ---
+                df_proc = df_raw.copy()
+                
+                # Normalizamos fecha (ya viene como fecha, pero aseguramos)
+                df_proc['fecha'] = pd.to_datetime(df_proc['fecha'])
+                
+                # Agrupamos por ID y FECHA usando 'valor'
+                df_proc = df_proc.groupby(['id_estacion', 'fecha'])['valor'].mean().reset_index()
                 
                 if do_interp_temp and complete_series:
                     with st.spinner("Interpolando series..."):
+                        # complete_series ya debe usar Config.PRECIPITATION_COL ('valor')
                         df_processed = complete_series(df_proc) 
                 else:
                     df_processed = df_proc.copy()
                 
-                df_processed['year'] = df_processed['fecha_mes_año'].dt.year
-                year_counts = df_processed.groupby(['id_estacion', 'year'])['precipitation'].count().reset_index(name='count')
+                # Cálculos temporales
+                df_processed['year'] = df_processed['fecha'].dt.year
+                
+                # Conteo de registros (usando 'valor')
+                year_counts = df_processed.groupby(['id_estacion', 'year'])['valor'].count().reset_index(name='count')
                 
                 if not do_interp_temp:
+                    # Filtro de calidad (ej: meses mínimos)
                     valid_years = year_counts[year_counts['count'] >= 10]
                     df_processed = pd.merge(df_processed, valid_years[['id_estacion', 'year']], on=['id_estacion', 'year'])
                 
-                df_annual_sums = df_processed.groupby(['id_estacion', 'year'])['precipitation'].sum().reset_index(name='total_anual')
+                # Suma Anual
+                df_annual_sums = df_processed.groupby(['id_estacion', 'year'])['valor'].sum().reset_index(name='total_anual')
                 df_annual_sums = df_annual_sums.rename(columns={'id_estacion': 'station_id'})
 
+                # --- LÓGICA DE ANÁLISIS ---
                 if tipo_analisis == "Año Específico":
                     df_agg = df_annual_sums[df_annual_sums['year'] == params_analisis['year']].copy()
                     df_agg = df_agg.rename(columns={'total_anual': 'valor'})
+                
                 elif tipo_analisis == "Mínimo Histórico":
                     df_agg = df_annual_sums.groupby('station_id')['total_anual'].min().reset_index(name='valor')
+                
                 elif tipo_analisis == "Máximo Histórico":
                     df_agg = df_annual_sums.groupby('station_id')['total_anual'].max().reset_index(name='valor')
+                
                 elif tipo_analisis == "Promedio Multianual":
                     mask = (df_annual_sums['year'] >= params_analisis['start']) & (df_annual_sums['year'] <= params_analisis['end'])
                     df_agg = df_annual_sums[mask].groupby('station_id')['total_anual'].mean().reset_index(name='valor')
+                
                 elif tipo_analisis == "Variabilidad Temporal":
                     mask = (df_annual_sums['year'] >= params_analisis['start']) & (df_annual_sums['year'] <= params_analisis['end'])
                     df_agg = df_annual_sums[mask].groupby('station_id')['total_anual'].std().reset_index(name='valor')
+                
                 elif tipo_analisis == "Pronóstico Futuro":
                     with st.spinner("Proyectando..."):
                         df_agg = calcular_pronostico(df_annual_sums, params_analisis['target'])
 
             if not df_agg.empty:
                 df_agg = df_agg.rename(columns={'station_id': col_id})
+                
+                # Merge con metadatos
                 cols_merge = [col_id, col_nom, 'lat_calc', 'lon_calc']
                 if col_muni: cols_merge.append(col_muni)
                 if col_alt: cols_merge.append(col_alt)
@@ -393,6 +416,7 @@ if len(df_filtered_meta) > 0:
                 
                 df_final = pd.merge(df_agg, gdf_meta[list(set(cols_merge))], on=col_id)
                 
+                # Agrupación final para evitar duplicados espaciales
                 df_final = df_final.groupby(['lat_calc', 'lon_calc']).agg({
                     col_id: 'first', col_nom: 'first', 'valor': 'mean', 
                     col_muni: 'first', col_alt: 'first', col_cuenca: 'first'
@@ -406,6 +430,8 @@ if len(df_filtered_meta) > 0:
                         grid_res = 200
                         
                         x_raw, y_raw, z_raw = df_final['lon_calc'].values, df_final['lat_calc'].values, df_final['valor'].values
+                        
+                        # Normalización para RBF
                         x_mean, x_std = x_raw.mean(), x_raw.std()
                         y_mean, y_std = y_raw.mean(), y_raw.std()
                         x_norm = (x_raw - x_mean) / x_std
@@ -415,6 +441,7 @@ if len(df_filtered_meta) > 0:
                         gx_norm = (gx_raw - x_mean) / x_std
                         gy_norm = (gy_raw - y_mean) / y_std
                         
+                        # Interpolación RBF
                         rbf = Rbf(x_norm, y_norm, z_raw, function='thin_plate', smooth=suavidad)
                         grid_z = rbf(gx_norm, gy_norm)
                         grid_z = np.maximum(grid_z, 0)
@@ -423,6 +450,7 @@ if len(df_filtered_meta) > 0:
                         z_max = df_final['valor'].max()
                         if z_max == z_min: z_max += 0.1
                         
+                        # --- GRAFICAR ---
                         fig = go.Figure()
                         tit = f"Isoyetas: {tipo_analisis}"
                         if tipo_analisis == "Año Específico": tit += f" ({params_analisis['year']})"
@@ -441,7 +469,7 @@ if len(df_filtered_meta) > 0:
                             opacity=0.8, connectgaps=True, line_smoothing=1.3
                         ))
                         
-                        # --- CAPAS DE CONTEXTO VISIBLES ---
+                        # Capas de contexto
                         add_context_layers_robust(fig, q_minx, q_miny, q_maxx, q_maxy)
                         
                         fig.add_trace(go.Scatter(
@@ -455,7 +483,7 @@ if len(df_filtered_meta) > 0:
                         fig.update_layout(title=tit, height=650, margin=dict(l=0,r=0,t=30,b=0), xaxis=dict(visible=False, scaleanchor="y"), yaxis=dict(visible=False), plot_bgcolor='white', hovermode='closest')
                         st.plotly_chart(fig, use_container_width=True)
                         
-                        # --- ANÁLISIS AUTOMÁTICO CORREGIDO ---
+                        # Análisis de Texto
                         st.info(generar_analisis_texto_corregido(df_final, tipo_analisis))
                         
                 else:
@@ -469,6 +497,7 @@ if len(df_filtered_meta) > 0:
         except Exception as e:
             st.error(f"Error técnico: {e}")
 
+    # --- PESTAÑA DESCARGAS ---
     with tab_datos:
         if 'df_final' in locals() and not df_final.empty:
             st.subheader("💾 Descargas GIS")
