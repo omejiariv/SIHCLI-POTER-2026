@@ -48,27 +48,31 @@ def get_lista_estaciones_simple():
         return []
 
 def get_datos_estacion_individual(station_id):
-    """Trae datos de lluvia de la TABLA NUEVA 'precipitacion'."""
+    """Trae datos de lluvia de la TABLA NUEVA (Blindado contra espacios)."""
     engine = get_engine()
     if not engine: return pd.DataFrame()
+
     try:
         with engine.connect() as conn:
-            # CAMBIO: Tabla 'precipitacion', columna 'valor'
+            # USAMOS TRIM PARA IGNORAR ESPACIOS INVISIBLES
             query = text("""
                 SELECT fecha, valor 
                 FROM precipitacion 
-                WHERE id_estacion = :id 
+                WHERE TRIM(id_estacion) = TRIM(:id) 
                 ORDER BY fecha ASC
             """)
-            df = pd.read_sql(query, conn, params={"id": station_id})
+            # Aseguramos que el ID sea string limpio
+            st_id_clean = str(station_id).strip()
+            df = pd.read_sql(query, conn, params={"id": st_id_clean})
             
-            # Renombrar para coincidir con Config (aunque ya deberían coincidir)
+            # Estandarizar nombres
             df = df.rename(columns={"fecha": Config.DATE_COL, "valor": Config.PRECIPITATION_COL})
             df[Config.DATE_COL] = pd.to_datetime(df[Config.DATE_COL])
             return df
     except Exception as e:
-        st.error(f"Error cargando datos: {e}")
+        st.error(f"Error cargando datos de estación {station_id}: {e}")
         return pd.DataFrame()
+
 
 @st.cache_data(show_spinner="Cargando ecosistema espacial...", ttl=600)
 def load_spatial_data():

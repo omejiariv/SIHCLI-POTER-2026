@@ -872,7 +872,7 @@ if gdf_zona is not None:
 st.markdown("---")
 with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=False):
     
-    st.info("Genera tabla maestra con Modelo Aditivo (Escorrentía Directa + Caudal Base) y Estadísticas Extremas (Log-Normal para sequías).")
+    st.info("Genera tabla maestra con Modelo Aditivo (Escorrentía Directa + Caudal Base) y Estadísticas Extremas.")
 
     # 1. VER REPORTE EXISTENTE
     try:
@@ -888,8 +888,10 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
     # 2. CONFIGURACIÓN
     st.write("#### ⚙️ Configuración")
     try:
-        cols_bd = pd.read_sql("SELECT column_name FROM information_schema.columns WHERE table_name = 'cuencas' AND column_name != 'geometry'", engine)['column_name'].tolist()
-        idx_def = next((i for i, c in enumerate(cols_bd) if c in ['n_nss3', 'subc_lbl']), 0)
+        # Buscamos columnas de texto para usarlas como nombre
+        cols_bd = pd.read_sql("SELECT column_name FROM information_schema.columns WHERE table_name = 'cuencas' AND data_type = 'text'", engine)['column_name'].tolist()
+        # Intentamos adivinar la columna correcta
+        idx_def = next((i for i, c in enumerate(cols_bd) if c in ['n_nss3', 'subc_lbl', 'nombre', 'name']), 0)
         col_nombre_reporte = st.selectbox("🏷️ Columna para Nombres:", cols_bd, index=idx_def, key="sel_col_rep_final")
     except:
         col_nombre_reporte = 'nombre_cuenca'
@@ -900,26 +902,45 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
         from rasterio.mask import mask
         
         try:
-            # A. CARGAR DATOS
+            # A. CARGAR DATOS (ACTUALIZADO A NUEVA BD)
             with st.spinner("Cargando geometrías y normalizando datos..."):
-                # Cuencas
+                
+                # 1. Cuencas (Polígonos)
+                # Asumimos que la tabla 'cuencas' tiene columna 'geometry' o 'geom'
                 gdf_all = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry")
+                # Asegurar CRS Magnas-Sirgas (EPSG:3116) para cálculos métricos correctos
                 if gdf_all.crs and gdf_all.crs.to_string() != "EPSG:3116":
                     gdf_all = gdf_all.to_crs("EPSG:3116")
                 
-                # Estaciones
-                gdf_est = gpd.read_postgis("SELECT id_estacion, geom FROM estaciones", engine, geom_col="geom")
+                # 2. Estaciones (Puntos)
+                # CORRECCIÓN: Construimos la geometría desde lat/long para ser infalibles
+                gdf_est = gpd.read_postgis("""
+                    SELECT id_estacion, ST_SetSRID(ST_MakePoint(longitud, latitud), 4326) as geometry 
+                    FROM estaciones
+                """, engine, geom_col="geometry")
+                
                 if gdf_est.crs and gdf_est.crs.to_string() != "EPSG:3116":
                     gdf_est = gdf_est.to_crs("EPSG:3116")
                 gdf_est['id_estacion'] = gdf_est['id_estacion'].astype(str)
 
-                # Lluvias
-                df_rain_anual = pd.read_sql("SELECT id_estacion_fk, AVG(precipitation)*12 as ppt_anual FROM precipitacion_mensual GROUP BY id_estacion_fk", engine)
-                df_rain_anual['id_estacion_fk'] = df_rain_anual['id_estacion_fk'].astype(str)
+                # 3. Lluvias (Datos) - CORRECCIÓN DE NOMBRES
+                # Tabla: precipitacion | Cols: id_estacion, valor, fecha
+                
+                # Promedio Anual por Estación
+                df_rain_anual = pd.read_sql("""
+                    SELECT id_estacion, AVG(valor)*12 as ppt_anual 
+                    FROM precipitacion 
+                    GROUP BY id_estacion
+                """, engine)
+                df_rain_anual['id_estacion'] = df_rain_anual['id_estacion'].astype(str)
 
-                df_rain_mensual = pd.read_sql("SELECT id_estacion_fk, fecha, precipitation FROM precipitacion_mensual", engine)
+                # Serie Mensual Completa
+                df_rain_mensual = pd.read_sql("""
+                    SELECT id_estacion, fecha, valor 
+                    FROM precipitacion
+                """, engine)
                 df_rain_mensual['fecha'] = pd.to_datetime(df_rain_mensual['fecha'])
-                df_rain_mensual['id_estacion_fk'] = df_rain_mensual['id_estacion_fk'].astype(str)
+                df_rain_mensual['id_estacion'] = df_rain_mensual['id_estacion'].astype(str)
 
             # B. PREPARAR DEM
             path_dem = "data/DemAntioquia_EPSG3116.tif"
@@ -929,21 +950,21 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
             if os.path.exists(path_dem):
                 src_dem = rasterio.open(path_dem)
                 crs_dem_objetivo = src_dem.crs
-                # Fix para Origen Nacional si no tiene CRS
                 if not crs_dem_objetivo and src_dem.transform[2] > 4000000:
                     crs_dem_objetivo = "EPSG:9377"
 
-            # C. BUCLE
+            # C. BUCLE DE PROCESAMIENTO
             progreso = st.progress(0)
             status = st.empty()
             lista_resultados = []
             total = len(gdf_all)
             
             for i, row in gdf_all.iterrows():
+                # Obtener nombre seguro
                 nom = str(row.get(col_nombre_reporte, f"Cuenca {i}"))
                 status.text(f"Procesando {i+1}/{total}: {nom}...")
                 
-                # Geometría Base (Bogotá - 3116)
+                # Geometría Base
                 geom_base = row.geometry
                 area_km2 = geom_base.area / 1e6
                 perim_km = geom_base.length / 1000
@@ -973,12 +994,11 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                     except: pass
 
                 # --- 2. HIDROLOGÍA Y BALANCE ---
-                # A. Parámetros Climáticos
                 if alt_med == 0: alt_med = 1500
                 temp = max(0, 28 - 0.006 * alt_med)
                 L = 300 + 25*temp + 0.05*(temp**3)
 
-                # B. Buffer y Lluvias
+                # Buffer y Lluvias
                 buffer_geom = geom_base.buffer(20000) 
                 est_in = gdf_est[gdf_est.geometry.within(buffer_geom)]
                 n_est = len(est_in)
@@ -987,12 +1007,13 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 
                 if n_est > 0:
                     ids = est_in['id_estacion'].astype(str).unique().tolist()
-                    ppt_vals = df_rain_anual[df_rain_anual['id_estacion_fk'].isin(ids)]['ppt_anual']
+                    # CORRECCIÓN: Usamos id_estacion (no fk) y ppt_anual (calculado arriba)
+                    ppt_vals = df_rain_anual[df_rain_anual['id_estacion'].isin(ids)]['ppt_anual']
                     if not ppt_vals.empty: ppt_cuenca = ppt_vals.mean()
                 else:
                     ppt_cuenca = 2000 # Fallback
 
-                # C. Balance Turc Anual
+                # Balance Turc
                 etr = ppt_cuenca / np.sqrt(0.9 + (ppt_cuenca/L)**2) if (L>0 and ppt_cuenca>0) else 0
                 etr = min(etr, ppt_cuenca)
                 esc_total_anual = ppt_cuenca - etr 
@@ -1002,26 +1023,30 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                 recarga_mm = inf * 0.50 
                 esc_directa_mm = esc_total_anual - inf 
                 
-                # Caudales Base (Modelo Aditivo)
+                # Caudales
                 q_base_m3s = (recarga_mm * area_km2 * 1000) / 31536000
                 q_medio_total = ((esc_directa_mm * area_km2 * 1000)/31536000) + q_base_m3s
                 
-                # Coeficiente para lo rápido
                 c_directo = esc_directa_mm / ppt_cuenca if ppt_cuenca > 0 else 0.3
 
                 # --- 3. ESTADÍSTICAS AVANZADAS ---
                 ec_fdc = "N/A"
                 stats_ext = {}
                 
-                if n_est > 0 and ppt_cuenca > 0 and analysis:
+                # Verificamos si existe el módulo analysis
+                has_analysis = 'analysis' in locals() or 'analysis' in globals()
+                
+                if n_est > 0 and ppt_cuenca > 0 and has_analysis:
                     try:
                         ids = est_in['id_estacion'].astype(str).unique().tolist()
-                        s_mensual = df_rain_mensual[df_rain_mensual['id_estacion_fk'].isin(ids)]
+                        # CORRECCIÓN: Filtro por id_estacion y uso de 'valor'
+                        s_mensual = df_rain_mensual[df_rain_mensual['id_estacion'].isin(ids)]
                         
                         if not s_mensual.empty:
-                            s_sintetica = s_mensual.groupby('fecha')['precipitation'].mean()
+                            # Agrupar por fecha y promediar 'valor'
+                            s_sintetica = s_mensual.groupby('fecha')['valor'].mean()
                             
-                            # Estadísticas con Suelo Hidrológico
+                            # Estadísticas
                             stats_ext = analysis.calculate_hydrological_statistics(
                                 s_sintetica, 
                                 runoff_coeff=c_directo, 
@@ -1029,11 +1054,11 @@ with st.expander("📑 Reporte Maestro de Cuencas (Tabla Global)", expanded=Fals
                                 q_base_m3s=q_base_m3s
                             )
                             
-                            # FDC
+                            # Curva de Duración (FDC)
                             fdc = analysis.calculate_duration_curve(s_sintetica, runoff_coeff=c_directo, area_km2=area_km2, q_base_m3s=q_base_m3s)
                             if fdc: ec_fdc = fdc.get("equation", "N/A")
                     except: 
-                        pass # <--- AQUÍ ESTABA EL ERROR: Faltaba cerrar el try
+                        pass
 
                 # Índices
                 im = ppt_cuenca / (temp + 10)
