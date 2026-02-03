@@ -2148,12 +2148,12 @@ def display_graphs_tab(
                 ) * 100
                 st.dataframe(comp_df.style.format("{:.1f}"))
 
-    # 7. COMPARATIVA MULTIESCALAR (VERSIÓN FINAL CON DESCARGA Y METADATOS)
+# 7. COMPARATIVA MULTIESCALAR (VERSIÓN FINAL BLINDADA)
     # -------------------------------------------------------------------------
     with tabs[6]:
         st.subheader("📊 Comparativa de Regímenes de Lluvia")
 
-        # 1. MENSAJE INSPIRADOR (Solicitud 1)
+        # 1. MENSAJE INSPIRADOR
         st.info(
             "💡 **Análisis Multiescalar:** Aquí puedes pasar de un análisis individual a un análisis "
             "comparativo multiescalar para entender diferencias climáticas entre zonas vecinas o lejanas."
@@ -2165,72 +2165,94 @@ def display_graphs_tab(
             st.session_state.get('gdf_subcuencas') is not None):
             
             try:
-                # --- PREPARACIÓN DE DATOS (Mantenemos la lógica que ya funciona) ---
+                # --- PREPARACIÓN DE DATOS ---
                 df_datos = st.session_state['df_long'].copy()
                 df_meta = st.session_state['gdf_stations'].copy()
                 gdf_poligonos = st.session_state['gdf_subcuencas'].copy()
 
-                col_codigo_datos = 'id_estacion'      
-                col_valor = 'precipitacion_mm'        
-                col_fecha = 'fecha' if 'fecha' in df_datos.columns else 'fecha_mes_año'
-                col_codigo_meta = 'Id_estacio'
+                # --- CONFIGURACIÓN DE COLUMNAS (DETECCIÓN INTELIGENTE) ---
+                # Buscamos ID en datos
+                col_codigo_datos = next((c for c in ['Codigo', 'id_estacion', 'ID'] if c in df_datos.columns), 'id_estacion')
+                col_valor = next((c for c in ['precipitacion_mm', 'Valor', 'valor'] if c in df_datos.columns), 'valor')
+                col_fecha = next((c for c in ['fecha', 'fecha_mes_año', 'Date'] if c in df_datos.columns), 'fecha')
+                
+                # Buscamos ID en metadatos
+                col_codigo_meta = next((c for c in ['Id_estacio', 'Codigo', 'id_estacion'] if c in df_meta.columns), 'id_estacion')
+                
                 col_municipio = 'municipio'
-                col_region = 'SUBREGION'
-                col_cuenca = 'SUBC_LBL'
+                col_region = 'SUBREGION' # Ajustar si tu shapefile tiene otro nombre
+                col_cuenca = 'SUBC_LBL'  # Ajustar si tu shapefile tiene otro nombre
 
-                # A) Limpieza de Coordenadas
-                for col_coord in ['Longitud_geo', 'Latitud_geo']:
-                    if df_meta[col_coord].dtype == 'object':
-                        df_meta[col_coord] = (
-                            df_meta[col_coord]
-                            .astype(str)
-                            .str.replace(',', '.', regex=False)
-                            .apply(pd.to_numeric, errors='coerce')
+                # --- A) LIMPIEZA Y GEOMETRÍA ---
+                # Detectar columnas de coordenadas disponibles (Viejas o Nuevas)
+                c_lon = next((c for c in ['Longitud_geo', 'longitud', 'lon'] if c in df_meta.columns), None)
+                c_lat = next((c for c in ['Latitud_geo', 'latitud', 'lat'] if c in df_meta.columns), None)
+
+                if c_lon and c_lat:
+                    # Limpieza de comas decimales si son strings
+                    for col in [c_lon, c_lat]:
+                        if df_meta[col].dtype == 'object':
+                            df_meta[col] = (
+                                df_meta[col].astype(str)
+                                .str.replace(',', '.', regex=False)
+                                .apply(pd.to_numeric, errors='coerce')
+                            )
+                    
+                    df_meta = df_meta.dropna(subset=[c_lon, c_lat])
+
+                    # Reconstruir geometría si es necesario (para el Spatial Join)
+                    if not isinstance(df_meta, gpd.GeoDataFrame) or df_meta.geometry.isna().all():
+                        df_meta = gpd.GeoDataFrame(
+                            df_meta,
+                            geometry=gpd.points_from_xy(df_meta[c_lon], df_meta[c_lat]),
+                            crs="EPSG:4326"
                         )
+                else:
+                    st.error("No se encontraron columnas de latitud/longitud en los metadatos de estaciones.")
+                    st.stop()
                 
-                df_meta = df_meta.dropna(subset=['Longitud_geo', 'Latitud_geo'])
-
-                if not isinstance(df_meta, gpd.GeoDataFrame):
-                    df_meta = gpd.GeoDataFrame(
-                        df_meta,
-                        geometry=gpd.points_from_xy(df_meta['Longitud_geo'], df_meta['Latitud_geo']),
-                        crs="EPSG:4326"
-                    )
-                
-                if df_meta.crs != gdf_poligonos.crs:
+                # Asegurar CRS igual
+                if df_meta.crs is None: df_meta.set_crs("EPSG:4326", inplace=True)
+                if gdf_poligonos.crs and df_meta.crs != gdf_poligonos.crs:
                     gdf_poligonos = gdf_poligonos.to_crs(df_meta.crs)
 
-                # B) Cruce Espacial
+                # --- B) CRUCE ESPACIAL (SPATIAL JOIN) ---
+                # Esto asigna a cada estación su Región/Cuenca real basada en ubicación
+                cols_poligono = ['geometry']
+                if col_cuenca in gdf_poligonos.columns: cols_poligono.append(col_cuenca)
+                if col_region in gdf_poligonos.columns: cols_poligono.append(col_region)
+                
                 df_meta_espacial = gpd.sjoin(
                     df_meta, 
-                    gdf_poligonos[['geometry', col_cuenca]], 
+                    gdf_poligonos[cols_poligono], 
                     how="left", 
                     predicate="intersects"
                 )
 
-                # C) Unión Final
-                df_datos[col_codigo_datos] = df_datos[col_codigo_datos].astype(str)
-                df_meta_espacial[col_codigo_meta] = df_meta_espacial[col_codigo_meta].astype(str)
+                # --- C) UNIÓN FINAL DATOS + METADATOS ---
+                df_datos[col_codigo_datos] = df_datos[col_codigo_datos].astype(str).str.strip()
+                df_meta_espacial[col_codigo_meta] = df_meta_espacial[col_codigo_meta].astype(str).str.strip()
+
+                cols_interes = [col_codigo_meta]
+                if col_municipio in df_meta_espacial.columns: cols_interes.append(col_municipio)
+                if col_cuenca in df_meta_espacial.columns: cols_interes.append(col_cuenca)
+                if col_region in df_meta_espacial.columns: cols_interes.append(col_region)
 
                 df_full = pd.merge(
                     df_datos,
-                    df_meta_espacial[[col_codigo_meta, col_municipio, col_region, col_cuenca]],
+                    df_meta_espacial[list(set(cols_interes))], # set para evitar duplicados
                     left_on=col_codigo_datos,
                     right_on=col_codigo_meta,
                     how='inner'
                 )
                 
-                # D) Procesamiento Temporal (Traducción de Fechas)
-                fechas_str = df_full[col_fecha].astype(str).str.lower()
-                remplazos = {
-                    'ene': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'abr': 'Apr', 
-                    'may': 'May', 'jun': 'Jun', 'jul': 'Jul', 'ago': 'Aug', 
-                    'sep': 'Sep', 'oct': 'Oct', 'nov': 'Nov', 'dic': 'Dec'
-                }
-                for mes_es, mes_en in remplazos.items():
-                    fechas_str = fechas_str.str.replace(mes_es, mes_en, regex=False)
-                
-                df_full[col_fecha] = pd.to_datetime(fechas_str, format='%b-%y', errors='coerce')
+                if df_full.empty:
+                    st.warning("No se pudieron cruzar datos de lluvia con la ubicación espacial.")
+                    st.stop()
+
+                # --- D) PROCESAMIENTO TEMPORAL ---
+                # Asegurar formato fecha
+                df_full[col_fecha] = pd.to_datetime(df_full[col_fecha], errors='coerce')
                 df_full['MES_NUM'] = df_full[col_fecha].dt.month
                 mapa_meses = {1:'Ene', 2:'Feb', 3:'Mar', 4:'Abr', 5:'May', 6:'Jun', 
                               7:'Jul', 8:'Ago', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dic'}
@@ -2240,18 +2262,15 @@ def display_graphs_tab(
                 col1, col2 = st.columns([1, 2])
                 
                 with col1:
-                    nivel_analisis = st.radio(
-                        "Nivel de Agregación:",
-                        ["Municipio", "Cuenca", "Región"],
-                        key="radio_multi_nivel_final"
-                    )
+                    opts_nivel = ["Municipio"]
+                    if col_cuenca in df_full.columns: opts_nivel.append("Cuenca")
+                    if col_region in df_full.columns: opts_nivel.append("Región")
                     
-                    if nivel_analisis == "Municipio":
-                        columna_filtro = col_municipio
-                    elif nivel_analisis == "Cuenca":
-                        columna_filtro = col_cuenca
-                    else:
-                        columna_filtro = col_region
+                    nivel_analisis = st.radio("Nivel de Agregación:", opts_nivel, key="radio_multi_nivel_final")
+                    
+                    columna_filtro = col_municipio
+                    if nivel_analisis == "Cuenca": columna_filtro = col_cuenca
+                    elif nivel_analisis == "Región": columna_filtro = col_region
 
                     opciones = sorted(df_full[columna_filtro].dropna().astype(str).unique())
 
@@ -2265,7 +2284,7 @@ def display_graphs_tab(
                 if seleccion:
                     df_filtrado = df_full[df_full[columna_filtro].isin(seleccion)]
                     
-                    # Agrupación para el gráfico
+                    # Agrupación para el gráfico (Promedio mensual multianual)
                     df_agrupado = df_filtrado.groupby(['MES_NUM', 'Nombre_Mes', columna_filtro])[col_valor].mean().reset_index()
                     df_agrupado = df_agrupado.sort_values('MES_NUM')
 
@@ -2275,21 +2294,20 @@ def display_graphs_tab(
                         y=col_valor,
                         color=columna_filtro,
                         title=f"Patrón Medio Anual Comparativo ({nivel_analisis})",
-                        markers=True
+                        markers=True,
+                        labels={col_valor: 'Precipitación (mm)', 'Nombre_Mes': 'Mes'}
                     )
                     
                     fig.update_layout(hovermode="x unified", legend=dict(orientation="h", y=1.1))
-                    st.plotly_chart(fig)
+                    st.plotly_chart(fig, use_container_width=True)
                     
-                    # 2. BOTÓN DE DESCARGA (Solicitud 2)
-                    # Preparamos los datos en formato CSV para la descarga
-                    # Usamos pivot para que sea más legible en Excel (Meses como columnas)
+                    # --- BOTÓN DE DESCARGA ---
                     df_export = df_agrupado.pivot(index=columna_filtro, columns='Nombre_Mes', values=col_valor)
-                    # Reordenar columnas cronológicamente
-                    cols_meses = [mapa_meses[i] for i in range(1, 13)]
-                    df_export = df_export[cols_meses]
+                    # Reordenar columnas
+                    cols_meses_validas = [m for m in mapa_meses.values() if m in df_export.columns]
+                    df_export = df_export[cols_meses_validas]
                     
-                    csv_data = df_export.to_csv().encode('utf-8-sig') # utf-8-sig para que Excel lea bien las tildes
+                    csv_data = df_export.to_csv().encode('utf-8-sig')
                     
                     st.download_button(
                         label="📥 Descargar Datos del Gráfico (CSV)",
@@ -2298,30 +2316,27 @@ def display_graphs_tab(
                         mime="text/csv",
                     )
 
-                    # 3. FICHA METODOLÓGICA (Solicitud 3)
+                    # --- FICHA METODOLÓGICA ---
                     with st.expander("ℹ️ Metodología, Datos y Periodo Analizado"):
-                        # Calculamos el periodo real de los datos
                         min_year = df_full[col_fecha].dt.year.min()
                         max_year = df_full[col_fecha].dt.year.max()
                         
                         st.markdown(f"""
                         **Ficha Técnica del Análisis:**
-                        
-                        * **Metodología:** Se calcula el promedio aritmético de la precipitación mensual de todas las estaciones ubicadas dentro de la geometría seleccionada ({nivel_analisis}).
-                        * **Tipo de Datos:** Precipitación acumulada mensual (mm). Datos procesados del archivo histórico.
-                        * **Fuente:** Red de monitoreo SIHCLIM / IDEAM.
-                        * **Periodo de Registro:** Enero {min_year} - Diciembre {max_year}.
-                        * **Procesamiento:** * Las estaciones fueron asignadas espacialmente usando intersección geométrica.
-                            * Se aplicó control de calidad básico a las series temporales.
+                        * **Metodología:** Promedio aritmético de la precipitación mensual histórica de todas las estaciones dentro de la zona seleccionada.
+                        * **Periodo de Registro:** {min_year} - {max_year}.
+                        * **Fuente:** Base de datos SIHCLI.
                         """)
                     
                 else:
                     st.warning("Seleccione al menos un elemento para generar el reporte.")
 
             except Exception as e:
-                st.error(f"Ocurrió un error en el procesamiento: {e}")
+                st.error(f"Ocurrió un error en el procesamiento multiescalar: {e}")
+                # Debug opcional
+                # st.write(df_meta.columns)
         else:
-            st.warning("⚠️ Faltan datos cargados.")
+            st.warning("⚠️ Faltan datos cargados para realizar el análisis comparativo.")
 
 
 def display_weekly_forecast_tab(stations_for_analysis, gdf_filtered, **kwargs):
@@ -2650,8 +2665,9 @@ def display_climate_forecast_tab(df_enso, **kwargs):
 
 
     # ==========================================
-    # CREACIÓN DE PESTAÑAS
-    # ==========================================
+# -------------------------------------------------------------------------
+    # 1. CONFIGURACIÓN DE PESTAÑAS Y DATOS EXTERNOS
+    # -------------------------------------------------------------------------
     tab_hist, tab_iri_plumas, tab_iri_probs, tab_gen = st.tabs([
         "📜 Historia Índices (ONI/SOI/IOD)",
         "🌍 Pronóstico Oficial (IRI)",
@@ -2659,110 +2675,98 @@ def display_climate_forecast_tab(df_enso, **kwargs):
         "⚙️ Generador Prophet"
     ])
     
-    # ... (El código sigue igual hacia abajo con la carga del IRI) ...
-    # ==========================================
-    # CARGA DE DATOS IRI (Comunes para tabs 2 y 3)
-    # ==========================================
-    # Cargar datos desde archivos locales
-    json_plumas = fetch_iri_data("enso_plumes.json")
-    json_probs = fetch_iri_data("enso_cpc_prob.json")  # Usamos CPC Probabilities
+    # Cargar datos IRI (Manejo de errores incorporado en fetch_iri_data si existe)
+    # Asegúrate de que esta función esté importada o definida
+    try:
+        json_plumas = fetch_iri_data("enso_plumes.json")
+        json_probs = fetch_iri_data("enso_cpc_prob.json")
+    except NameError:
+        # Fallback si no tienes la función definida en este archivo
+        json_plumas, json_probs = {}, {}
 
-    # --- CAJA INFORMATIVA (Extendida y Mejorada) ---
-    with st.expander(
-        "ℹ️ Acerca de los Pronósticos IRI/CPC (Columbia University)", expanded=False
-    ):
-        st.markdown(
-            """
-        Este módulo utiliza datos del **International Research Institute for Climate and Society (IRI)**.
-        Los datos se actualizan mensualmente (aprox. el día 19) y representan el estándar global.
+    # --- CAJA INFORMATIVA (Formato Mejorado) ---
+    with st.expander("ℹ️ Guía Técnica: Pronósticos Climáticos e Interpretación (IRI/CPC)", expanded=False):
+        st.markdown("""
+        Este módulo integra datos del **International Research Institute for Climate and Society (IRI)** y registros históricos de la NOAA.
+        
+        ### 1. ¿Qué es el pronóstico ENSO?
+        Es una predicción probabilística sobre las condiciones de El Niño Oscilación del Sur (ENSO) basada en la región **Niño 3.4** del Pacífico. Combina más de 20 modelos globales:
+        * **Dinámicos:** Basados en ecuaciones físicas de la atmósfera y el océano (ej. NCEP CFSv2).
+        * **Estadísticos:** Basados en patrones históricos.
 
-        **1. Definición:**
-        El Pronóstico ENSO del IRI recopila predicciones de más de 20 instituciones científicas (NASA, NOAA, JMA, ECMWF, etc.).
+        ### 2. Impacto General en Colombia
+        * 🔥 **El Niño (Fase Cálida):** Generalmente asociado a disminución de lluvias, aumento de temperatura y riesgo de incendios.
+        * 💧 **La Niña (Fase Fría):** Generalmente asociada a excesos de lluvia, inundaciones y deslizamientos.
 
-        **2. Metodología:**
-        Se basa en la región **Niño 3.4** (Pacífico Ecuatorial Central) y combina:
-        * **🤖 Modelos Dinámicos:** Simulaciones físicas (ej. NCEP CFSv2). Mejores a largo plazo.
-        * **📈 Modelos Estadísticos:** Proyecciones matemáticas. Eficientes a corto plazo.
+        ### 3. Glosario de Términos
+        * **Anomalía:** Diferencia entre el valor actual y el promedio histórico de largo plazo.
+        * **Termoclina:** Capa bajo la superficie del océano donde la temperatura desciende rápidamente; su profundidad es clave para monitorear El Niño.
+        * **ONI (Oceanic Niño Index):** Principal indicador para definir eventos de El Niño/La Niña (Media móvil de 3 meses de anomalías en la región Niño 3.4).
+        * **Convección:** Ascenso de aire cálido y húmedo que forma nubes y lluvias.
+        * **Vientos Alisios:** Vientos que soplan de Este a Oeste en el trópico. Su debilitamiento es una señal temprana de El Niño.
+        * **Probabilidad:** Certeza estadística (en %) de que ocurra una fase climática específica en un trimestre dado.
+        
+        _Fuente de datos primaria: NOAA NCEI & IRI Columbia University._
+        """)
 
-        **3. Interpretación:**
-        * **📉 Pluma (Spaghetti):** Muestra la incertidumbre.
-            * **Línea Negra:** Promedio (Consenso).
-            * **Umbrales:** **El Niño** (≥ +0.5°C), **La Niña** (≤ -0.5°C).
-        * **📊 Probabilidades:** Porcentaje de certeza de cada evento por trimestre.
-
-        **4. Impacto en Colombia:**
-        * 🔥 **El Niño:** Sequías, altas temperaturas, menos lluvias.
-        * 💧 **La Niña:** Lluvias intensas, inundaciones, deslizamientos.
-
-        *** Definiciones:
-        Anomalías: Variaciones respecto de un valor medio u otro valor de referencia estadístico
-        Bimodal: Tener dos picos (o modos)
-        Boyante: A medida que el aire se calienta, se expande y se vuelve menos denso que el aire que está encima de él.
-        Convección: La transferencia de energía al mover la molécula calentada de un lugar a otro – tambien el ascenso del aire caliente que forma nubes cumuliformes y da lugar a precipitaciones
-        El Niño: "El niño niño", en referencia al nacimiento de Jesucristo.
-        Infrarrojo: Longitud de onda de la radiación más larga que la luz visible y asociada al "calor" emitido por un cuerpo.
-        Moche: Una civilización precolombina en el norte de Perú que existió desde aproximadamente el año 100 al 800 d.C.
-        Datos proxy del paleoclima: Información climática anterior a la invención de los instrumentos de monitoreo atmosférico 
-        y derivada de indicadores químicos y biológicos conocidos en capas de hielo glacial, corales, sedimentos del fondo marino, anillos de árboles, etc.
-        precolombino: Se refiere a América del Sur y Central en el período anterior a la influencia europea.
-        gradiente de presión: El cambio en la presión del aire a lo largo de una distancia. Un gradiente más fuerte produce un flujo de aire más rápido de alta a baja presión.
-        Presión barométrica a nivel del mar: La fuerza ejercida por la atmósfera al nivel del mar (cero metros de altura) medida con un barómetro.
-        Estandarizado: Ajustado para que los valores de muestras con diferentes propiedades se puedan comparar entre sí
-        Expansión térmica: Calentar un fluido o gas no contenido aumenta su volumen al intentar mantener una presión constante. 
-        En el océano, dado que solo la superficie es ilimitada, la expansión eleva el nivel del mar.
-        Termoclina: Zona bajo la superficie del océano donde el agua superficial se transforma en agua profunda, produciéndose una marcada disminución de su temperatura. 
-        Tanto en la capa superficial (o mixta) como en las aguas profundas, la temperatura se mantiene relativamente constante con la profundidad. 
-        Dentro de la termoclina, la temperatura del agua disminuye rápidamente de la superficial a la profunda.
-        Vientos alisios: Los vientos en los trópicos generalmente soplan de este a oeste (vientos del este). 
-        Se llaman así porque su consistencia facilita la navegación y el comercio transoceánicos.
-
-        Fuentes de información primaria: https://www.ncei.noaa.gov/access/monitoring/enso/sst
-        """
-        )
-
-    # ==========================================
-    # PESTAÑA 1: HISTORIA
-    # ==========================================
+    # -------------------------------------------------------------------------
+    # PESTAÑA 1: HISTORIA DE ÍNDICES (ONI, SOI, IOD)
+    # -------------------------------------------------------------------------
     with tab_hist:
-        st.markdown("#### 📉 Índices Climáticos Históricos")
+        st.markdown("#### 📉 Evolución Histórica de Índices Climáticos")
+        
+        # Validación robusta de datos
         if df_enso is not None and not df_enso.empty:
-            c1, _ = st.columns([1, 3])
-            idx_sel = c1.selectbox(
-                "Seleccione Índice:",
-                [Config.ENSO_ONI_COL, Config.SOI_COL, Config.IOD_COL],
-            )
-
-            if idx_sel in df_enso.columns:
-                d = df_enso.dropna(subset=[idx_sel, Config.DATE_COL]).sort_values(
-                    Config.DATE_COL
-                )
-                if idx_sel == Config.ENSO_ONI_COL:
-                    st.plotly_chart(
-                        create_enso_chart(d),
-                        use_container_width=True,
-                        key="chart_oni_hist",
-                    )
+            
+            c1, c2 = st.columns([1, 3])
+            with c1:
+                # Filtrar columnas disponibles para evitar errores si falta alguna
+                cols_disponibles = [c for c in [Config.ENSO_ONI_COL, Config.SOI_COL, Config.IOD_COL] if c in df_enso.columns]
+                
+                if cols_disponibles:
+                    idx_sel = st.selectbox("Seleccione Índice a Visualizar:", cols_disponibles)
                 else:
-                    fig_simple = px.line(
-                        d,
-                        x=Config.DATE_COL,
-                        y=idx_sel,
-                        title=f"Evolución Histórica: {idx_sel}",
-                    )
-                    fig_simple.add_hline(
-                        y=0, line_width=1, line_color="black", opacity=0.5
-                    )
-                    st.plotly_chart(
-                        fig_simple,
-                        use_container_width=True,
-                        key=f"chart_{idx_sel}_hist",
-                    )
-            else:
-                st.warning(
-                    f"La columna '{idx_sel}' no se encuentra en la base de datos."
-                )
+                    st.error("Las columnas de índices no se encuentran en la base de datos.")
+                    idx_sel = None
+
+            if idx_sel:
+                # Limpiar datos para el gráfico
+                d = df_enso.dropna(subset=[idx_sel, Config.DATE_COL]).sort_values(Config.DATE_COL)
+                
+                if not d.empty:
+                    # Gráfico Específico para ONI (Con colores rojo/azul)
+                    if idx_sel == Config.ENSO_ONI_COL:
+                        try:
+                            # Aseguramos que create_enso_chart exista
+                            fig = create_enso_chart(d) 
+                            st.plotly_chart(fig, use_container_width=True, key="chart_oni_hist")
+                        except Exception as e:
+                            st.error(f"Error generando gráfico ONI: {e}")
+                            st.line_chart(d.set_index(Config.DATE_COL)[idx_sel])
+                    
+                    # Gráfico Genérico para otros índices (SOI, IOD)
+                    else:
+                        fig_simple = px.line(
+                            d, x=Config.DATE_COL, y=idx_sel, 
+                            title=f"Evolución Histórica: {idx_sel}",
+                            color_discrete_sequence=["#2c3e50"]
+                        )
+                        # Línea cero de referencia
+                        fig_simple.add_hline(y=0, line_width=1, line_color="red", line_dash="dash", opacity=0.7)
+                        fig_simple.update_layout(hovermode="x unified")
+                        
+                        st.plotly_chart(fig_simple, use_container_width=True, key=f"chart_{idx_sel}_hist")
+                else:
+                    st.warning(f"La columna '{idx_sel}' existe pero no tiene datos válidos.")
         else:
-            st.warning("No hay datos históricos cargados (df_enso).")
+            # Mensaje amigable cuando no hay datos cargados aún
+            st.info("ℹ️ **No hay datos históricos cargados.**")
+            st.markdown("""
+            Para visualizar esta sección:
+            1. Ve al **Panel de Administración**.
+            2. En la pestaña **Carga de Datos**, sube el archivo de índices climáticos (`indices.csv`).
+            3. Asegúrate de incluir columnas como `anomalia_oni`, `soi` o `iod`.
+            """)
 
     # ==========================================
     # PESTAÑA 2: PRONÓSTICO OFICIAL (PLUMAS)
@@ -3032,106 +3036,112 @@ def display_climate_forecast_tab(df_enso, **kwargs):
         else:
             st.error("⚠️ No se encontró el archivo `enso_cpc_prob.json` en `data/iri/`.")
 
-    # ==========================================
 # ==========================================
     # PESTAÑA 4: PROPHET (GENERADOR AVANZADO)
     # ==========================================
     with tab_gen:
         st.markdown("#### 🤖 Generador Prophet (Proyección Estadística Local)")
         
-        # 1. Selector de Índice (Mapeo Inteligente)
-        # Buscamos la columna real en el dataframe
-        col_oni = next((c for c in df_enso.columns if 'oni' in c.lower() and 'anomalia' in c.lower()), None) or \
-                  next((c for c in df_enso.columns if 'oni' in c.lower()), None)
-        
-        mapa_indices = {
-            "ONI (Oceanic Niño Index)": col_oni,
-            "SOI (Southern Oscillation)": next((c for c in df_enso.columns if 'soi' in c.lower()), None),
-            "IOD (Indian Ocean Dipole)": next((c for c in df_enso.columns if 'iod' in c.lower()), None)
-        }
-        
-        # Filtramos solo los que existen
-        opciones_validas = {k: v for k, v in mapa_indices.items() if v is not None}
-        
-        selected_label = st.selectbox("Índice a proyectar:", list(opciones_validas.keys()))
-        target_col = opciones_validas[selected_label]
-        
-        months_future = st.slider("Meses a futuro:", 1, 60, 24)
-
-        if st.button("Generar Proyección Prophet"):
-            if target_col and df_enso is not None:
-                with st.spinner(f"Entrenando modelo para {selected_label}..."):
-                    try:
-                        # A. Preparación de Datos (Renombrar a ds, y)
-                        df_prophet = df_enso[[Config.DATE_COL, target_col]].copy()
-                        df_prophet.columns = ['ds', 'y']
-                        
-                        # Limpieza extra para asegurar números
-                        df_prophet['y'] = pd.to_numeric(df_prophet['y'], errors='coerce')
-                        df_prophet = df_prophet.dropna()
-
-                        # B. Entrenamiento (Hyperparámetros ajustados para clima)
-                        # changepoint_prior_scale=0.5 -> Hace el modelo más flexible para capturar picos de El Niño
-                        m = Prophet(daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=True, changepoint_prior_scale=0.5)
-                        m.fit(df_prophet)
-
-                        # C. Predicción
-                        future = m.make_future_dataframe(periods=months_future, freq='MS')
-                        forecast = m.predict(future)
-
-                        # D. Visualización (Plotly Personalizado: Real vs Predicción)
-                        import plotly.graph_objects as go
-                        
-                        fig = go.Figure()
-
-                        # 1. Datos Históricos Reales (Línea Negra/Gris)
-                        fig.add_trace(go.Scatter(
-                            x=df_prophet['ds'], 
-                            y=df_prophet['y'],
-                            mode='lines',
-                            name='Historia Real',
-                            line=dict(color='gray', width=1.5)
-                        ))
-
-                        # 2. Predicción (Línea Azul)
-                        fig.add_trace(go.Scatter(
-                            x=forecast['ds'], 
-                            y=forecast['yhat'],
-                            mode='lines',
-                            name='Proyección',
-                            line=dict(color='#007BFF', width=2)
-                        ))
-
-                        # 3. Intervalo de Confianza (Sombra)
-                        fig.add_trace(go.Scatter(
-                            x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
-                            y=pd.concat([forecast['yhat_upper'], forecast['yhat_lower'][::-1]]),
-                            fill='toself',
-                            fillcolor='rgba(0,123,255,0.2)',
-                            line=dict(color='rgba(255,255,255,0)'),
-                            hoverinfo="skip",
-                            showlegend=False,
-                            name='Incertidumbre'
-                        ))
-
-                        fig.update_layout(
-                            title=f"Proyección {selected_label}",
-                            xaxis_title="Fecha",
-                            yaxis_title="Valor Índice",
-                            hovermode="x unified",
-                            legend=dict(orientation="h", y=1.1)
-                        )
-
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-                        # Explicación
-                        st.info("💡 **Nota:** La línea GRIS muestra los datos reales históricos. La línea AZUL es la tendencia proyectada por el modelo.")
-
-                    except Exception as e:
-                        st.error(f"Error en Prophet: {e}")
+        # 1. Validación Inicial de Datos
+        if df_enso is None or df_enso.empty:
+            st.warning("⚠️ No hay datos históricos de índices climáticos cargados.")
+            st.info("Por favor, cargue el archivo de índices (ONI/SOI) en el Panel de Administración para usar esta herramienta.")
+        else:
+            # 2. Selector de Índice (Mapeo Inteligente)
+            # Buscamos columnas candidatas
+            col_oni = next((c for c in df_enso.columns if 'oni' in c.lower() and 'anomalia' in c.lower()), None) or \
+                      next((c for c in df_enso.columns if 'oni' in c.lower()), None)
+            
+            col_soi = next((c for c in df_enso.columns if 'soi' in c.lower()), None)
+            col_iod = next((c for c in df_enso.columns if 'iod' in c.lower()), None)
+            
+            mapa_indices = {
+                "ONI (Oceanic Niño Index)": col_oni,
+                "SOI (Southern Oscillation)": col_soi,
+                "IOD (Indian Ocean Dipole)": col_iod
+            }
+            
+            # Filtramos solo los que existen en la BD
+            opciones_validas = {k: v for k, v in mapa_indices.items() if v is not None}
+            
+            if not opciones_validas:
+                st.error("No se encontraron columnas válidas de índices (ONI, SOI o IOD) en la base de datos.")
             else:
-                st.error("No se encontró la columna de datos para el índice seleccionado.")
+                c_sel, c_mes = st.columns([2, 1])
+                with c_sel:
+                    selected_label = st.selectbox("Índice a proyectar:", list(opciones_validas.keys()))
+                    target_col = opciones_validas[selected_label]
+                with c_mes:
+                    months_future = st.slider("Meses a futuro:", 1, 60, 24)
 
+                if st.button("Generar Proyección Prophet"):
+                    with st.spinner(f"Entrenando modelo para {selected_label}..."):
+                        try:
+                            # A. Importación Diferida (para evitar error si falta la librería)
+                            from prophet import Prophet
+                            
+                            # B. Preparación de Datos
+                            df_prophet = df_enso[[Config.DATE_COL, target_col]].copy()
+                            df_prophet.columns = ['ds', 'y']
+                            
+                            # Limpieza robusta
+                            df_prophet['y'] = pd.to_numeric(df_prophet['y'], errors='coerce')
+                            df_prophet = df_prophet.dropna()
+                            
+                            # C. Validación de Cantidad de Datos (EL ARREGLO CRÍTICO)
+                            if len(df_prophet) < 12:
+                                st.warning(f"⚠️ Datos insuficientes: Solo se encontraron {len(df_prophet)} meses válidos. Prophet requiere al menos 12 meses de historia.")
+                            else:
+                                # D. Entrenamiento
+                                # Ajustamos changepoint_prior_scale para capturar variabilidad climática
+                                m = Prophet(daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=True, changepoint_prior_scale=0.3)
+                                m.fit(df_prophet)
+
+                                # E. Predicción
+                                future = m.make_future_dataframe(periods=months_future, freq='MS')
+                                forecast = m.predict(future)
+
+                                # F. Visualización
+                                fig = go.Figure()
+
+                                # Historia
+                                fig.add_trace(go.Scatter(
+                                    x=df_prophet['ds'], y=df_prophet['y'],
+                                    mode='lines', name='Historia Real',
+                                    line=dict(color='gray', width=1)
+                                ))
+
+                                # Proyección
+                                fig.add_trace(go.Scatter(
+                                    x=forecast['ds'], y=forecast['yhat'],
+                                    mode='lines', name='Proyección',
+                                    line=dict(color='#007BFF', width=2)
+                                ))
+
+                                # Incertidumbre
+                                fig.add_trace(go.Scatter(
+                                    x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
+                                    y=pd.concat([forecast['yhat_upper'], forecast['yhat_lower'][::-1]]),
+                                    fill='toself', fillcolor='rgba(0,123,255,0.2)',
+                                    line=dict(color='rgba(255,255,255,0)'),
+                                    hoverinfo="skip", showlegend=False,
+                                    name='Incertidumbre'
+                                ))
+
+                                fig.update_layout(
+                                    title=f"Proyección Estadística: {selected_label}",
+                                    xaxis_title="Fecha", yaxis_title="Valor Índice",
+                                    hovermode="x unified",
+                                    legend=dict(orientation="h", y=1.1)
+                                )
+
+                                st.plotly_chart(fig, use_container_width=True)
+                                st.success(f"✅ Proyección generada hasta {forecast['ds'].max().strftime('%Y-%m')}")
+
+                        except ImportError:
+                            st.error("Librería 'prophet' no instalada en el servidor.")
+                        except Exception as e:
+                            st.error(f"Error calculando proyección: {e}")
 # -----------------------------------------------------------------------------
 
 
