@@ -50,17 +50,19 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN DE CARGA "TODO TERRENO" ---
-@st.cache_resource(show_spinner="Cargando datos...", ttl=3600)
+# --- FUNCIÓN UNIFICADA DE CARGA (LIMPIA Y ESTRUCTURAL) ---
+@st.cache_resource(show_spinner="Consultando Sistema de Información (Nube)...", ttl=3600)
 def load_data_from_db():
     from sqlalchemy import text
     import geopandas as gpd
     import pandas as pd
     from modules.config import Config
     
+    # 1. Conexión Segura
     try: engine = get_engine()
     except: from modules.db_manager import get_engine; engine = get_engine()
 
+    # 2. Inicializar Vacíos (Seguridad)
     gdf_mun, gdf_cuencas, gdf_predios, gdf_est = gpd.GeoDataFrame(), gpd.GeoDataFrame(), gpd.GeoDataFrame(), gpd.GeoDataFrame()
     df_rain = pd.DataFrame(columns=[Config.STATION_NAME_COL, Config.PRECIPITATION_COL, Config.DATE_COL, 'id_estacion', 'Codigo'])
     df_enso = pd.DataFrame(columns=[Config.DATE_COL, Config.ENSO_ONI_COL])
@@ -68,7 +70,7 @@ def load_data_from_db():
     if not engine: return gdf_est, gdf_mun, df_rain, df_enso, gdf_cuencas, gdf_predios
 
     try:
-        # Cargas geoespaciales básicas (con manejo de errores silencioso)
+        # 3. Capas Espaciales (Con manejo silencioso de errores)
         try: gdf_mun = gpd.read_postgis("SELECT * FROM municipios", engine, geom_col="geometry"); gdf_mun['MPIO_CNMBR'] = gdf_mun.get('nombre_municipio', gdf_mun.get('nombre'))
         except: pass
         try: gdf_cuencas = gpd.read_postgis("SELECT * FROM cuencas", engine, geom_col="geometry"); gdf_cuencas['SUBC_LBL'] = gdf_cuencas.get('nombre_cuenca'); gdf_cuencas['N-NSS3'] = gdf_cuencas.get('nombre_cuenca')
@@ -76,43 +78,37 @@ def load_data_from_db():
         try: gdf_predios = gpd.read_postgis("SELECT * FROM predios", engine, geom_col="geometry"); gdf_predios['NOMBRE_PRE'] = gdf_predios.get('nombre_predio')
         except: pass
         
-        # --- ESTACIONES (Prioridad Lat/Lon numéricos) ---
+        # 4. Datos Dinámicos
+        # A. Estaciones: Prioridad a lat/lon numéricos reparados
         try:
             df_e = pd.read_sql("SELECT * FROM estaciones", engine)
-            # Limpieza forzosa de coordenadas
             df_e['latitud'] = pd.to_numeric(df_e['latitud'], errors='coerce')
             df_e['longitud'] = pd.to_numeric(df_e['longitud'], errors='coerce')
             df_e = df_e.dropna(subset=['latitud', 'longitud'])
             gdf_est = gpd.GeoDataFrame(df_e, geometry=gpd.points_from_xy(df_e.longitud, df_e.latitud), crs="EPSG:4326")
-        except: 
-            try: gdf_est = gpd.read_postgis("SELECT * FROM estaciones", engine, geom_col="geom")
-            except: pass
+        except: pass
 
-        # --- LLUVIA (CONSULTA RELAJADA) ---
-        # No filtramos por JOIN estricto para no perder datos si el ID tiene espacios
-        q_rain = text("SELECT id_estacion, fecha, valor FROM precipitacion WHERE valor IS NOT NULL")
+        # B. Lluvia: Consulta flexible (LEFT JOIN y TRIM)
+        q_rain = text("""
+            SELECT p.id_estacion, e.nombre, p.fecha, p.valor
+            FROM precipitacion p
+            LEFT JOIN estaciones e ON TRIM(p.id_estacion) = TRIM(e.id_estacion)
+            WHERE p.valor IS NOT NULL
+        """)
         df_rain = pd.read_sql(q_rain, engine)
         
         if not df_rain.empty:
             df_rain[Config.DATE_COL] = pd.to_datetime(df_rain['fecha'])
             df_rain[Config.PRECIPITATION_COL] = pd.to_numeric(df_rain['valor'], errors='coerce')
-            df_rain['id_estacion'] = df_rain['id_estacion'].astype(str).str.strip() # Limpieza clave
-            
-            # Unir nombres de estación desde gdf_est si es posible
-            if not gdf_est.empty:
-                gdf_est['id_clean'] = gdf_est['id_estacion'].astype(str).str.strip()
-                mapping = gdf_est.set_index('id_clean')['nombre'].to_dict()
-                df_rain[Config.STATION_NAME_COL] = df_rain['id_estacion'].map(mapping).fillna(df_rain['id_estacion'])
-            else:
-                df_rain[Config.STATION_NAME_COL] = df_rain['id_estacion']
-
+            df_rain['id_estacion'] = df_rain['id_estacion'].astype(str).str.strip()
+            df_rain[Config.STATION_NAME_COL] = df_rain['nombre'].fillna(df_rain['id_estacion']) # Fallback nombre
             df_rain[Config.YEAR_COL] = df_rain[Config.DATE_COL].dt.year
             df_rain[Config.MONTH_COL] = df_rain[Config.DATE_COL].dt.month
 
-        # --- ÍNDICES ---
+        # C. Índices Climáticos
         try:
             df_enso = pd.read_sql("SELECT * FROM indices_climaticos", engine)
-            # Limpieza de nombres de columna (para arreglar el ï»¿fecha)
+            # Limpieza crítica de nombres de columna (arregla BOM de Excel)
             df_enso.columns = [c.replace('ï»¿', '').strip() for c in df_enso.columns]
             
             col_fecha = next((c for c in df_enso.columns if 'fecha' in c.lower()), None)
@@ -126,17 +122,17 @@ def load_data_from_db():
 
     except Exception as e: print(f"Error carga: {e}")
 
-    # --- ESTRATEGIA BILINGÜE (ALIAS) ---
+    # 5. ESTRATEGIA BILINGÜE (Alias para compatibilidad total)
     if not df_rain.empty:
         df_rain['Codigo'] = df_rain['id_estacion']
         df_rain['Nom_Est'] = df_rain[Config.STATION_NAME_COL]
         df_rain['Valor'] = df_rain[Config.PRECIPITATION_COL]
     
     if not gdf_est.empty:
-        gdf_est['Latitud_geo'] = gdf_est['latitud'] if 'latitud' in gdf_est.columns else gdf_est.geometry.y
-        gdf_est['Longitud_geo'] = gdf_est['longitud'] if 'longitud' in gdf_est.columns else gdf_est.geometry.x
+        gdf_est['Latitud_geo'] = gdf_est['latitud']
+        gdf_est['Longitud_geo'] = gdf_est['longitud']
         gdf_est['Codigo'] = gdf_est['id_estacion']
-        gdf_est['Nom_Est'] = gdf_est['nombre']
+        gdf_est['Nom_Est'] = gdf_est.get('nombre', 'Estación')
 
     return gdf_est, gdf_mun, df_rain, df_enso, gdf_cuencas, gdf_predios
 

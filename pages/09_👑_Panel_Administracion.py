@@ -424,17 +424,19 @@ with tabs[0]:
                 st.error(f"Error procesando el archivo: {e}")
 
 # ==============================================================================
-# TAB 2: ÍNDICES (SOLUCIÓN DEFINITIVA: UTF-8-SIG y SQL TOLERANTE)
+# TAB 2: ÍNDICES (CORREGIDO Y COMPLETO)
 # ==============================================================================
 with tabs[1]:
     st.header("📊 Índices Climáticos (ENSO/ONI/SOI)")
+    
+    # 1. ESTA ES LA LÍNEA QUE FALTABA: Definición de sub-pestañas
     sb1, sb2 = st.tabs(["👁️ Ver Tabla Completa", "📂 Cargar/Actualizar CSV"])
     
     # --- SUB-PESTAÑA 1: VISUALIZACIÓN ---
     with sb1: 
-        st.markdown("### 📋 Histórico Cargado")
+        st.markdown("### 📋 Histórico Cargado en Base de Datos")
         try:
-            # 1. Traemos TODO sin ordenar en SQL para evitar error de nombre de columna
+            # Traemos TODO sin ordenar en SQL para evitar error de nombre de columna
             df_indices = pd.read_sql("SELECT * FROM indices_climaticos", engine)
             
             if df_indices.empty:
@@ -442,28 +444,30 @@ with tabs[1]:
             else:
                 st.success(f"✅ Datos encontrados: {len(df_indices)} registros.")
                 
-                # 2. Limpieza de nombres de columna (Quitamos caracteres raros aquí)
+                # Limpieza de nombres de columna (Quitamos caracteres raros BOM)
                 df_indices.columns = [c.replace('ï»¿', '').strip() for c in df_indices.columns]
                 
-                # 3. Ordenar en Python (Seguro)
+                # Ordenar en Python (Seguro)
                 col_fecha = next((c for c in df_indices.columns if 'fecha' in c.lower()), None)
                 if col_fecha:
-                    df_indices[col_fecha] = pd.to_datetime(df_indices[col_fecha])
-                    df_indices = df_indices.sort_values(col_fecha, ascending=False)
+                    try:
+                        df_indices[col_fecha] = pd.to_datetime(df_indices[col_fecha])
+                        df_indices = df_indices.sort_values(col_fecha, ascending=False)
+                    except: pass
                 
                 st.dataframe(df_indices, use_container_width=True)
                 
         except Exception as e:
-            st.info("ℹ️ No hay tabla de índices. Sube el archivo en la otra pestaña.")
+            st.info("ℹ️ No hay tabla de índices cargada.")
 
     # --- SUB-PESTAÑA 2: CARGA ---
     with sb2:
         st.markdown("### Cargar Archivo de Índices")
-        up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_fix")
+        up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_fix_final")
         
-        if up_i and st.button("Procesar y Guardar", key="btn_save_ind"):
+        if up_i and st.button("Procesar y Guardar", key="btn_save_ind_final"):
             try:
-                # TRUCO MAESTRO: encoding='utf-8-sig' elimina el BOM (ï»¿) automáticamente
+                # TRUCO: encoding='utf-8-sig' elimina el error de caracteres raros
                 df = pd.read_csv(up_i, sep=None, engine='python', encoding='utf-8-sig')
                 
                 # Normalizar nombres
@@ -471,12 +475,12 @@ with tabs[1]:
                 
                 # Guardar
                 df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-                st.success(f"✅ ¡Guardado perfecto! {len(df)} registros limpios.")
+                st.success(f"✅ ¡Guardado perfecto! {len(df)} registros.")
                 st.dataframe(df.head())
                 st.balloons()
+                st.rerun() # Recargar para ver los cambios
             except Exception as e:
                 st.error(f"Error: {e}")
-
 
 # ==============================================================================
 # TAB 3: PREDIOS

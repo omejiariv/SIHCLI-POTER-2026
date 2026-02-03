@@ -481,14 +481,13 @@ if gdf_zona is not None:
     with tab3:
         st.subheader("Distribución Espacial de la Recarga")
         
-        # 1. Validación de seguridad: ¿Existe la columna?
+        # VERIFICACIÓN DE SEGURIDAD: ¿Existe la columna?
         if 'recarga_calc' not in df_mapa_stats.columns:
-            st.error("⚠️ No se pudo calcular la recarga. Posibles causas: Faltan datos de lluvia o coeficientes.")
+            st.warning("⚠️ No se pudo generar el mapa de recarga porque faltan datos de precipitación para calcularlo.")
         else:
-            # 2. Filtrado seguro
             df_valid = df_mapa_stats.dropna(subset=['recarga_calc'])
             
-            if len(df_valid) < 3: # Mínimo 3 puntos para interpolar
+            if len(df_valid) < 3:
                 st.warning("⚠️ Se requieren al menos 3 estaciones con datos válidos para generar el mapa.")
             else:
                 try:
@@ -529,7 +528,7 @@ if gdf_zona is not None:
                     st_folium(m_iso, width=1400, height=600, key=f"map_iso_{nombre_zona}")
                     
                 except Exception as e:
-                    st.error(f"No se pudo generar la interpolación visual: {e}")
+                    st.error(f"Error técnico en el mapa: {e}")
 
 
     # --- TAB 4: DESCARGAS ---
