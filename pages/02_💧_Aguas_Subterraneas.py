@@ -480,48 +480,57 @@ if gdf_zona is not None:
     # --- TAB 3: MAPA DE RECARGA (INTERPOLACIÓN) ---
     with tab3:
         st.subheader("Distribución Espacial de la Recarga")
-        df_valid = df_mapa_stats.dropna(subset=['recarga_calc'])
         
-        if len(df_valid) < 4:
-            st.warning("⚠️ Se requieren al menos 4 estaciones con datos para interpolar.")
+        # 1. Validación de seguridad: ¿Existe la columna?
+        if 'recarga_calc' not in df_mapa_stats.columns:
+            st.error("⚠️ No se pudo calcular la recarga. Posibles causas: Faltan datos de lluvia o coeficientes.")
         else:
-            try:
-                # Datos para interpolar
-                x = df_valid['longitud'].values
-                y = df_valid['latitud'].values
-                z = df_valid['recarga_calc'].values * 12 # mm/año
-                
-                # Grid
-                pad = 0.05
-                xi = np.linspace(x.min()-pad, x.max()+pad, 100)
-                yi = np.linspace(y.min()-pad, y.max()+pad, 100)
-                Xi, Yi = np.meshgrid(xi, yi)
-                
-                # Interpolación Linear
-                Zi = griddata((x, y), z, (Xi, Yi), method='linear')
-                
-                # Mapa
-                m_iso = folium.Map(location=[y.mean(), x.mean()], zoom_start=11, tiles="CartoDB positron")
-                m_iso.fit_bounds([[y.min(), x.min()], [y.max(), x.max()]])
-                
-                # Renderizar Raster
-                if not np.isnan(Zi).all():
-                    vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
-                    cmap = cm.get_cmap('Blues')
-                    norm_z = (Zi - vmin) / (vmax - vmin)
-                    rgba = cmap(norm_z)
-                    rgba[np.isnan(Zi), 3] = 0
+            # 2. Filtrado seguro
+            df_valid = df_mapa_stats.dropna(subset=['recarga_calc'])
+            
+            if len(df_valid) < 3: # Mínimo 3 puntos para interpolar
+                st.warning("⚠️ Se requieren al menos 3 estaciones con datos válidos para generar el mapa.")
+            else:
+                try:
+                    # Datos para interpolar
+                    x = df_valid['longitud'].values
+                    y = df_valid['latitud'].values
+                    z = df_valid['recarga_calc'].values * 12 # mm/año
                     
-                    folium.raster_layers.ImageOverlay(
-                        image=rgba, bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]], 
-                        opacity=0.7, name="Recarga (Raster)"
-                    ).add_to(m_iso)
-                
-                folium.LayerControl().add_to(m_iso)
-                st_folium(m_iso, width=1400, height=600, key=f"map_iso_{nombre_zona}")
-                
-            except Exception as e:
-                st.error(f"Error en interpolación: {e}")
+                    # Grid
+                    pad = 0.05
+                    xi = np.linspace(x.min()-pad, x.max()+pad, 100)
+                    yi = np.linspace(y.min()-pad, y.max()+pad, 100)
+                    Xi, Yi = np.meshgrid(xi, yi)
+                    
+                    # Interpolación
+                    Zi = griddata((x, y), z, (Xi, Yi), method='linear')
+                    
+                    # Mapa
+                    m_iso = folium.Map(location=[y.mean(), x.mean()], zoom_start=11, tiles="CartoDB positron")
+                    m_iso.fit_bounds([[y.min(), x.min()], [y.max(), x.max()]])
+                    
+                    # Raster
+                    if not np.isnan(Zi).all():
+                        try: cmap = plt.get_cmap('Blues')
+                        except: cmap = cm.Blues
+                        
+                        vmin, vmax = np.nanmin(Zi), np.nanmax(Zi)
+                        norm_z = (Zi - vmin) / (vmax - vmin)
+                        rgba = cmap(norm_z)
+                        rgba[np.isnan(Zi), 3] = 0
+                        
+                        folium.raster_layers.ImageOverlay(
+                            image=rgba, bounds=[[yi.min(), xi.min()], [yi.max(), xi.max()]], 
+                            opacity=0.7, name="Recarga (Raster)"
+                        ).add_to(m_iso)
+                    
+                    folium.LayerControl().add_to(m_iso)
+                    st_folium(m_iso, width=1400, height=600, key=f"map_iso_{nombre_zona}")
+                    
+                except Exception as e:
+                    st.error(f"No se pudo generar la interpolación visual: {e}")
+
 
     # --- TAB 4: DESCARGAS ---
     with tab4:
