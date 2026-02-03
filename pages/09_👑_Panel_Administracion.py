@@ -240,7 +240,6 @@ with st.expander("Mostrar Controles de Reinicio de Base de Datos", expanded=True
 
 
 # ==============================================================================
-# ==============================================================================
 # TAB 0: GESTIÓN DE ESTACIONES (CON DESBLOQUEO DE TRANSACCIÓN)
 # ==============================================================================
 with tabs[0]: 
@@ -251,25 +250,28 @@ with tabs[0]:
     # --- SUB-PESTAÑA 1: EDITOR ---
     with subtab_ver:
         st.info("Visualiza y edita las estaciones registradas.")
-        if st.button("🔄 Refrescar Tabla"):
+        
+        col_ref, col_msg = st.columns([1, 3])
+        if col_ref.button("🔄 Refrescar Tabla"):
             st.cache_data.clear()
             st.rerun()
             
         try:
+            # Consulta segura
             df_est_db = pd.read_sql("SELECT * FROM estaciones ORDER BY id_estacion", engine)
             st.dataframe(df_est_db, use_container_width=True)
         except:
             st.warning("No se pudo cargar la tabla de estaciones.")
 
-    # --- SUB-PESTAÑA 2: CARGA MASIVA (CORREGIDA) ---
+    # --- SUB-PESTAÑA 2: CARGA MASIVA (BLINDADA) ---
     with subtab_carga:
         st.markdown("### Cargar Archivo de Estaciones")
         st.info("Sube `mapaCVENSO.csv`. El sistema limpiará las coordenadas automáticamente.")
-        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv_fix_v2")
+        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv_fix_v3")
         
         if up_est and st.button("🚀 Procesar Carga Masiva"):
             try:
-                # 1. Lectura Robusta
+                # 1. Lectura Robusta (Detecta separador automáticamente)
                 try:
                     df_new = pd.read_csv(up_est, sep=';', decimal=',')
                     if len(df_new.columns) < 2: raise ValueError
@@ -291,26 +293,28 @@ with tabs[0]:
                 # 3. Validación y Conversión Numérica
                 req = ['id_estacion', 'latitud', 'longitud']
                 if not all(c in df_new.columns for c in req):
-                    st.error(f"Faltan columnas: {req}")
+                    st.error(f"Faltan columnas requeridas: {req}")
                 else:
+                    # Forzar conversión a números (limpia errores de tipeo)
                     for c in ['latitud', 'longitud', 'altitud']:
                         if c in df_new.columns:
                             df_new[c] = pd.to_numeric(
                                 df_new[c].astype(str).str.replace(',', '.'), errors='coerce'
                             )
                     
-                    # 4. INSERCIÓN BLINDADA (Con Rollback preventivo)
+                    # 4. INSERCIÓN BLINDADA (El secreto está aquí)
                     with engine.connect() as conn:
-                        # PASO CLAVE: Si hubo un error previo, esto limpia la conexión
+                        # PASO CRÍTICO: Rollback preventivo para desbloquear la BD
                         try: conn.rollback() 
                         except: pass
                         
-                        # Crear tabla temporal
-                        df_new.to_sql('temp_est_load', conn, if_exists='replace', index=False)
-                        
-                        # Ejecutar UPSERT
+                        # Iniciar transacción limpia
                         trans = conn.begin()
                         try:
+                            # Subir a tabla temporal
+                            df_new.to_sql('temp_est_load', conn, if_exists='replace', index=False)
+                            
+                            # Ejecutar UPSERT (Actualizar si existe, Insertar si no)
                             conn.execute(text("""
                                 INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud)
                                 SELECT id_estacion, nombre, latitud, longitud, altitud FROM temp_est_load
@@ -321,24 +325,26 @@ with tabs[0]:
                                     altitud = EXCLUDED.altitud;
                             """))
                             
-                            # Actualizar Geometrías (PostGIS)
+                            # Actualizar Geometrías para los mapas
                             try:
                                 conn.execute(text("UPDATE estaciones SET geom = ST_SetSRID(ST_MakePoint(longitud, latitud), 4326) WHERE longitud IS NOT NULL"))
                             except: pass
                             
+                            # Limpieza
                             conn.execute(text("DROP TABLE IF EXISTS temp_est_load"))
+                            
+                            # Confirmar transacción
                             trans.commit()
                             
-                            st.success(f"✅ ¡Éxito! {len(df_new)} estaciones procesadas.")
+                            st.success(f"✅ ¡Éxito! {len(df_new)} estaciones procesadas y guardadas.")
                             st.balloons()
                             
                         except Exception as sql_err:
-                            trans.rollback()
-                            st.error(f"Error SQL: {sql_err}")
+                            trans.rollback() # Si falla algo, deshacemos para no bloquear
+                            st.error(f"Error SQL durante la carga: {sql_err}")
                             
             except Exception as ex:
-                st.error(f"Error procesando archivo: {ex}")
-
+                st.error(f"Error procesando el archivo: {ex}")
 
 # ==============================================================================
 # TAB 2: ÍNDICES (CORREGIDO Y BLINDADO)
