@@ -240,111 +240,44 @@ with st.expander("Mostrar Controles de Reinicio de Base de Datos", expanded=True
 
 
 # ==============================================================================
-# TAB 0: GESTIÓN DE ESTACIONES (CORREGIDO Y BLINDADO)
+# ==============================================================================
+# TAB 0: GESTIÓN DE ESTACIONES (CON DESBLOQUEO DE TRANSACCIÓN)
 # ==============================================================================
 with tabs[0]: 
     st.header("📍 Gestión de Estaciones")
     
-    # Sub-pestañas internas
     subtab_ver, subtab_carga = st.tabs(["👁️ Editor de Catálogo", "📂 Carga Masiva (CSV)"])
     
-    # --- SUB-PESTAÑA 1: VER Y EDITAR ---
+    # --- SUB-PESTAÑA 1: EDITOR ---
     with subtab_ver:
-        st.info("Edita las propiedades directamente en la tabla y guarda los cambios.")
-        
-        col_ref, col_msg = st.columns([1, 3])
-        if col_ref.button("🔄 Refrescar Tabla"):
+        st.info("Visualiza y edita las estaciones registradas.")
+        if st.button("🔄 Refrescar Tabla"):
             st.cache_data.clear()
             st.rerun()
             
         try:
-            # 1. Traemos todas las estaciones
             df_est_db = pd.read_sql("SELECT * FROM estaciones ORDER BY id_estacion", engine)
-            
-            # 2. EDITOR DE DATOS INTERACTIVO
-            df_editado = st.data_editor(
-                df_est_db,
-                num_rows="dynamic",
-                key="editor_estaciones",
-                use_container_width=True,
-                column_config={
-                    "id_estacion": st.column_config.TextColumn("Código", disabled=True),
-                    "nombre": "Nombre",
-                    "municipio": "Municipio",
-                    "latitud": st.column_config.NumberColumn("Latitud", format="%.6f"),
-                    "longitud": st.column_config.NumberColumn("Longitud", format="%.6f"),
-                    "altitud": st.column_config.NumberColumn("Altitud", format="%.0f")
-                }
-            )
-            
-            # 3. BOTÓN GUARDAR (LÓGICA UPSERT)
-            if st.button("💾 Guardar Cambios en Catálogo", type="primary"):
-                with st.spinner("Sincronizando cambios..."):
-                    try:
-                        with engine.begin() as conn:
-                            # A. Subimos a tabla temporal
-                            df_editado.to_sql('temp_est_edit', conn, if_exists='replace', index=False)
-                            
-                            # B. Ejecutamos UPSERT (Actualizar o Insertar)
-                            conn.execute(text("""
-                                INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud, municipio, departamento, subregion, corriente)
-                                SELECT id_estacion, nombre, latitud, longitud, altitud, municipio, departamento, subregion, corriente
-                                FROM temp_est_edit
-                                ON CONFLICT (id_estacion) DO UPDATE SET
-                                    nombre = EXCLUDED.nombre,
-                                    latitud = EXCLUDED.latitud,
-                                    longitud = EXCLUDED.longitud,
-                                    altitud = EXCLUDED.altitud,
-                                    municipio = EXCLUDED.municipio,
-                                    departamento = EXCLUDED.departamento,
-                                    subregion = EXCLUDED.subregion,
-                                    corriente = EXCLUDED.corriente;
-                            """))
-                            
-                            # C. ACTUALIZAR GEOMETRÍA POSTGIS (CRÍTICO PARA MAPAS)
-                            # Sincronizamos la columna 'geom' con las nuevas lat/lon
-                            try:
-                                conn.execute(text("""
-                                    UPDATE estaciones 
-                                    SET geom = ST_SetSRID(ST_MakePoint(longitud, latitud), 4326)
-                                    WHERE longitud IS NOT NULL AND latitud IS NOT NULL;
-                                """))
-                            except Exception as e_geo:
-                                st.warning(f"Nota: Geometría espacial no actualizada (falta PostGIS): {e_geo}")
+            st.dataframe(df_est_db, use_container_width=True)
+        except:
+            st.warning("No se pudo cargar la tabla de estaciones.")
 
-                            # D. Limpieza
-                            conn.execute(text("DROP TABLE IF EXISTS temp_est_edit"))
-                            
-                        st.success("✅ Catálogo actualizado correctamente.")
-                        import time
-                        time.sleep(1)
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error("❌ No se pudo guardar.")
-                        st.error(f"Detalle técnico: {e}")
-
-        except Exception as e:
-            st.warning("No se pudo cargar el catálogo. ¿La base de datos está inicializada?")
-            st.error(f"Error de carga: {e}")
-
-    # --- SUB-PESTAÑA 2: CARGA MASIVA ---
+    # --- SUB-PESTAÑA 2: CARGA MASIVA (CORREGIDA) ---
     with subtab_carga:
         st.markdown("### Cargar Archivo de Estaciones")
-        st.info("Sube un CSV con columnas: `id_estacion`, `nombre`, `latitud`, `longitud`, `altitud`.")
-        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv_final")
+        st.info("Sube `mapaCVENSO.csv`. El sistema limpiará las coordenadas automáticamente.")
+        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv_fix_v2")
         
         if up_est and st.button("🚀 Procesar Carga Masiva"):
             try:
-                # Lectura inteligente (detecta separador y decimales)
+                # 1. Lectura Robusta
                 try:
-                    df_new = pd.read_csv(up_est, sep=';', decimal=',') # Intento formato Latam
-                    if len(df_new.columns) < 2: raise ValueError("Separador incorrecto")
+                    df_new = pd.read_csv(up_est, sep=';', decimal=',')
+                    if len(df_new.columns) < 2: raise ValueError
                 except:
                     up_est.seek(0)
-                    df_new = pd.read_csv(up_est, sep=',', decimal='.') # Intento estándar
+                    df_new = pd.read_csv(up_est, sep=',', decimal='.')
                 
-                # Normalización de columnas
+                # 2. Limpieza de Columnas
                 df_new.columns = df_new.columns.str.lower().str.strip()
                 rename_map = {
                     'id_estacio': 'id_estacion', 'codigo': 'id_estacion',
@@ -355,45 +288,57 @@ with tabs[0]:
                 }
                 df_new = df_new.rename(columns={k: v for k, v in rename_map.items() if k in df_new.columns})
                 
-                # Validación mínima
-                req_cols = ['id_estacion', 'latitud', 'longitud']
-                if not all(c in df_new.columns for c in req_cols):
-                    st.error(f"Faltan columnas requeridas: {req_cols}")
+                # 3. Validación y Conversión Numérica
+                req = ['id_estacion', 'latitud', 'longitud']
+                if not all(c in df_new.columns for c in req):
+                    st.error(f"Faltan columnas: {req}")
                 else:
-                    # Limpieza numérica forzosa
                     for c in ['latitud', 'longitud', 'altitud']:
                         if c in df_new.columns:
                             df_new[c] = pd.to_numeric(
-                                df_new[c].astype(str).str.replace(',', '.'), 
-                                errors='coerce'
+                                df_new[c].astype(str).str.replace(',', '.'), errors='coerce'
                             )
                     
-                    # Guardado seguro
-                    df_new.to_sql('temp_est_load', engine, if_exists='replace', index=False)
-                    
-                    with engine.begin() as conn:
-                        # Insertar/Actualizar datos base
-                        conn.execute(text("""
-                            INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud)
-                            SELECT id_estacion, nombre, latitud, longitud, altitud FROM temp_est_load
-                            ON CONFLICT (id_estacion) DO UPDATE SET
-                                nombre = EXCLUDED.nombre,
-                                latitud = EXCLUDED.latitud,
-                                longitud = EXCLUDED.longitud,
-                                altitud = EXCLUDED.altitud;
-                        """))
-                        # Actualizar geometrías
-                        try:
-                            conn.execute(text("UPDATE estaciones SET geom = ST_SetSRID(ST_MakePoint(longitud, latitud), 4326) WHERE longitud IS NOT NULL"))
+                    # 4. INSERCIÓN BLINDADA (Con Rollback preventivo)
+                    with engine.connect() as conn:
+                        # PASO CLAVE: Si hubo un error previo, esto limpia la conexión
+                        try: conn.rollback() 
                         except: pass
                         
-                        conn.execute(text("DROP TABLE IF EXISTS temp_est_load"))
-
-                    st.success(f"✅ ¡Éxito! Se procesaron {len(df_new)} estaciones.")
-                    st.balloons()
-                    
+                        # Crear tabla temporal
+                        df_new.to_sql('temp_est_load', conn, if_exists='replace', index=False)
+                        
+                        # Ejecutar UPSERT
+                        trans = conn.begin()
+                        try:
+                            conn.execute(text("""
+                                INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud)
+                                SELECT id_estacion, nombre, latitud, longitud, altitud FROM temp_est_load
+                                ON CONFLICT (id_estacion) DO UPDATE SET
+                                    nombre = EXCLUDED.nombre,
+                                    latitud = EXCLUDED.latitud,
+                                    longitud = EXCLUDED.longitud,
+                                    altitud = EXCLUDED.altitud;
+                            """))
+                            
+                            # Actualizar Geometrías (PostGIS)
+                            try:
+                                conn.execute(text("UPDATE estaciones SET geom = ST_SetSRID(ST_MakePoint(longitud, latitud), 4326) WHERE longitud IS NOT NULL"))
+                            except: pass
+                            
+                            conn.execute(text("DROP TABLE IF EXISTS temp_est_load"))
+                            trans.commit()
+                            
+                            st.success(f"✅ ¡Éxito! {len(df_new)} estaciones procesadas.")
+                            st.balloons()
+                            
+                        except Exception as sql_err:
+                            trans.rollback()
+                            st.error(f"Error SQL: {sql_err}")
+                            
             except Exception as ex:
                 st.error(f"Error procesando archivo: {ex}")
+
 
 # ==============================================================================
 # TAB 2: ÍNDICES (CORREGIDO Y BLINDADO)
