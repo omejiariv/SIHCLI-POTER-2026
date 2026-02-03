@@ -626,17 +626,19 @@ def main():
                     if len(ids_validos) == 1: ids_sql = f"('{ids_validos[0]}')" 
                     else: ids_sql = str(ids_validos)
 
-                    # [CONSULTA CORREGIDA PARA ISOYETAS]
+ 
+                    # CONSULTA CORREGIDA PARA ISOYETAS (Usa lat/lon numéricos en vez de geom)
                     q_iso = text(f"""
                         SELECT e.id_estacion, e.nombre, 
-                               e.longitud as lon, e.latitud as lat, -- <--- CAMBIO CLAVE
+                               e.longitud as lon, e.latitud as lat,
                                SUM(p.valor) as valor
                         FROM precipitacion p
                         JOIN estaciones e ON p.id_estacion = e.id_estacion
                         WHERE extract(year from p.fecha) = :anio
                         AND e.id_estacion IN {ids_sql} 
                         GROUP BY e.id_estacion, e.nombre, e.latitud, e.longitud
-                    """)                    
+                    """)
+
                     with engine.connect() as conn:
                         df_iso = pd.read_sql(q_iso, conn, params={"anio": year_iso})
                     

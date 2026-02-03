@@ -238,7 +238,6 @@ with st.expander("Mostrar Controles de Reinicio de Base de Datos", expanded=True
             st.error(f"❌ Error crítico: {e}")
 
 
-
 # ==============================================================================
 # TAB 0: GESTIÓN DE ESTACIONES (CON DESBLOQUEO DE TRANSACCIÓN)
 # ==============================================================================
@@ -325,7 +324,7 @@ with tabs[0]:
                                     altitud = EXCLUDED.altitud;
                             """))
                             
-                            # Actualizar Geometrías para los mapas
+                            # Actualizar Geometrías para los mapas (PostGIS)
                             try:
                                 conn.execute(text("UPDATE estaciones SET geom = ST_SetSRID(ST_MakePoint(longitud, latitud), 4326) WHERE longitud IS NOT NULL"))
                             except: pass
@@ -345,6 +344,7 @@ with tabs[0]:
                             
             except Exception as ex:
                 st.error(f"Error procesando el archivo: {ex}")
+
 
 # ==============================================================================
 # TAB 2: ÍNDICES (CORREGIDO Y BLINDADO)
