@@ -355,34 +355,38 @@ with tabs[0]:
                 except Exception as ex:
                     st.error(f"Error cargando estaciones: {ex}")
 
-
-# ==============================================================================
-# TAB 2: ÍNDICES (CORREGIDO: AHORA SÍ MUESTRA ÍNDICES)
-# ==============================================================================
-with tabs[1]:
-    st.header("📊 Índices Climáticos (ENSO/ONI/SOI)")
-    sb1, sb2 = st.tabs(["👁️ Ver Tabla Completa", "📂 Cargar/Actualizar CSV"])
-    
-    # --- SUB-PESTAÑA 1: VISUALIZACIÓN ---
+    # ==============================================================================
+    # --- SUB-PESTAÑA 1: VISUALIZACIÓN BLINDADA ---
     with sb1: 
         st.markdown("### 📋 Histórico Cargado en Base de Datos")
         
         try:
-            # CORRECCIÓN: Leemos la tabla correcta 'indices_climaticos', NO 'predios'
-            query = "SELECT * FROM indices_climaticos ORDER BY fecha DESC" # Ordenamos por fecha si existe
-            
-            # Intentamos leer. Si la tabla no existe, pandas lanzará error y lo capturamos
+            # PASO 1: Lectura básica (Sin ORDER BY para evitar errores de columnas)
+            query = "SELECT * FROM indices_climaticos" 
             df_indices = pd.read_sql(query, engine)
             
             if df_indices.empty:
                 st.warning("⚠️ La tabla 'indices_climaticos' existe pero está vacía.")
             else:
-                st.success(f"✅ Conexión establecida. Se encontraron {len(df_indices)} registros históricos.")
+                # PASO 2: Diagnóstico de Columnas (Para que veas cómo se guardaron)
+                st.success(f"✅ Conexión establecida. Se encontraron {len(df_indices)} registros.")
+                
+                # Intentamos limpiar y ordenar en Python (es más seguro)
+                # Buscamos cualquier columna que parezca fecha
+                col_fecha = next((c for c in df_indices.columns if 'fecha' in c.lower() or 'date' in c.lower()), None)
+                
+                if col_fecha:
+                    try:
+                        df_indices[col_fecha] = pd.to_datetime(df_indices[col_fecha])
+                        df_indices = df_indices.sort_values(col_fecha, ascending=False)
+                    except: pass # Si falla el ordenamiento, mostramos los datos igual
+                
                 st.dataframe(df_indices, use_container_width=True)
                 
         except Exception as e:
-            st.info("ℹ️ Aún no hay datos de índices cargados (o la tabla no existe). Usa la pestaña de al lado para subir el archivo.")
-            # st.error(f"Detalle técnico: {e}") # Opcional para debug
+            # Ahora sí mostramos el error real para saber qué pasa
+            st.error(f"❌ Error crítico leyendo la tabla: {e}")
+            st.code(f"Detalle: {str(e)}") # Esto nos dirá si la tabla no existe o qué pasa
 
     # --- SUB-PESTAÑA 2: CARGA ---
     with sb2:
