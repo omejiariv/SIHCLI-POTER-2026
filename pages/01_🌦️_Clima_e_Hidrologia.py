@@ -50,7 +50,7 @@ except Exception as e:
     st.stop()
 
 
-# --- FUNCIÓN UNIFICADA DE CARGA (VERSIÓN BILINGÜE: NUEVO + VIEJO) ---
+# --- FUNCIÓN UNIFICADA DE CARGA (ADAPTADOR UNIVERSAL) ---
 @st.cache_resource(show_spinner="Consultando Sistema de Información (Nube)...", ttl=3600)
 def load_data_from_db():
     from sqlalchemy import text
@@ -58,30 +58,32 @@ def load_data_from_db():
     import pandas as pd
     from modules.config import Config
     
-    # 1. Obtener conexión
+    # 1. Obtener conexión de forma robusta
     try:
         engine = get_engine()
     except:
         from modules.db_manager import get_engine
         engine = get_engine()
 
-    # 2. Inicializar estructuras vacías
+    # 2. Inicializar estructuras vacías (Red de seguridad)
     gdf_mun = gpd.GeoDataFrame()
     gdf_cuencas = gpd.GeoDataFrame()
     gdf_predios = gpd.GeoDataFrame()
     gdf_est = gpd.GeoDataFrame()
     
-    df_rain = pd.DataFrame(columns=[Config.STATION_NAME_COL, Config.PRECIPITATION_COL, Config.DATE_COL])
+    # DataFrames base vacíos con columnas mínimas esperadas
+    df_rain = pd.DataFrame(columns=[Config.STATION_NAME_COL, Config.PRECIPITATION_COL, Config.DATE_COL, 'id_estacion', 'Codigo'])
     df_enso = pd.DataFrame(columns=[Config.DATE_COL, Config.ENSO_ONI_COL])
 
     if not engine:
         return gdf_est, gdf_mun, df_rain, df_enso, gdf_cuencas, gdf_predios
 
-    # 3. Cargar Datos Espaciales
+    # 3. Cargar Datos Espaciales (Contexto)
     try:
         # Municipios
         try:
             gdf_mun = gpd.read_postgis("SELECT * FROM municipios", engine, geom_col="geometry")
+            # Normalización de nombres
             if 'nombre_municipio' in gdf_mun.columns: gdf_mun['MPIO_CNMBR'] = gdf_mun['nombre_municipio']
             elif 'nombre' in gdf_mun.columns: gdf_mun['MPIO_CNMBR'] = gdf_mun['nombre']
         except: pass
@@ -103,78 +105,103 @@ def load_data_from_db():
     except Exception as e:
         print(f"Advertencia cargando capas base: {e}")
 
-    # 4. Cargar Datos Dinámicos
+    # 4. Cargar Datos Dinámicos (El Núcleo)
     try:
-        # A. Estaciones
+        # A. Estaciones: Prioridad a coordenadas numéricas reparadas
         try:
             df_e = pd.read_sql("SELECT * FROM estaciones", engine)
+            
+            # Limpieza y validación de coordenadas
             if 'latitud' in df_e.columns and 'longitud' in df_e.columns:
                 df_e['latitud'] = pd.to_numeric(df_e['latitud'], errors='coerce')
                 df_e['longitud'] = pd.to_numeric(df_e['longitud'], errors='coerce')
                 df_e = df_e.dropna(subset=['latitud', 'longitud'])
                 
+                # Crear GeoDataFrame desde lat/lon limpios
                 gdf_est = gpd.GeoDataFrame(
                     df_e, 
                     geometry=gpd.points_from_xy(df_e.longitud, df_e.latitud), 
                     crs="EPSG:4326"
                 )
             else:
+                # Fallback a geometría postgis si no hay lat/lon explícitos
                 gdf_est = gpd.read_postgis("SELECT * FROM estaciones", engine, geom_col="geom")
         except: pass
 
-        # B. Lluvia
+        # B. Lluvia: Consulta optimizada
+        # Usamos TRIM para asegurar que los IDs coincidan aunque tengan espacios
         q_rain = text("""
             SELECT p.id_estacion, e.nombre, p.fecha, p.valor
             FROM precipitacion p
-            JOIN estaciones e ON TRIM(p.id_estacion) = TRIM(e.id_estacion)
+            LEFT JOIN estaciones e ON TRIM(p.id_estacion) = TRIM(e.id_estacion)
             WHERE p.valor IS NOT NULL
         """)
         df_rain = pd.read_sql(q_rain, engine)
         
         if not df_rain.empty:
+            # Tipos de datos fundamentales
             df_rain[Config.DATE_COL] = pd.to_datetime(df_rain['fecha'])
             df_rain[Config.PRECIPITATION_COL] = pd.to_numeric(df_rain['valor'], errors='coerce')
-            df_rain[Config.STATION_NAME_COL] = df_rain['nombre']
-            df_rain['id_estacion'] = df_rain['id_estacion'].astype(str)
+            df_rain['id_estacion'] = df_rain['id_estacion'].astype(str).str.strip()
             
+            # Nombre de estación (Fallback al ID si no hay nombre)
+            if 'nombre' in df_rain.columns:
+                df_rain[Config.STATION_NAME_COL] = df_rain['nombre'].fillna(df_rain['id_estacion'])
+            else:
+                df_rain[Config.STATION_NAME_COL] = df_rain['id_estacion']
+
+            # Derivados de tiempo
             df_rain[Config.YEAR_COL] = df_rain[Config.DATE_COL].dt.year
             df_rain[Config.MONTH_COL] = df_rain[Config.DATE_COL].dt.month
 
-        # C. Índices Climáticos
+        # C. Índices Climáticos (ENSO)
         try:
             df_enso_raw = pd.read_sql("SELECT * FROM indices_climaticos", engine)
             if not df_enso_raw.empty:
+                # Lógica flexible para fechas
                 if 'fecha' in df_enso_raw.columns:
                     df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw['fecha'])
                 elif 'año' in df_enso_raw.columns:
                     df_enso_raw[Config.DATE_COL] = pd.to_datetime(df_enso_raw[['año', 'mes']].assign(DAY=1))
                 
                 df_enso = df_enso_raw.sort_values(Config.DATE_COL)
-                if 'anomalia_oni' in df_enso.columns:
-                    df_enso[Config.ENSO_ONI_COL] = df_enso['anomalia_oni']
+                # Mapeo de columna ONI
+                col_oni = next((c for c in ['anomalia_oni', 'oni', 'valor'] if c in df_enso.columns), None)
+                if col_oni:
+                    df_enso[Config.ENSO_ONI_COL] = df_enso[col_oni]
         except: pass
 
     except Exception as e:
         print(f"Error cargando datos dinámicos: {e}")
 
     # ==============================================================================
-    # 🟢 ESTRATEGIA BILINGÜE (DUPLICAR COLUMNAS PARA COMPATIBILIDAD TOTAL)
+    # 🌟 ESTRATEGIA DE ADAPTACIÓN UNIVERSAL (BILINGÜE)
     # ==============================================================================
-    # Mantenemos los nombres originales ('id_estacion') Y creamos alias antiguos ('Codigo')
+    # Aquí creamos los ALIAS. No renombramos (borrando el original), sino que
+    # duplicamos la referencia. Así funciona tanto para código nuevo como viejo.
     
     if not df_rain.empty:
-        df_rain['Codigo'] = df_rain['id_estacion']  # Para visualizer.py
-        df_rain['Nom_Est'] = df_rain['nombre']      # Para visualizer.py
-        df_rain['Valor'] = df_rain['valor']         # Por si acaso
+        # Cliente Nuevo usa: id_estacion, nombre, valor
+        # Cliente Viejo (Visualizer) usa: Codigo, Nom_Est, Valor
+        df_rain['Codigo'] = df_rain['id_estacion']
+        df_rain['Nom_Est'] = df_rain.get('nombre', df_rain['id_estacion'])
+        df_rain['Valor'] = df_rain['valor'] 
     
     if not gdf_est.empty:
-        gdf_est['Latitud_geo'] = gdf_est['latitud']     # Para mapas viejos
-        gdf_est['Longitud_geo'] = gdf_est['longitud']   # Para mapas viejos
-        gdf_est['Codigo'] = gdf_est['id_estacion']      # Para filtros viejos
-        gdf_est['Nom_Est'] = gdf_est['nombre']          # Para etiquetas
+        # Cliente Nuevo usa: latitud, longitud
+        # Cliente Viejo usa: Latitud_geo, Longitud_geo, Codigo
+        if 'latitud' in gdf_est.columns:
+            gdf_est['Latitud_geo'] = gdf_est['latitud']
+        if 'longitud' in gdf_est.columns:
+            gdf_est['Longitud_geo'] = gdf_est['longitud']
+            
+        gdf_est['Codigo'] = gdf_est['id_estacion']
+        if 'nombre' in gdf_est.columns:
+            gdf_est['Nom_Est'] = gdf_est['nombre']
     # ------------------------------------------------------------------------------
 
     return gdf_est, gdf_mun, df_rain, df_enso, gdf_cuencas, gdf_predios
+
 
 # --- FUNCIONES VISUALES AUXILIARES ---
 def get_name_from_row_v2(row, type_layer):
