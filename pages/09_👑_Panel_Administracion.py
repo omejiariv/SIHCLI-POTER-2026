@@ -240,18 +240,20 @@ with st.expander("Mostrar Controles de Reinicio de Base de Datos", expanded=True
 
 
 # ==============================================================================
-# TAB 0: GESTIÓN DE ESTACIONES (CORREGIDO)
+# TAB 0: GESTIÓN DE ESTACIONES (CORREGIDO Y BLINDADO)
 # ==============================================================================
 with tabs[0]: 
     st.header("📍 Gestión de Estaciones")
     
+    # Sub-pestañas internas
     subtab_ver, subtab_carga = st.tabs(["👁️ Editor de Catálogo", "📂 Carga Masiva (CSV)"])
     
     # --- SUB-PESTAÑA 1: VER Y EDITAR ---
     with subtab_ver:
         st.info("Edita las propiedades directamente en la tabla y guarda los cambios.")
         
-        if st.button("🔄 Refrescar Tabla Estaciones"):
+        col_ref, col_msg = st.columns([1, 3])
+        if col_ref.button("🔄 Refrescar Tabla"):
             st.cache_data.clear()
             st.rerun()
             
@@ -270,13 +272,14 @@ with tabs[0]:
                     "nombre": "Nombre",
                     "municipio": "Municipio",
                     "latitud": st.column_config.NumberColumn("Latitud", format="%.6f"),
-                    "longitud": st.column_config.NumberColumn("Longitud", format="%.6f")
+                    "longitud": st.column_config.NumberColumn("Longitud", format="%.6f"),
+                    "altitud": st.column_config.NumberColumn("Altitud", format="%.0f")
                 }
             )
             
-            # 3. BOTÓN GUARDAR (LÓGICA BLINDADA CON UPSERT)
-            if st.button("💾 Guardar Cambios en Catálogo"):
-                with st.spinner("Sincronizando cambios de forma segura..."):
+            # 3. BOTÓN GUARDAR (LÓGICA UPSERT)
+            if st.button("💾 Guardar Cambios en Catálogo", type="primary"):
+                with st.spinner("Sincronizando cambios..."):
                     try:
                         with engine.begin() as conn:
                             # A. Subimos a tabla temporal
@@ -298,145 +301,114 @@ with tabs[0]:
                                     corriente = EXCLUDED.corriente;
                             """))
                             
-                            # C. Limpieza
+                            # C. ACTUALIZAR GEOMETRÍA POSTGIS (CRÍTICO PARA MAPAS)
+                            # Sincronizamos la columna 'geom' con las nuevas lat/lon
+                            try:
+                                conn.execute(text("""
+                                    UPDATE estaciones 
+                                    SET geom = ST_SetSRID(ST_MakePoint(longitud, latitud), 4326)
+                                    WHERE longitud IS NOT NULL AND latitud IS NOT NULL;
+                                """))
+                            except Exception as e_geo:
+                                st.warning(f"Nota: Geometría espacial no actualizada (falta PostGIS): {e_geo}")
+
+                            # D. Limpieza
                             conn.execute(text("DROP TABLE IF EXISTS temp_est_edit"))
                             
-                        st.success("✅ Catálogo actualizado correctamente (Sin romper vínculos).")
+                        st.success("✅ Catálogo actualizado correctamente.")
+                        import time
                         time.sleep(1)
                         st.rerun()
                         
                     except Exception as e:
                         st.error("❌ No se pudo guardar.")
-                        st.warning(f"Detalle técnico: {e}")
+                        st.error(f"Detalle técnico: {e}")
 
-        # ⬇️ ESTE ES EL BLOQUE QUE TE FALTABA ⬇️
         except Exception as e:
-            st.warning("No se pudo cargar el catálogo. ¿Quizás está vacío?")
+            st.warning("No se pudo cargar el catálogo. ¿La base de datos está inicializada?")
             st.error(f"Error de carga: {e}")
 
     # --- SUB-PESTAÑA 2: CARGA MASIVA ---
     with subtab_carga:
-        st.write("Sube `mapaCVENSO.csv` limpio.")
-        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv_corrected_final")
+        st.markdown("### Cargar Archivo de Estaciones")
+        st.info("Sube un CSV con columnas: `id_estacion`, `nombre`, `latitud`, `longitud`, `altitud`.")
+        up_est = st.file_uploader("Cargar CSV Estaciones", type=["csv"], key="up_est_csv_final")
         
-        if up_est:
-            if st.button("🚀 Cargar Catálogo"):
+        if up_est and st.button("🚀 Procesar Carga Masiva"):
+            try:
+                # Lectura inteligente (detecta separador y decimales)
                 try:
-                    df_new = pd.read_csv(up_est, sep=';', decimal=',')
-                    df_new.columns = df_new.columns.str.lower().str.strip()
+                    df_new = pd.read_csv(up_est, sep=';', decimal=',') # Intento formato Latam
+                    if len(df_new.columns) < 2: raise ValueError("Separador incorrecto")
+                except:
+                    up_est.seek(0)
+                    df_new = pd.read_csv(up_est, sep=',', decimal='.') # Intento estándar
+                
+                # Normalización de columnas
+                df_new.columns = df_new.columns.str.lower().str.strip()
+                rename_map = {
+                    'id_estacio': 'id_estacion', 'codigo': 'id_estacion',
+                    'nom_est': 'nombre', 'station': 'nombre',
+                    'longitud_geo': 'longitud', 'lon': 'longitud',
+                    'latitud_geo': 'latitud', 'lat': 'latitud',
+                    'alt_est': 'altitud', 'elev': 'altitud'
+                }
+                df_new = df_new.rename(columns={k: v for k, v in rename_map.items() if k in df_new.columns})
+                
+                # Validación mínima
+                req_cols = ['id_estacion', 'latitud', 'longitud']
+                if not all(c in df_new.columns for c in req_cols):
+                    st.error(f"Faltan columnas requeridas: {req_cols}")
+                else:
+                    # Limpieza numérica forzosa
+                    for c in ['latitud', 'longitud', 'altitud']:
+                        if c in df_new.columns:
+                            df_new[c] = pd.to_numeric(
+                                df_new[c].astype(str).str.replace(',', '.'), 
+                                errors='coerce'
+                            )
                     
-                    rename_map = {'id_estacio': 'id_estacion', 'nom_est': 'nombre', 'longitud_geo': 'longitud', 'latitud_geo': 'latitud', 'alt_est': 'altitud'}
-                    df_new = df_new.rename(columns={k: v for k, v in rename_map.items() if k in df_new.columns})
+                    # Guardado seguro
+                    df_new.to_sql('temp_est_load', engine, if_exists='replace', index=False)
                     
-                    cols_validas = ['id_estacion', 'nombre', 'longitud', 'latitud', 'altitud', 'municipio', 'departamento', 'subregion', 'corriente']
-                    df_final = df_new[[c for c in df_new.columns if c in cols_validas]]
-
-                    for c in ['longitud', 'latitud', 'altitud']:
-                        if c in df_final.columns:
-                            df_final[c] = pd.to_numeric(df_final[c].astype(str).str.replace(',', '.'), errors='coerce')
-
-                    # UPSERT manual para carga masiva (seguridad extra)
-                    df_final.to_sql('temp_est_load', engine, if_exists='replace', index=False)
                     with engine.begin() as conn:
+                        # Insertar/Actualizar datos base
                         conn.execute(text("""
-                            INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud, municipio, departamento, subregion, corriente)
-                            SELECT id_estacion, nombre, latitud, longitud, altitud, municipio, departamento, subregion, corriente
-                            FROM temp_est_load
+                            INSERT INTO estaciones (id_estacion, nombre, latitud, longitud, altitud)
+                            SELECT id_estacion, nombre, latitud, longitud, altitud FROM temp_est_load
                             ON CONFLICT (id_estacion) DO UPDATE SET
                                 nombre = EXCLUDED.nombre,
                                 latitud = EXCLUDED.latitud,
                                 longitud = EXCLUDED.longitud,
                                 altitud = EXCLUDED.altitud;
                         """))
+                        # Actualizar geometrías
+                        try:
+                            conn.execute(text("UPDATE estaciones SET geom = ST_SetSRID(ST_MakePoint(longitud, latitud), 4326) WHERE longitud IS NOT NULL"))
+                        except: pass
+                        
                         conn.execute(text("DROP TABLE IF EXISTS temp_est_load"))
 
-                    st.success(f"✅ Catálogo cargado: {len(df_final)} estaciones.")
+                    st.success(f"✅ ¡Éxito! Se procesaron {len(df_new)} estaciones.")
                     st.balloons()
-                except Exception as ex:
-                    st.error(f"Error cargando estaciones: {ex}")
-
-    # ==============================================================================
-    # --- SUB-PESTAÑA 1: VISUALIZACIÓN BLINDADA ---
-    with sb1: 
-        st.markdown("### 📋 Histórico Cargado en Base de Datos")
-        
-        try:
-            # PASO 1: Lectura básica (Sin ORDER BY para evitar errores de columnas)
-            query = "SELECT * FROM indices_climaticos" 
-            df_indices = pd.read_sql(query, engine)
-            
-            if df_indices.empty:
-                st.warning("⚠️ La tabla 'indices_climaticos' existe pero está vacía.")
-            else:
-                # PASO 2: Diagnóstico de Columnas (Para que veas cómo se guardaron)
-                st.success(f"✅ Conexión establecida. Se encontraron {len(df_indices)} registros.")
-                
-                # Intentamos limpiar y ordenar en Python (es más seguro)
-                # Buscamos cualquier columna que parezca fecha
-                col_fecha = next((c for c in df_indices.columns if 'fecha' in c.lower() or 'date' in c.lower()), None)
-                
-                if col_fecha:
-                    try:
-                        df_indices[col_fecha] = pd.to_datetime(df_indices[col_fecha])
-                        df_indices = df_indices.sort_values(col_fecha, ascending=False)
-                    except: pass # Si falla el ordenamiento, mostramos los datos igual
-                
-                st.dataframe(df_indices, use_container_width=True)
-                
-        except Exception as e:
-            # Ahora sí mostramos el error real para saber qué pasa
-            st.error(f"❌ Error crítico leyendo la tabla: {e}")
-            st.code(f"Detalle: {str(e)}") # Esto nos dirá si la tabla no existe o qué pasa
-
-    # --- SUB-PESTAÑA 2: CARGA ---
-    with sb2:
-        st.markdown("### Cargar Archivo de Índices")
-        st.info("""
-        **Instrucciones:**
-        1. Sube un archivo CSV con columnas como: `fecha`, `anomalia_oni`, `soi`, `iod`.
-        2. El sistema intentará detectar el separador automáticamente (coma o punto y coma).
-        """)
-        
-        up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_final")
-        
-        if up_i and st.button("Procesar y Guardar en BD", key="btn_load_ind_final"):
-            try:
-                # Intento 1: Leer con punto y coma (común en español)
-                up_i.seek(0)
-                df = pd.read_csv(up_i, sep=';', encoding='latin-1', engine='python')
-                
-                # Si falla (solo 1 columna), intentamos con coma
-                if len(df.columns) < 2:
-                    up_i.seek(0)
-                    df = pd.read_csv(up_i, sep=',', encoding='utf-8')
-                
-                # Limpieza de columnas (estándar)
-                df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-                
-                # Guardar en BD reemplazando lo anterior
-                df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-                
-                st.success(f"✅ ¡Éxito! Se guardaron {len(df)} registros en la tabla 'indices_climaticos'.")
-                st.dataframe(df.head())
-                st.balloons()
-                
-            except Exception as e:
-                st.error(f"Error procesando el archivo: {e}")
+                    
+            except Exception as ex:
+                st.error(f"Error procesando archivo: {ex}")
 
 # ==============================================================================
-# TAB 2: ÍNDICES (CORREGIDO Y COMPLETO)
+# TAB 2: ÍNDICES (CORREGIDO Y BLINDADO)
 # ==============================================================================
 with tabs[1]:
     st.header("📊 Índices Climáticos (ENSO/ONI/SOI)")
     
-    # 1. ESTA ES LA LÍNEA QUE FALTABA: Definición de sub-pestañas
+    # Definición de pestañas internas
     sb1, sb2 = st.tabs(["👁️ Ver Tabla Completa", "📂 Cargar/Actualizar CSV"])
     
     # --- SUB-PESTAÑA 1: VISUALIZACIÓN ---
     with sb1: 
-        st.markdown("### 📋 Histórico Cargado en Base de Datos")
+        st.markdown("### 📋 Histórico Cargado")
         try:
-            # Traemos TODO sin ordenar en SQL para evitar error de nombre de columna
+            # Lectura cruda para evitar errores de nombres de columna
             df_indices = pd.read_sql("SELECT * FROM indices_climaticos", engine)
             
             if df_indices.empty:
@@ -444,11 +416,11 @@ with tabs[1]:
             else:
                 st.success(f"✅ Datos encontrados: {len(df_indices)} registros.")
                 
-                # Limpieza de nombres de columna (Quitamos caracteres raros BOM)
+                # Limpieza de nombres (Eliminar BOM y espacios)
                 df_indices.columns = [c.replace('ï»¿', '').strip() for c in df_indices.columns]
                 
-                # Ordenar en Python (Seguro)
-                col_fecha = next((c for c in df_indices.columns if 'fecha' in c.lower()), None)
+                # Ordenamiento seguro en Python
+                col_fecha = next((c for c in df_indices.columns if 'fecha' in c.lower() or 'date' in c.lower()), None)
                 if col_fecha:
                     try:
                         df_indices[col_fecha] = pd.to_datetime(df_indices[col_fecha])
@@ -458,27 +430,27 @@ with tabs[1]:
                 st.dataframe(df_indices, use_container_width=True)
                 
         except Exception as e:
-            st.info("ℹ️ No hay tabla de índices cargada.")
+            st.info("ℹ️ No hay datos de índices. Usa la pestaña de carga.")
 
     # --- SUB-PESTAÑA 2: CARGA ---
     with sb2:
         st.markdown("### Cargar Archivo de Índices")
-        up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_fix_final")
+        st.info("Sube el archivo `Indices_Globales.csv`.")
+        up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_final_v2")
         
-        if up_i and st.button("Procesar y Guardar", key="btn_save_ind_final"):
+        if up_i and st.button("Procesar y Guardar", key="btn_save_ind_v2"):
             try:
-                # TRUCO: encoding='utf-8-sig' elimina el error de caracteres raros
+                # Lectura robusta (utf-8-sig elimina BOM)
                 df = pd.read_csv(up_i, sep=None, engine='python', encoding='utf-8-sig')
                 
-                # Normalizar nombres
+                # Normalizar columnas
                 df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
                 
                 # Guardar
                 df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-                st.success(f"✅ ¡Guardado perfecto! {len(df)} registros.")
+                st.success(f"✅ Guardado correcto: {len(df)} registros.")
                 st.dataframe(df.head())
-                st.balloons()
-                st.rerun() # Recargar para ver los cambios
+                st.rerun()
             except Exception as e:
                 st.error(f"Error: {e}")
 
