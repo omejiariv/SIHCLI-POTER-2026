@@ -357,75 +357,68 @@ with tabs[0]:
 
 
 # ==============================================================================
-# TAB 2: ÍNDICES (FORZANDO PUNTO Y COMA)
+# TAB 2: ÍNDICES (CORREGIDO: AHORA SÍ MUESTRA ÍNDICES)
 # ==============================================================================
 with tabs[1]:
-    st.header("📊 Índices Climáticos")
+    st.header("📊 Índices Climáticos (ENSO/ONI/SOI)")
     sb1, sb2 = st.tabs(["👁️ Ver Tabla Completa", "📂 Cargar/Actualizar CSV"])
     
-    with sb1: # Sub-pestaña: Tabla Completa
-        st.markdown("### 📋 Inventario de Predios")
+    # --- SUB-PESTAÑA 1: VISUALIZACIÓN ---
+    with sb1: 
+        st.markdown("### 📋 Histórico Cargado en Base de Datos")
         
         try:
-            # 1. DIAGNÓSTICO: ¿Existe la tabla?
-            # Intentamos leer solo 1 fila para ver si la tabla responde y qué columnas tiene
-            df_test = pd.read_sql('SELECT * FROM predios LIMIT 1', engine)
+            # CORRECCIÓN: Leemos la tabla correcta 'indices_climaticos', NO 'predios'
+            query = "SELECT * FROM indices_climaticos ORDER BY fecha DESC" # Ordenamos por fecha si existe
             
-            # Si llegamos aquí, la tabla EXISTE. Ahora filtramos la geometría para que no rompa la tabla visual.
-            columnas_todas = df_test.columns.tolist()
-            columnas_visibles = [c for c in columnas_todas if c != 'geometry']
+            # Intentamos leer. Si la tabla no existe, pandas lanzará error y lo capturamos
+            df_indices = pd.read_sql(query, engine)
             
-            if not columnas_visibles:
-                st.warning("⚠️ La tabla 'predios' existe, pero solo tiene columna de geometría o está vacía.")
+            if df_indices.empty:
+                st.warning("⚠️ La tabla 'indices_climaticos' existe pero está vacía.")
             else:
-                # 2. CONSULTA SEGURA: Traemos solo las columnas de texto/números
-                # Usamos comillas dobles "{c}" para respetar mayúsculas/minúsculas exactas (ej: "NOMBRE_PRE")
-                cols_sql = ", ".join([f'"{c}"' for c in columnas_visibles])
-                query = f"SELECT {cols_sql} FROM predios"
-                
-                df_final = pd.read_sql(query, engine)
-                
-                st.success(f"✅ Conexión establecida. Se encontraron {len(df_final)} registros.")
-                st.dataframe(df_final, use_container_width=True)
+                st.success(f"✅ Conexión establecida. Se encontraron {len(df_indices)} registros históricos.")
+                st.dataframe(df_indices, use_container_width=True)
                 
         except Exception as e:
-            # Si falla, mostramos un diagnóstico detallado
-            st.error("❌ No se puede visualizar la tabla.")
-            st.warning(f"Error técnico: {e}")
-            
-            st.markdown("---")
-            st.info("🔍 **Herramienta de Diagnóstico:**")
-            if st.button("Verificar tablas en Base de Datos"):
-                try:
-                    q_check = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
-                    df_tablas = pd.read_sql(q_check, engine)
-                    st.write("Tablas encontradas en Supabase:", df_tablas)
-                except Exception as ex:
-                    st.error(f"Ni siquiera pudimos listar las tablas: {ex}")
+            st.info("ℹ️ Aún no hay datos de índices cargados (o la tabla no existe). Usa la pestaña de al lado para subir el archivo.")
+            # st.error(f"Detalle técnico: {e}") # Opcional para debug
 
+    # --- SUB-PESTAÑA 2: CARGA ---
     with sb2:
         st.markdown("### Cargar Archivo de Índices")
-        st.info("Sube 'Indices_Globales.csv'. Se forzará el uso de **punto y coma (;)** como separador.")
+        st.info("""
+        **Instrucciones:**
+        1. Sube un archivo CSV con columnas como: `fecha`, `anomalia_oni`, `soi`, `iod`.
+        2. El sistema intentará detectar el separador automáticamente (coma o punto y coma).
+        """)
+        
         up_i = st.file_uploader("Seleccionar CSV", type=["csv"], key="up_ind_final")
         
-        if up_i and st.button("Procesar y Corregir BD", key="btn_load_ind_final"):
+        if up_i and st.button("Procesar y Guardar en BD", key="btn_load_ind_final"):
             try:
-                # LEER CON PUNTO Y COMA EXPLÍCITAMENTE
+                # Intento 1: Leer con punto y coma (común en español)
+                up_i.seek(0)
                 df = pd.read_csv(up_i, sep=';', encoding='latin-1', engine='python')
                 
-                # Limpieza de columnas
+                # Si falla (solo 1 columna), intentamos con coma
+                if len(df.columns) < 2:
+                    up_i.seek(0)
+                    df = pd.read_csv(up_i, sep=',', encoding='utf-8')
+                
+                # Limpieza de columnas (estándar)
                 df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
                 
-                if len(df.columns) < 2:
-                    st.error("❌ Error: El archivo no parece estar separado por punto y coma (;). Revisa tu CSV.")
-                else:
-                    # Guardar en BD reemplazando lo anterior
-                    df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
-                    st.success(f"✅ ¡Base de datos corregida! {len(df)} registros con {len(df.columns)} columnas.")
-                    st.dataframe(df.head())
-                    st.balloons()
+                # Guardar en BD reemplazando lo anterior
+                df.to_sql('indices_climaticos', engine, if_exists='replace', index=False)
+                
+                st.success(f"✅ ¡Éxito! Se guardaron {len(df)} registros en la tabla 'indices_climaticos'.")
+                st.dataframe(df.head())
+                st.balloons()
+                
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error procesando el archivo: {e}")
+
 
 # ==============================================================================
 # TAB 3: PREDIOS
